@@ -55,8 +55,11 @@ If you use Compose files in `infra/` (recommended):
 ```bash
 # Copy environment template and edit placeholders
 cp .env.example .env
-# Start the stack (MinIO, Postgres, Iceberg REST, Trino, Spark, Prefect, MLflow)
-docker compose -f infra/compose.yaml up -d
+# Start the stack using the repository Compose file (root: docker-compose.yml)
+# You can omit -f because Compose reads docker-compose.yml by default
+docker compose up -d
+# or explicitly:
+docker compose -f docker-compose.yml up -d
 ```
 
 **Service UIs (defaults, change in `.env`/compose):**
@@ -278,3 +281,33 @@ Choose a license that fits your use (e.g., Apache‑2.0 or MIT). Add `LICENSE` a
 ## Acknowledgements
 
 This starter uses only open‑source, cloud‑agnostic components so you can run locally or on any VM.
+
+## Developer setup & local CI hooks
+
+Add the local pre-commit + pre-push hooks so each `git push` runs lint + tests.
+
+1) Install developer dependencies
+
+```bash
+python -m pip install --upgrade pip
+pip install -r requirements-dev.txt
+```
+
+2) Enable pre-commit and the pre-push hook
+
+```bash
+pre-commit install
+git config core.hooksPath .githooks
+chmod +x .githooks/pre-push scripts/smoke.sh
+```
+
+3) Quick checks
+
+```bash
+make ci     # runs lint + tests
+make smoke  # optional: starts docker compose and checks services
+```
+
+Notes:
+- The GitHub Actions workflow at `.github/workflows/ci.yml` runs the same steps remotely.
+- The pre-push hook runs `ruff` and `pytest` and will block pushes on failure.
