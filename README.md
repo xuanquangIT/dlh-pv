@@ -1,167 +1,295 @@
-# PV Lakehouse (Starter)
+# PV Lakehouse
 
-A minimal, batteries‑included starter for building a small lakehouse ETL on your laptop or a single VM. It uses open components and clear conventions so you can evolve from raw → normalized → curated data with confidence.
+A production-ready data lakehouse platform for building ETL pipelines on your laptop or a single VM. Built with open-source components and clear conventions for evolving from raw → normalized → curated data with confidence.
 
-Stack: MinIO (S3‑compatible object store), Apache Iceberg (REST catalog), Spark (batch), Trino (SQL), Prefect (orchestration), MLflow (tracking), Postgres (metastore/metadata)
+**Stack**: MinIO (S3-compatible object store) • Apache Iceberg (table format) • Spark (batch processing) • Trino (SQL engine) • Prefect (orchestration) • MLflow (ML tracking) • PostgreSQL (metadata)
 
-Medallion: Bronze (raw) → Silver (normalized) → Gold (curated/KPI)
-
----
-
-## Repository layout (important files)
-
-- `docker/etl-runner/` — ETL runner Dockerfile and requirements
-- `docker/minio/init/` — MinIO init scripts (bucket/policy helpers)
-- `docker-compose.yml` — root Compose file used by examples
-- `flows/` — sample Prefect flows (lightweight examples)
-- `sql/trino/` — DDL for creating schemas
-- `src/pv_lakehouse/etl/` — ETL modules and entrypoints
-- `tests/` — basic pytest smoke tests
-- `.env.example` — environment template (copy to `.env` and fill secrets)
-- `requirements-dev.txt` — developer tooling (pre-commit, ruff, black, pytest)
-- `Makefile` — convenience tasks: `init`, `lint`, `test`, `ci`, `smoke`
-- `.pre-commit-config.yaml` — configured hooks
-- `.githooks/pre-push` — local pre-push hook (runs lint + tests)
-- `scripts/smoke.sh` — optional helper to bring up Compose and check services
-- `.github/workflows/ci.yml` — GitHub Actions job (runs lint + tests)
+**Medallion Architecture**: Bronze (raw) → Silver (normalized) → Gold (curated/analytics)
 
 ---
 
-## Quick start
+## 📁 Repository Structure
 
-Requirements: Python 3.11+ (for development), Docker & Docker Compose (for running services)
+```
+dlh-pv/
+├── docker/                      # Docker Compose stack & services
+│   ├── docker-compose.yml       # Main compose file with profiles
+│   ├── .env.sample              # Environment variables template
+│   ├── postgres-init.sh         # DB initialization script
+│   ├── iceberg-rest.yml         # Iceberg catalog config
+│   ├── trino/catalog/           # Trino catalog configurations
+│   ├── scripts/
+│   │   ├── stack-health.ps1     # Health check script (Windows)
+│   │   └── stack-health.sh      # Health check script (Linux/Mac)
+│   ├── SETUP_GUIDE.md           # Comprehensive setup documentation
+│   └── STATUS_REPORT.md         # Implementation status
+├── src/pv_lakehouse/            # Python package
+│   └── etl/                     # ETL modules
+│       └── bronze_ingest.py     # Bronze layer ingestion
+├── flows/                       # Prefect orchestration flows
+│   └── bronze_to_silver.py      # Sample flow
+├── sql/trino/                   # SQL DDL scripts
+│   └── create_schemas.sql       # Schema definitions
+<!-- tests and pytest removed -->
+├── scripts/                     # Utility scripts
+│   └── smoke.sh                 # Quick smoke test
+├── .env.example                 # Environment template (copy to docker/.env)
+├── Makefile                     # Development & Docker commands
+├── pyproject.toml               # Python project config
+├── requirements-dev.txt         # Dev dependencies
+└── README.md                    # This file
+```
 
-Clone and open the repo:
+---
+
+## 🚀 Quick Start
+
+### Prerequisites
+
+- **Docker** 20.10+ & **Docker Compose** V2
+- **Python** 3.11+ (for development)
+- **Git**
+
+### 1. Clone Repository
 
 ```bash
 git clone https://github.com/xuanquangIT/dlh-pv.git
 cd dlh-pv
 ```
 
-Option A — run locally with Python (developer flow):
+### 2. Setup Environment
 
 ```bash
-# create & activate venv (Linux/macOS shown)
-python -m venv .venv
-source .venv/bin/activate
+# Copy environment template
+cp .env.example docker/.env
 
-# install runtime deps (for ETL runner)
-pip install -r docker/etl-runner/requirements.txt
-
-# run tests
-pytest -q
+# Edit docker/.env and update passwords/secrets as needed
+# The defaults work for local development
 ```
 
-Option B — use Docker Compose to bring up services (MinIO, optional others):
+### 3. Start Services
+
+**Option A: Core services only** (MinIO, Postgres, Iceberg, Trino)
 
 ```bash
-# copy env template and edit values
-cp .env.example .env
-
-# start services using root docker-compose.yml
-docker compose up -d
-# or explicitly: docker compose -f docker-compose.yml up -d
+make up
+# or: cd docker && docker compose --profile core up -d
 ```
 
-Initialize MinIO buckets (if you use the provided init helper):
+**Option B: All services** (includes Spark, MLflow, Prefect)
 
 ```bash
-./docker/minio/init/create-buckets.sh
-# or: docker compose run --rm minio-init
+make up-all
+# or: cd docker && docker compose --profile core --profile spark --profile ml --profile orchestrate up -d
+```
+
+### 4. Verify Health
+
+```bash
+make health
+# or: pwsh docker/scripts/stack-health.ps1
+```
+
+### 5. Access Services
+
+| Service | URL | Default Credentials |
+|---------|-----|---------------------|
+| MinIO Console | http://localhost:9001 | pvlakehouse / pvlakehouse |
+| Trino | http://localhost:8081 | - |
+| MLflow | http://localhost:5000 | - |
+| Prefect | http://localhost:4200 | - |
+| Spark Master UI | http://localhost:4040 | - |
+
+---
+
+## 🛠️ Development Workflow
+
+### Setup Development Environment
+
+```bash
+# Install dev dependencies and setup hooks
+make init
+
+# This will:
+# - Install ruff and black (dev linters/formatters)
+```
+
+### Run Linting
+
+```bash
+make lint        # Run ruff linter and formatter checks
+make smoke       # Quick smoke test (start compose + verify)
+```
+
+### Makefile Targets
+
+```bash
+make help        # Show all available commands
+make up          # Start core services
+make up-all      # Start all services (core + spark + ml + orchestrate)
+make down        # Stop all services
+make ps          # Show running containers
+make logs        # Tail logs from all services
+make health      # Run health check
+make clean       # Remove all volumes and cleanup
 ```
 
 ---
 
-## Configuration
+## 📋 Docker Compose Profiles
 
-Copy `.env.example` to `.env` and update secrets/URLs. Example variables included in `.env.example`:
+The stack uses profiles to control which services start:
 
-- MINIO_ENDPOINT, MINIO_ACCESS_KEY, MINIO_SECRET_KEY, S3_REGION, S3_PATH_STYLE
-- ICEBERG_REST_URI, ICEBERG_WAREHOUSE, ICEBERG_CATALOG
-- TRINO_HOST, TRINO_PORT, TRINO_USER
-- SPARK_MASTER_URL, SPARK_APP_NAME
-- PREFECT_API_URL, PREFECT_WORK_POOL
-- MLFLOW_TRACKING_URI
-- POSTGRES_HOST, POSTGRES_PORT, POSTGRES_DB, POSTGRES_USER, POSTGRES_PASSWORD
-- OPEN_NEM_* and OPENMETEO_* (optional external APIs)
+- **`core`** - Essential services (MinIO, Postgres, Iceberg REST, Trino)
+- **`spark`** - Spark master + worker for batch processing
+- **`ml`** - MLflow for ML tracking and model registry
+- **`orchestrate`** - Prefect server + agent for workflow orchestration
 
-Never commit real secrets. Use `.env.example` as the template only.
-
----
-
-## Development workflow (recommended)
-
-We provide local pre-commit hooks and a Makefile to keep checks fast and consistent.
-
-1) Install developer dependencies
+**Examples:**
 
 ```bash
-python -m pip install --upgrade pip
-pip install -r requirements-dev.txt
+# Core only
+docker compose --profile core up -d
+
+# Core + Spark
+docker compose --profile core --profile spark up -d
+
+# Everything
+docker compose --profile core --profile spark --profile ml --profile orchestrate up -d
+
+# Stop all (use wildcard profile)
+docker compose --profile "*" down
 ```
 
-2) Enable pre-commit and local pre-push hook
+---
+
+## ⚙️ Configuration
+
+All configuration is managed through environment variables in `docker/.env`.
+
+Key variables:
 
 ```bash
-pre-commit install
-git config core.hooksPath .githooks
-# On Unix: make hooks/scripts executable
-chmod +x .githooks/pre-push scripts/smoke.sh
+# Authentication
+PV_USER=pvlakehouse                  # Default username for all services
+PV_PASSWORD=pvlakehouse              # Default password (change in production!)
+
+# Storage
+S3_WAREHOUSE_BUCKET=lakehouse        # Iceberg data bucket
+S3_MLFLOW_BUCKET=mlflow              # MLflow artifacts bucket
+
+# Service Ports
+MINIO_API_PORT=9000
+MINIO_CONSOLE_PORT=9001
+TRINO_PORT=8081
+MLFLOW_PORT=5000
+PREFECT_PORT=4200
+
+# Images (pin versions for production)
+MINIO_IMAGE=minio/minio:latest
+POSTGRES_IMAGE=postgres:15
+TRINO_IMAGE=trinodb/trino:latest
 ```
 
-3) Quick checks
+**⚠️ Security**: Never commit secrets to git. Use `docker/.env` (gitignored) for actual values.
+
+---
+
+<!-- CI and pre-commit hooks removed from this repository. -->
+
+---
+
+<!-- Tests and pytest configuration removed from this repository. -->
+
+---
+
+## 📚 Additional Documentation
+
+- **[Docker Setup Guide](docker/SETUP_GUIDE.md)** - Comprehensive deployment guide
+- **[Status Report](docker/STATUS_REPORT.md)** - Implementation checklist
+- **[Contributing](CONTRIBUTING.md)** - Contribution guidelines
+
+---
+
+## 🐛 Troubleshooting
+
+### Services won't start
 
 ```bash
-make ci     # runs lint (ruff/black) and tests
-make smoke  # optional: start compose and validate services via scripts/smoke.sh
+# Check container status
+make ps
+
+# View logs
+make logs
+
+# Check specific service
+cd docker && docker compose logs minio -f
 ```
 
-Makefile targets:
-- `init` — install dev deps and install pre-commit hooks
-- `lint` — run ruff lint + format check
-- `test` — run pytest
-- `ci` — run lint + tests
-- `smoke` — run `scripts/smoke.sh` (docker-compose based)
+### Health checks failing
 
-Pre-push hook (`.githooks/pre-push`) runs `ruff` and `pytest` and will block pushes on failures.
+```bash
+# Run health check script
+make health
 
-Note: on Windows `chmod` isn't required; ensure Git preserves executable bits or run the scripts via PowerShell.
+# Check individual service health
+docker exec minio curl -f http://localhost:9000/minio/health/ready
+docker exec postgres pg_isready -U pvlakehouse
+```
 
----
+### Port conflicts
 
-## CI / GitHub Actions
+If ports are already in use, edit `docker/.env`:
 
-The repository includes `.github/workflows/ci.yml` which:
+```bash
+MINIO_API_PORT=9010      # Change from 9000
+TRINO_PORT=8082          # Change from 8081
+```
 
-- checks out the code
-- sets up Python 3.11
-- installs developer requirements
-- runs `pre-commit` and `make ci` (lint + tests)
+### Reset everything
 
-Cost note:
-- Public repos using GitHub-hosted runners: free for standard runners.
-- Private repos: have a free quota depending on plan; excess minutes billed.
-- Self-hosted runners: you provide compute and Actions minutes are not billed by GitHub.
+```bash
+# Stop and remove all containers + volumes
+make clean
 
-If you want zero cost, rely on local pre-commit hooks or run workflows on self-hosted runners.
+# Start fresh
+make up
+```
 
----
+### Common issues
 
-## Troubleshooting
-
-- If linters fail locally, run `pre-commit run --all-files` to see/auto-fix issues.
-- If the GitHub Actions job fails due to TOML parsing, ensure `pyproject.toml` has a single `[build-system]` block (we keep one in this repo).
-- For S3A/MinIO issues, set `S3_PATH_STYLE=true` in `.env` and validate endpoint/credentials.
-
----
-
-## Contributing
-
-Send PRs for improvements. Run `make ci` before pushing; the pre-push hook will also run checks automatically.
+1. **Import errors**: Ensure `src/` is in PYTHONPATH when running local scripts
+3. **Docker out of memory**: Increase Docker Desktop memory to 8GB+
+4. **S3A connection errors**: Verify `MINIO_ENDPOINT` uses `http://minio:9000` (inside containers) or `http://localhost:9000` (from host)
 
 ---
 
-## License
+## 🤝 Contributing
 
-MIT (see `LICENSE`)
+Contributions welcome! Please:
+
+1. Ensure code style follows ruff (run `make lint`)
+2. Add necessary checks and documentation for new features
+3. Update documentation as needed
+4. Follow existing code style (enforced by ruff)
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for details.
+
+---
+
+## 📄 License
+
+MIT License - see [LICENSE](LICENSE) file for details.
+
+---
+
+## 🔗 Links
+
+- **Repository**: https://github.com/xuanquangIT/dlh-pv
+- **Issues**: https://github.com/xuanquangIT/dlh-pv/issues
+- **Apache Iceberg**: https://iceberg.apache.org
+- **Trino**: https://trino.io
+- **MinIO**: https://min.io
+- **Prefect**: https://prefect.io
+- **MLflow**: https://mlflow.org
 

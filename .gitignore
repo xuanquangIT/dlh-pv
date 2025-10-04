@@ -2,6 +2,7 @@
 __pycache__/
 *.py[cod]
 *$py.class
+.ruff_cache/
 
 # C extensions
 *.so
@@ -31,6 +32,8 @@ pip-log.txt
 
 # Unit test / coverage reports
 .tox/
+# Unit test / coverage reports
+.tox/
 .coverage
 .coverage.*
 .cache
@@ -38,7 +41,6 @@ nosetests.xml
 coverage.xml
 *.cover
 hypothesis/
-.pytest_cache/
 
 # Translations
 *.mo
@@ -100,8 +102,6 @@ Icon?
 
 # Logs and databases
 *.log
-*.sql
-*.sqlite
 *.db
 
 # Secrets and environment files (keep examples committed)
