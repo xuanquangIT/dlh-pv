@@ -1,0 +1,158 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# C extensions
+*.so
+
+# Distribution / packaging
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+*.egg
+pip-wheel-metadata/
+pip-log.txt
+
+# Installer logs
+pip-log.txt
+
+# Unit test / coverage reports
+.tox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+hypothesis/
+.pytest_cache/
+
+# Translations
+*.mo
+*.pot
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# pyenv
+.python-version
+
+# Environments
+env/
+venv/
+ENV/
+.env/
+.venv/
+venv.bak/
+venv.old/
+
+# Virtualenv
+bin/
+
+# Spyder project settings
+*.spyproject
+
+# Rope project settings
+.ropeproject
+
+# mkdocs documentation
+site/
+
+# mypy
+.mypy_cache/
+.dmypy.json
+dmypy.json
+
+# Pyre
+.pyre/
+
+# PyCharm
+.idea/
+*.iml
+
+# VS Code
+.vscode/
+*.code-workspace
+
+# Sublime Text
+*.sublime-project
+*.sublime-workspace
+
+# OS files
+.DS_Store
+Thumbs.db
+desktop.ini
+ehthumbs.db
+Icon?
+
+# Logs and databases
+*.log
+*.sql
+*.sqlite
+*.db
+
+# Secrets and environment files (keep examples committed)
+.env
+.env.local
+.env.*.local
+.secrets
+
+# Docker
+docker/minio/data/
+**/docker-compose.override.yml
+docker-compose.override.yml
+docker-compose.override.*.yml
+
+# Node (if present)
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Coverage and report dirs
+htmlcov/
+reports/
+
+# Build artifacts
+*.pyc
+*.pyo
+*.pyd
+
+# Backup files
+*~
+*.swp
+.project
+.classpath
+.factorypath
+
+# Keys, certificates and sensitive files
+*.pem
+*.key
+*.crt
+
+# Temporary files
+tmp/
+temp/
+~$*
+
+# Local settings
+local_settings.py
+
+# Editor directories and files
+.history
+.vscode-test/
+
+# End of file

@@ -1,0 +1,20 @@
+version: '3.8'
+services:
+  minio:
+    image: minio/minio:latest
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    command: server /data
+    ports:
+      - "9000:9000"
+    volumes:
+      - ./docker/minio/data:/data
+
+  etl-runner:
+    build: ./docker/etl-runner
+    depends_on:
+      - minio
+    environment:
+      - MINIO_ENDPOINT=http://minio:9000
+    # override command as needed
