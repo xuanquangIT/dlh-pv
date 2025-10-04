@@ -30,8 +30,7 @@ dlh-pv/
 │   └── bronze_to_silver.py      # Sample flow
 ├── sql/trino/                   # SQL DDL scripts
 │   └── create_schemas.sql       # Schema definitions
-├── tests/                       # Test suite
-│   └── test_smoke.py            # Smoke tests
+<!-- tests and pytest removed -->
 ├── scripts/                     # Utility scripts
 │   └── smoke.sh                 # Quick smoke test
 ├── .env.example                 # Environment template (copy to docker/.env)
@@ -112,17 +111,13 @@ make health
 make init
 
 # This will:
-# - Install ruff, pytest, pre-commit
-# - Setup pre-commit hooks
-# - Configure git hooks for pre-push validation
+# - Install ruff and black (dev linters/formatters)
 ```
 
-### Run Tests & Linting
+### Run Linting
 
 ```bash
-make ci          # Run lint + tests (what CI runs)
 make lint        # Run ruff linter and formatter checks
-make test        # Run pytest
 make smoke       # Quick smoke test (start compose + verify)
 ```
 
@@ -200,68 +195,11 @@ TRINO_IMAGE=trinodb/trino:latest
 
 ---
 
-## 🔄 CI/CD & GitHub Actions
-
-The repository includes `.github/workflows/ci.yml` for automated testing:
-
-- **Trigger**: Manual dispatch (workflow_dispatch) - no auto-run on push/PR
-- **Actions**:
-  1. Checkout code
-  2. Setup Python 3.11
-  3. Install dev dependencies
-  4. Run pre-commit hooks
-  5. Run `make ci` (lint + test)
-
-**Cost considerations:**
-- Public repos: Free on GitHub-hosted runners
-- Private repos: Free quota (2000 min/month on Free plan)
-- Self-hosted runners: No GitHub Actions minutes billed
-
-### Pre-commit Hooks
-
-Local hooks run automatically before commits:
-
-```bash
-# Manual run on all files
-pre-commit run --all-files
-
-# Hooks configured in .pre-commit-config.yaml:
-# - ruff (linting + formatting)
-# - trailing whitespace removal
-# - YAML/TOML validation
-```
-
-### Pre-push Hook
-
-Located in `.githooks/pre-push`, runs automatically before push:
-
-```bash
-# Runs: make ci (lint + test)
-# Blocks push on failure
-```
+<!-- CI and pre-commit hooks removed from this repository. -->
 
 ---
 
-## 🧪 Testing
-
-```bash
-# Run all tests
-pytest
-
-# Verbose output
-pytest -v
-
-# Run specific test
-pytest tests/test_smoke.py -v
-
-# Watch mode (requires pytest-watch)
-ptw
-```
-
-Current test coverage:
-- ✅ Smoke tests for package imports
-- 🚧 Integration tests (planned)
-- 🚧 ETL pipeline tests (planned)
+<!-- Tests and pytest configuration removed from this repository. -->
 
 ---
 
@@ -320,8 +258,7 @@ make up
 
 ### Common issues
 
-1. **Pre-commit hooks fail**: Run `pre-commit run --all-files` to see details
-2. **Import errors in tests**: Ensure `src/` is in PYTHONPATH (tests setup this automatically)
+1. **Import errors**: Ensure `src/` is in PYTHONPATH when running local scripts
 3. **Docker out of memory**: Increase Docker Desktop memory to 8GB+
 4. **S3A connection errors**: Verify `MINIO_ENDPOINT` uses `http://minio:9000` (inside containers) or `http://localhost:9000` (from host)
 
@@ -331,8 +268,8 @@ make up
 
 Contributions welcome! Please:
 
-1. Run `make ci` before committing (or let pre-commit hooks handle it)
-2. Add tests for new features
+1. Ensure code style follows ruff (run `make lint`)
+2. Add necessary checks and documentation for new features
 3. Update documentation as needed
 4. Follow existing code style (enforced by ruff)
 
