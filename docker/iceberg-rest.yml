@@ -1,0 +1,14 @@
+server:
+  applicationConnectors:
+    - type: http
+      port: 8181
+
+catalog:
+  catalog-impl: org.apache.iceberg.jdbc.JdbcCatalog
+  uri: jdbc:postgresql://postgres:5432/iceberg
+  jdbc-user: pvlakehouse
+  jdbc-password: pvlakehouse
+  warehouse: s3a://lakehouse/warehouse
+  s3.endpoint: http://minio:9000
+  s3.path-style-access: true
+  s3.region: us-east-1

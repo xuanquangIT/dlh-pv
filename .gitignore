@@ -2,6 +2,7 @@
 __pycache__/
 *.py[cod]
 *$py.class
+.ruff_cache/
 
 # C extensions
 *.so
@@ -100,8 +101,6 @@ Icon?
 
 # Logs and databases
 *.log
-*.sql
-*.sqlite
 *.db
 
 # Secrets and environment files (keep examples committed)

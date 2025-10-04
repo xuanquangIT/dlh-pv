@@ -1,0 +1,261 @@
+version: "3.9"
+
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+services:
+  minio:
+    image: ${MINIO_IMAGE}
+    container_name: minio
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+    command: server /data --console-address ":${MINIO_CONSOLE_PORT}"
+    ports:
+      - "${MINIO_API_PORT}:9000"
+      - "${MINIO_CONSOLE_PORT}:${MINIO_CONSOLE_PORT}"
+    volumes:
+      - minio-data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:9000/minio/health/ready >/dev/null || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+    restart: unless-stopped
+    logging: *default-logging
+    networks: [data-net]
+    profiles: [core]
+
+  mc:
+    image: ${MC_IMAGE}
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: >
+      /bin/sh -c "
+      mc alias set local ${MINIO_ENDPOINT} ${MINIO_ROOT_USER} ${MINIO_ROOT_PASSWORD};
+      mc mb -p local/${S3_WAREHOUSE_BUCKET} || true;
+      mc mb -p local/${S3_MLFLOW_BUCKET} || true;
+      exit 0"
+    logging: *default-logging
+    networks: [data-net]
+    profiles: [core]
+
+  postgres:
+    image: ${POSTGRES_IMAGE}
+    container_name: postgres
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./postgres-init.sh:/docker-entrypoint-initdb.d/init.sh:ro
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER}"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+    restart: unless-stopped
+    logging: *default-logging
+    networks: [data-net]
+    profiles: [core]
+
+  iceberg-rest:
+    image: ${ICEBERG_REST_IMAGE}
+    container_name: iceberg-rest
+    depends_on:
+      minio:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    environment:
+      JAVA_TOOL_OPTIONS: "-Xms256m -Xmx512m"
+      AWS_ACCESS_KEY_ID: ${MINIO_ROOT_USER}
+      AWS_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD}
+      AWS_REGION: ${S3_REGION}
+      # Explicit catalog settings via env (image maps these to catalog properties)
+      CATALOG_CATALOG__IMPL: org.apache.iceberg.jdbc.JdbcCatalog
+      CATALOG_URI: jdbc:postgresql://postgres:5432/${ICEBERG_DB}
+      CATALOG_JDBC_USER: ${ICEBERG_USER}
+      CATALOG_JDBC_PASSWORD: ${ICEBERG_PASSWORD}
+      CATALOG_WAREHOUSE: s3a://${S3_WAREHOUSE_BUCKET}/warehouse
+      CATALOG_S3_ENDPOINT: ${MINIO_ENDPOINT}
+      CATALOG_S3_PATH_STYLE_ACCESS: "true"
+      CATALOG_S3_REGION: ${S3_REGION}
+    volumes:
+      - ./iceberg-rest.yml:/etc/iceberg-rest/catalog.yml:ro
+    ports:
+      - "8181:8181"
+    healthcheck:
+      test: ["CMD-SHELL", "timeout 1 bash -c '</dev/tcp/localhost/8181' || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+    restart: unless-stopped
+    logging: *default-logging
+    networks: [data-net]
+    profiles: [core]
+
+  spark-master:
+    image: ${SPARK_IMAGE}
+    container_name: spark-master
+    environment:
+      SPARK_MODE: master
+      SPARK_MASTER_HOST: spark-master
+      SPARK_LOG_LEVEL: INFO
+      AWS_ACCESS_KEY_ID: ${MINIO_ROOT_USER}
+      AWS_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD}
+      S3_ENDPOINT: ${MINIO_ENDPOINT}
+    ports:
+      - "${SPARK_UI_PORT}:8080"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8080 >/dev/null || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 12
+    restart: unless-stopped
+    logging: *default-logging
+    networks: [data-net]
+    profiles: [spark]
+
+  spark-worker:
+    image: ${SPARK_IMAGE}
+    container_name: spark-worker
+    depends_on:
+      spark-master:
+        condition: service_healthy
+    environment:
+      SPARK_MODE: worker
+      SPARK_MASTER_URL: spark://spark-master:7077
+      SPARK_WORKER_MEMORY: 4G
+      SPARK_WORKER_CORES: 2
+      AWS_ACCESS_KEY_ID: ${MINIO_ROOT_USER}
+      AWS_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD}
+      S3_ENDPOINT: ${MINIO_ENDPOINT}
+    deploy:
+      resources:
+        limits:
+          memory: 4g
+    restart: unless-stopped
+    logging: *default-logging
+    networks: [data-net]
+    profiles: [spark]
+
+  trino:
+    image: ${TRINO_IMAGE}
+    container_name: trino
+    depends_on:
+      iceberg-rest:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    volumes:
+      - ./trino/catalog:/etc/trino/catalog:ro
+    ports:
+      - "${TRINO_PORT}:8080"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8080/v1/info >/dev/null || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+    restart: unless-stopped
+    logging: *default-logging
+    networks: [data-net]
+    profiles: [core]
+
+  mlflow:
+    image: ${MLFLOW_BASE_IMAGE}
+    container_name: mlflow
+    depends_on:
+      minio:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    working_dir: /app
+    command: >
+      bash -lc "
+      pip install --no-cache-dir mlflow psycopg2-binary boto3 || true;
+      mlflow server \
+      --backend-store-uri postgresql://${MLFLOW_USER}:${MLFLOW_PASSWORD}@postgres:5432/${MLFLOW_DB} \
+      --default-artifact-root s3://${S3_MLFLOW_BUCKET}/artifacts \
+      --host 0.0.0.0 --port ${MLFLOW_PORT}
+      "
+    environment:
+      MLFLOW_S3_ENDPOINT_URL: ${MINIO_ENDPOINT}
+      AWS_ACCESS_KEY_ID: ${MINIO_ROOT_USER}
+      AWS_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD}
+      AWS_REGION: ${S3_REGION}
+      MLFLOW_TRACKING_URI: "http://mlflow:${MLFLOW_PORT}"
+    ports:
+      - "${MLFLOW_PORT}:${MLFLOW_PORT}"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:5000/')"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+    restart: unless-stopped
+    logging: *default-logging
+    networks: [data-net]
+    profiles: [ml]
+
+  prefect:
+    image: ${PREFECT_IMAGE}
+    container_name: prefect
+    depends_on:
+      postgres:
+        condition: service_healthy
+    working_dir: /repo
+    command: >
+      bash -lc "
+      pip install --no-cache-dir asyncpg || true;
+      prefect server start --host 0.0.0.0
+      "
+    environment:
+      # Use Postgres for the Prefect API database instead of the default SQLite
+      PREFECT_API_DATABASE_CONNECTION_URL: postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/prefect
+      PREFECT_API_URL: ${PREFECT_API_URL}
+    ports:
+      - "${PREFECT_PORT}:4200"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:4200/api/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+    restart: unless-stopped
+    logging: *default-logging
+    networks: [data-net]
+    profiles: [orchestrate]
+
+  prefect-agent:
+    image: ${PREFECT_IMAGE}
+    container_name: prefect-agent
+    depends_on:
+      prefect:
+        condition: service_healthy
+    working_dir: /repo
+    volumes:
+      - ../:/repo
+    environment:
+      PREFECT_API_URL: ${PREFECT_API_URL}
+    command: >
+      bash -lc "
+      prefect work-pool create ${PREFECT_WORK_POOL} || true;
+      prefect agent start -p ${PREFECT_WORK_POOL}
+      "
+    restart: unless-stopped
+    logging: *default-logging
+    networks: [data-net]
+    profiles: [orchestrate]
+
+networks:
+  data-net:
+
+volumes:
+  minio-data:
+  postgres-data:
