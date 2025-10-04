@@ -1,14 +1,5 @@
 [build-system]
-requires = ["setuptools", "wheel"]
-build-backend = "setuptools.build_meta"
-
-[tool.pytest.ini_options]
-minversion = "6.0"
-addopts = "-ra -q"
-testpaths = ["tests"]
-
-[build-system]
-requires = ["setuptools>=68","wheel"]
+requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -16,13 +7,15 @@ name = "pv-lakehouse"
 version = "0.0.1"
 requires-python = ">=3.11"
 
+[tool.pytest.ini_options]
+minversion = "7.0"
+addopts = "-q"
+testpaths = ["tests"]
+
 [tool.ruff]
 line-length = 100
 target-version = "py311"
-extend-select = ["I"]
 exclude = ["docker/", "infra/"]
 
-[tool.pytest.ini_options]
-minversion = "7.0"
-testpaths = ["tests"]
-addopts = "-q"
+[tool.ruff.lint]
+extend-select = ["I"]

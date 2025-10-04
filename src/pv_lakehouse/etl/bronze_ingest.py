@@ -1,5 +1,6 @@
 """Simple ETL runner entrypoint for local development and tests."""
 
+
 def main() -> bool:
     """Run a tiny ingest routine. Return True on success."""
     print("Starting bronze ingest...")
