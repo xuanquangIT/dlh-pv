@@ -1,0 +1,8 @@
+prefect==2.9.3
+boto3==1.26.149
+psycopg2-binary==2.9.7
+mlflow==2.4.0
+requests==2.31.0
+pandas==2.2.2
+pyarrow==11.0.0
+fastparquet==2023.12.0

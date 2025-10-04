@@ -46,6 +46,7 @@ The platform consists of the following components:
 | **PostgreSQL** | Relational metastore | 5432 | PostgreSQL 15 |
 | **Iceberg REST** | Table catalog service | 8181 | Apache Iceberg |
 | **Trino** | Distributed SQL query engine | 8081 | Trino |
+| **pgAdmin** | Postgres GUI | 5050 | pgAdmin |
 
 ### ML Services (Profile: `ml`)
 
@@ -118,6 +119,7 @@ TRINO_PORT=8081
 MLFLOW_PORT=5000
 PREFECT_PORT=4200
 SPARK_UI_PORT=8082
+PGADMIN_PORT=5050
 
 # Prefect configuration
 PREFECT_API_URL=http://prefect:4200/api
@@ -127,7 +129,7 @@ PREFECT_WORK_POOL=default-pool
 MINIO_IMAGE=minio/minio:latest
 MC_IMAGE=minio/mc:latest
 POSTGRES_IMAGE=postgres:15
-ICEBERG_REST_IMAGE=tabulario/iceberg-rest:latest
+ICEBERG_REST_IMAGE=gravitino-iceberg-rest-postgres:latest
 TRINO_IMAGE=trinodb/trino:latest
 MLFLOW_BASE_IMAGE=python:3.11-slim
 PREFECT_IMAGE=prefecthq/prefect:2-latest
@@ -178,6 +180,7 @@ Create the Iceberg catalog configuration for Trino:
 connector.name=iceberg
 iceberg.catalog.type=rest
 iceberg.rest-catalog.uri=http://iceberg-rest:8181
+iceberg.rest-catalog.uri=http://iceberg-rest:8181/iceberg/v1
 ```
 
 ## Building and Starting Services

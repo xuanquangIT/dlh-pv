@@ -99,40 +99,14 @@ make health
 | MLflow | http://localhost:5000 | - |
 | Prefect | http://localhost:4200 | - |
 | Spark Master UI | http://localhost:4040 | - |
+| pgAdmin | http://localhost:5050 | configured in `docker/.env` |
+
+Notes:
+- The Iceberg REST catalog uses Apache Gravitino and is exposed at `http://localhost:8181/iceberg/v1/` (we build a small custom image `gravitino-iceberg-rest-postgres:latest` that includes the PostgreSQL JDBC driver).
 
 ---
 
 ## 🛠️ Development Workflow
-
-### Setup Development Environment
-
-```bash
-# Install dev dependencies and setup hooks
-make init
-
-# This will:
-# - Install ruff and black (dev linters/formatters)
-```
-
-### Run Linting
-
-```bash
-make lint        # Run ruff linter and formatter checks
-make smoke       # Quick smoke test (start compose + verify)
-```
-
-### Makefile Targets
-
-```bash
-make help        # Show all available commands
-make up          # Start core services
-make up-all      # Start all services (core + spark + ml + orchestrate)
-make down        # Stop all services
-make ps          # Show running containers
-make logs        # Tail logs from all services
-make health      # Run health check
-make clean       # Remove all volumes and cleanup
-```
 
 ---
 
