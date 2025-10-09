@@ -34,11 +34,45 @@ services:
     depends_on:
       minio:
         condition: service_healthy
+    volumes:
+      - ../infra/minio/policies:/policies:ro
+    environment:
+      MINIO_ENDPOINT: ${MINIO_ENDPOINT}
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+      S3_WAREHOUSE_BUCKET: ${S3_WAREHOUSE_BUCKET}
+      S3_MLFLOW_BUCKET: ${S3_MLFLOW_BUCKET}
+      SPARK_SVC_ACCESS_KEY: ${SPARK_SVC_ACCESS_KEY}
+      SPARK_SVC_SECRET_KEY: ${SPARK_SVC_SECRET_KEY}
+      TRINO_SVC_ACCESS_KEY: ${TRINO_SVC_ACCESS_KEY}
+      TRINO_SVC_SECRET_KEY: ${TRINO_SVC_SECRET_KEY}
+      MLFLOW_SVC_ACCESS_KEY: ${MLFLOW_SVC_ACCESS_KEY}
+      MLFLOW_SVC_SECRET_KEY: ${MLFLOW_SVC_SECRET_KEY}
     entrypoint: >
       /bin/sh -c "
+      set -e;
       mc alias set local ${MINIO_ENDPOINT} ${MINIO_ROOT_USER} ${MINIO_ROOT_PASSWORD};
+      echo 'Creating buckets...';
       mc mb -p local/${S3_WAREHOUSE_BUCKET} || true;
       mc mb -p local/${S3_MLFLOW_BUCKET} || true;
+      echo 'Setting bucket access to private...';
+      mc anonymous set private local/${S3_WAREHOUSE_BUCKET} || true;
+      mc anonymous set private local/${S3_MLFLOW_BUCKET} || true;
+      echo 'Enabling versioning...';
+      mc version enable local/${S3_WAREHOUSE_BUCKET} || true;
+      mc version enable local/${S3_MLFLOW_BUCKET} || true;
+      echo 'Creating policies...';
+      mc admin policy create local lakehouse-rw /policies/lakehouse-rw.json || true;
+      mc admin policy create local mlflow-rw /policies/mlflow-rw.json || true;
+      echo 'Creating service users...';
+      mc admin user add local ${SPARK_SVC_ACCESS_KEY} ${SPARK_SVC_SECRET_KEY} || true;
+      mc admin user add local ${TRINO_SVC_ACCESS_KEY} ${TRINO_SVC_SECRET_KEY} || true;
+      mc admin user add local ${MLFLOW_SVC_ACCESS_KEY} ${MLFLOW_SVC_SECRET_KEY} || true;
+      echo 'Attaching policies to users...';
+      mc admin policy attach local lakehouse-rw --user ${SPARK_SVC_ACCESS_KEY};
+      mc admin policy attach local lakehouse-rw --user ${TRINO_SVC_ACCESS_KEY};
+      mc admin policy attach local mlflow-rw --user ${MLFLOW_SVC_ACCESS_KEY};
+      echo 'MinIO setup complete!';
       exit 0"
     logging: *default-logging
     networks: [data-net]
@@ -53,7 +87,7 @@ services:
       POSTGRES_DB: ${POSTGRES_DB}
     volumes:
       - postgres-data:/var/lib/postgresql/data
-      - ./postgres-init.sh:/docker-entrypoint-initdb.d/init.sh:ro
+      - ./postgres:/docker-entrypoint-initdb.d:ro
     ports:
       - "5432:5432"
     healthcheck:
@@ -120,15 +154,20 @@ services:
     profiles: [core]
 
   spark-master:
-    image: ${SPARK_IMAGE}
+    build:
+      context: ./spark
+      dockerfile: Dockerfile
+    image: dlhpv-spark-s3a:local
     container_name: spark-master
     command: ["/opt/spark/sbin/start-master.sh", "-p", "7077", "--host", "spark-master"]
     user: root
     environment:
       SPARK_NO_DAEMONIZE: "true"
-      AWS_ACCESS_KEY_ID: ${MINIO_ROOT_USER}
-      AWS_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD}
+      AWS_ACCESS_KEY_ID: ${SPARK_SVC_ACCESS_KEY}
+      AWS_SECRET_ACCESS_KEY: ${SPARK_SVC_SECRET_KEY}
       S3_ENDPOINT: ${MINIO_ENDPOINT}
+    volumes:
+      - ./spark/core-site.xml:/opt/spark/conf/core-site.xml:ro
     ports:
       - "${SPARK_UI_PORT}:8080"
       - "7077:7077"
@@ -143,7 +182,10 @@ services:
     profiles: [core]
 
   spark-worker:
-    image: ${SPARK_IMAGE}
+    build:
+      context: ./spark
+      dockerfile: Dockerfile
+    image: dlhpv-spark-s3a:local
     container_name: spark-worker
     command: ["/opt/spark/sbin/start-worker.sh", "spark://spark-master:7077"]
     user: root
@@ -154,9 +196,11 @@ services:
       SPARK_NO_DAEMONIZE: "true"
       SPARK_WORKER_MEMORY: 4G
       SPARK_WORKER_CORES: 2
-      AWS_ACCESS_KEY_ID: ${MINIO_ROOT_USER}
-      AWS_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD}
+      AWS_ACCESS_KEY_ID: ${SPARK_SVC_ACCESS_KEY}
+      AWS_SECRET_ACCESS_KEY: ${SPARK_SVC_SECRET_KEY}
       S3_ENDPOINT: ${MINIO_ENDPOINT}
+    volumes:
+      - ./spark/core-site.xml:/opt/spark/conf/core-site.xml:ro
     deploy:
       resources:
         limits:
@@ -174,6 +218,14 @@ services:
         condition: service_healthy
       minio:
         condition: service_healthy
+      mc:
+        condition: service_completed_successfully
+    environment:
+      MINIO_ENDPOINT: ${MINIO_ENDPOINT}
+      S3_REGION: ${S3_REGION}
+      S3_WAREHOUSE_BUCKET: ${S3_WAREHOUSE_BUCKET}
+      TRINO_SVC_ACCESS_KEY: ${TRINO_SVC_ACCESS_KEY}
+      TRINO_SVC_SECRET_KEY: ${TRINO_SVC_SECRET_KEY}
     volumes:
       - ./trino/catalog:/etc/trino/catalog:ro
     ports:
@@ -207,8 +259,8 @@ services:
       "
     environment:
       MLFLOW_S3_ENDPOINT_URL: ${MINIO_ENDPOINT}
-      AWS_ACCESS_KEY_ID: ${MINIO_ROOT_USER}
-      AWS_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD}
+      AWS_ACCESS_KEY_ID: ${MLFLOW_SVC_ACCESS_KEY}
+      AWS_SECRET_ACCESS_KEY: ${MLFLOW_SVC_SECRET_KEY}
       AWS_REGION: ${S3_REGION}
       MLFLOW_TRACKING_URI: "http://mlflow:${MLFLOW_PORT}"
     ports:

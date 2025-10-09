@@ -2,14 +2,51 @@
 
 This guide provides comprehensive instructions for setting up, deploying, and managing the Data Lakehouse platform using Docker Compose.
 
+## 🚀 Quick Start (New Team Members)
+
+**If you just cloned this project and want to get everything running:**
+
+1. **Navigate to the docker directory:**
+   ```bash
+   cd docker
+   ```
+
+2. **Start all services:**
+   ```bash
+   docker compose --profile core --profile ml --profile orchestrate up -d --build
+   ```
+   
+   This will:
+   - Build the custom Spark image with S3A support
+   - Start MinIO, PostgreSQL, Trino, Iceberg REST, Spark, MLflow, and Prefect
+   - Auto-create databases: `iceberg`, `mlflow`, `prefect`
+   - Auto-create S3 buckets: `lakehouse`, `mlflow`
+   - Set up service users with least-privilege policies
+
+3. **Verify the setup:**
+   ```bash
+   # Run the comprehensive verification script
+   ./scripts/verify-setup.sh
+   ```
+
+4. **Access the services:**
+   - MinIO Console: http://localhost:9001 (pvlakehouse/pvlakehouse)
+   - Trino UI: http://localhost:8081
+   - MLflow UI: http://localhost:5000
+   - Prefect UI: http://localhost:4200
+   - Spark Master UI: http://localhost:4040
+
+**That's it!** 🎉 Jump to [Verification](#verification) to test your setup.
+
+---
+
 ## Table of Contents
 
+- [Quick Start](#-quick-start-new-team-members)
 - [Prerequisites](#prerequisites)
 - [Architecture Overview](#architecture-overview)
-- [Installation](#installation)
-- [Configuration](#configuration)
-- [Building and Starting Services](#building-and-starting-services)
-- [Health Checks](#health-checks)
+- [Detailed Setup](#detailed-setup)
+- [Verification](#verification)
 - [Service Access](#service-access)
 - [Troubleshooting](#troubleshooting)
 - [Stopping and Cleaning Up](#stopping-and-cleaning-up)
@@ -44,9 +81,12 @@ The platform consists of the following components:
 |---------|-------------|------|------------|
 | **MinIO** | S3-compatible object storage | 9000 (API), 9001 (Console) | MinIO |
 | **PostgreSQL** | Relational metastore | 5432 | PostgreSQL 15 |
-| **Iceberg REST** | Table catalog service | 8181 | Apache Iceberg |
+| **Iceberg REST** | Table catalog service | 8181 | Apache Iceberg + Gravitino |
 | **Trino** | Distributed SQL query engine | 8081 | Trino |
+| **Spark Master** | Spark cluster master | 7077, 4040 | Apache Spark 4.x + S3A |
+| **Spark Worker** | Spark cluster worker | - | Apache Spark 4.x + S3A |
 | **pgAdmin** | Postgres GUI | 5050 | pgAdmin |
+| **mc (init)** | MinIO setup (runs once) | - | MinIO Client |
 
 ### ML Services (Profile: `ml`)
 
@@ -61,14 +101,7 @@ The platform consists of the following components:
 | **Prefect** | Workflow orchestration server | 4200 | Prefect 2.x |
 | **Prefect Agent** | Workflow execution agent | - | Prefect 2.x |
 
-### Spark Services (Profile: `spark`)
-
-| Service | Description | Port | Technology |
-|---------|-------------|------|------------|
-| **Spark Master** | Spark cluster master | 7077, 8080 | Apache Spark |
-| **Spark Worker** | Spark cluster worker | - | Apache Spark |
-
-## Installation
+## Detailed Setup
 
 ### 1. Clone Repository
 
@@ -79,304 +112,156 @@ cd dlh-pv/docker
 
 ### 2. Environment Configuration
 
-Create or verify the `.env` file in the `docker` directory:
+The repository includes a `.env` file with sensible defaults for local development. 
+
+**⚠️ For production:** Copy `.env.example` to `.env` and update credentials:
 
 ```bash
-# User credentials (used across all services)
-PV_USER=pvlakehouse
-PV_PASSWORD=pvlakehouse
-
-# PostgreSQL configuration
-POSTGRES_USER=${PV_USER}
-POSTGRES_PASSWORD=${PV_PASSWORD}
-POSTGRES_DB=postgres
-
-# Database names
-ICEBERG_DB=iceberg
-MLFLOW_DB=mlflow
-PREFECT_DB=prefect
-
-# MinIO configuration
-MINIO_ROOT_USER=${PV_USER}
-MINIO_ROOT_PASSWORD=${PV_PASSWORD}
-MINIO_ENDPOINT=http://minio:9000
-MINIO_API_PORT=9000
-MINIO_CONSOLE_PORT=9001
-
-# S3 Buckets
-S3_WAREHOUSE_BUCKET=lakehouse
-S3_MLFLOW_BUCKET=mlflow
-S3_REGION=us-east-1
-
-# Service users
-ICEBERG_USER=${PV_USER}
-ICEBERG_PASSWORD=${PV_PASSWORD}
-MLFLOW_USER=${PV_USER}
-MLFLOW_PASSWORD=${PV_PASSWORD}
-
-# Service ports
-TRINO_PORT=8081
-MLFLOW_PORT=5000
-PREFECT_PORT=4200
-SPARK_UI_PORT=8082
-PGADMIN_PORT=5050
-
-# Prefect configuration
-PREFECT_API_URL=http://prefect:4200/api
-PREFECT_WORK_POOL=default-pool
-
-# Docker images
-MINIO_IMAGE=minio/minio:latest
-MC_IMAGE=minio/mc:latest
-POSTGRES_IMAGE=postgres:15
-ICEBERG_REST_IMAGE=gravitino-iceberg-rest-postgres:latest
-TRINO_IMAGE=trinodb/trino:latest
-MLFLOW_BASE_IMAGE=python:3.11-slim
-PREFECT_IMAGE=prefecthq/prefect:2-latest
-SPARK_IMAGE=bitnami/spark:3.5
+cp .env.example .env
+# Edit .env and change passwords/keys
 ```
 
-### 3. Initialize Database Setup Script
+**Default credentials (for local development only):**
+- User: `pvlakehouse`
+- Password: `pvlakehouse`
 
-Ensure the PostgreSQL initialization script exists:
+### 3. Start Services
 
-**File**: `docker/postgres-init.sh`
+**Start all services (recommended):**
+```bash
+docker compose --profile core --profile ml --profile orchestrate up -d --build
+```
+
+**Or start specific profiles:**
 
 ```bash
-#!/bin/bash
-set -e
+# Core only (MinIO, Postgres, Trino, Spark, Iceberg)
+docker compose --profile core up -d --build
 
-echo "Initializing application databases..."
+# Core + ML
+docker compose --profile core --profile ml up -d --build
 
-# Create databases idempotently
-psql -v ON_ERROR_STOP=1 -U "${POSTGRES_USER}" -d postgres <<-EOSQL
-    SELECT 'CREATE DATABASE iceberg OWNER ${POSTGRES_USER}' 
-    WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'iceberg')\gexec
-    
-    SELECT 'CREATE DATABASE mlflow OWNER ${POSTGRES_USER}' 
-    WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'mlflow')\gexec
-    
-    SELECT 'CREATE DATABASE prefect OWNER ${POSTGRES_USER}' 
-    WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'prefect')\gexec
-EOSQL
-
-echo "Application databases created successfully"
+# All services
+docker compose --profile core --profile ml --profile orchestrate up -d --build
 ```
 
-Make it executable (Linux/macOS):
+**First-time startup takes 2-5 minutes** to:
+- Build custom Spark image with hadoop-aws and AWS SDK
+- Initialize databases
+- Create MinIO buckets and policies
+- Set up service users
+
+### 4. Verify Setup
+
+Run the verification script:
 ```bash
-chmod +x postgres-init.sh
+./scripts/verify-setup.sh
 ```
 
-## Configuration
+## Verification
 
-### Trino Catalog Configuration
+### Automated Verification Script
 
-Create the Iceberg catalog configuration for Trino:
+The repository includes a comprehensive verification script that tests all components.
 
-**File**: `docker/trino/catalog/iceberg.properties`
-
-```properties
-connector.name=iceberg
-iceberg.catalog.type=rest
-iceberg.rest-catalog.uri=http://iceberg-rest:8181
-iceberg.rest-catalog.uri=http://iceberg-rest:8181/iceberg/v1
-```
-
-## Building and Starting Services
-
-### Start All Services
-
-To start all services across all profiles:
-
+**Run the full verification:**
 ```bash
-docker compose up -d
+cd docker
+./scripts/verify-setup.sh
 ```
 
-### Start Specific Profiles
+**What it checks:**
+1. ✅ All containers are running and healthy
+2. ✅ MinIO buckets (`lakehouse`, `mlflow`) exist
+3. ✅ MinIO policies (`lakehouse-rw`, `mlflow-rw`) are created
+4. ✅ Service users (`spark_svc`, `trino_svc`, `mlflow_svc`) exist
+5. ✅ PostgreSQL databases (`iceberg`, `mlflow`, `prefect`) exist
+6. ✅ Spark can write/read to S3A (s3a://lakehouse/tmp_check/)
+7. ✅ All service endpoints are responding
 
-#### Core Services Only
-```bash
-docker compose --profile core up -d
+**Expected output:**
+```
+=== Data Lakehouse Setup Verification ===
+
+1. Container Health Status:
+  ✓ minio: healthy
+  ✓ postgres: healthy
+  ✓ iceberg-rest: healthy
+  ✓ trino: healthy
+  ✓ spark-master: healthy
+  ✓ mlflow: healthy
+  ✓ prefect: healthy
+
+2. MinIO Buckets:
+  ✓ Bucket 'lakehouse' exists
+  ✓ Bucket 'mlflow' exists
+
+3. MinIO Policies:
+  ✓ Policy 'lakehouse-rw' exists
+  ✓ Policy 'mlflow-rw' exists
+
+4. MinIO Service Users:
+  ✓ User 'spark_svc' exists with policy 'lakehouse-rw'
+  ✓ User 'trino_svc' exists with policy 'lakehouse-rw'
+  ✓ User 'mlflow_svc' exists with policy 'mlflow-rw'
+
+5. PostgreSQL Databases:
+  ✓ Database 'iceberg' exists
+  ✓ Database 'mlflow' exists
+  ✓ Database 'prefect' exists
+
+6. Spark S3A Capability:
+  ✓ Spark can write to s3a://lakehouse/tmp_check/
+  ✓ Spark can read from s3a://lakehouse/tmp_check/
+
+7. Service Endpoints:
+  ✓ MinIO API: http://localhost:9000
+  ✓ Trino: http://localhost:8081
+  ✓ MLflow: http://localhost:5000
+  ✓ Prefect: http://localhost:4200
+  ✓ Spark UI: http://localhost:4040
+
+=== All Checks Passed! ✅ ===
 ```
 
-#### Core + ML Services
-```bash
-docker compose --profile core --profile ml up -d
-```
+### Manual Verification
 
-#### Core + ML + Orchestration
-```bash
-docker compose --profile core --profile ml --profile orchestrate up -d
-```
-
-#### All Services Including Spark
-```bash
-docker compose --profile core --profile ml --profile orchestrate --profile spark up -d
-```
-
-### Verify Services Are Starting
-
+**Check container status:**
 ```bash
 docker compose ps
 ```
 
-Expected output:
-```
-NAME            IMAGE                          STATUS
-iceberg-rest    tabulario/iceberg-rest:latest  Up (healthy)
-mlflow          python:3.11-slim               Up (healthy)
-minio           minio/minio:latest             Up (healthy)
-postgres        postgres:15                    Up (healthy)
-prefect         prefecthq/prefect:2-latest     Up (healthy)
-prefect-agent   prefecthq/prefect:2-latest     Up
-trino           trinodb/trino:latest           Up (healthy)
-```
-
-## Health Checks
-
-### Automated Health Check Script
-
-Create a PowerShell script to check all services:
-
-**File**: `docker/scripts/stack-health.ps1`
-
-```powershell
-Write-Host "`n=== Data Lakehouse Health Check ===" -ForegroundColor Cyan
-
-# Check container status
-Write-Host "`n1. Container Status:" -ForegroundColor Yellow
-docker ps --format "table {{.Names}}\t{{.Status}}" | Where-Object { $_ -match '(minio|postgres|iceberg|mlflow|prefect|trino|NAMES)' }
-
-# Test endpoints
-Write-Host "`n2. Service Endpoints:" -ForegroundColor Yellow
-$endpoints = @{
-    'MinIO API'    = 'http://localhost:9000/minio/health/ready'
-    'Iceberg REST' = 'http://localhost:8181/v1/config'
-    'MLflow'       = 'http://localhost:5000/'
-    'Prefect API'  = 'http://localhost:4200/api/health'
-    'Trino'        = 'http://localhost:8081/v1/info'
-}
-
-$endpoints.GetEnumerator() | ForEach-Object {
-    try {
-        $response = Invoke-WebRequest -Uri $_.Value -UseBasicParsing -TimeoutSec 5 -ErrorAction Stop
-        Write-Host "  ✓ $($_.Key): OK (HTTP $($response.StatusCode))" -ForegroundColor Green
-    } catch {
-        Write-Host "  ✗ $($_.Key): FAILED" -ForegroundColor Red
-    }
-}
-
-# Check databases
-Write-Host "`n3. PostgreSQL Databases:" -ForegroundColor Yellow
-docker exec postgres psql -U pvlakehouse -d postgres -c "\l" | Select-String -Pattern '(iceberg|mlflow|prefect)'
-
-# Check S3 buckets
-Write-Host "`n4. MinIO Buckets:" -ForegroundColor Yellow
-docker run --rm --network docker_data-net --entrypoint sh minio/mc:latest -c "mc alias set local http://minio:9000 pvlakehouse pvlakehouse && mc ls local"
-
-Write-Host "`n=== Health Check Complete ===" -ForegroundColor Cyan
-```
-
-For Linux/macOS, create `docker/scripts/stack-health.sh`:
-
+**Check specific service logs:**
 ```bash
-#!/bin/bash
-
-echo "=== Data Lakehouse Health Check ==="
-
-# Check container status
-echo -e "\n1. Container Status:"
-docker ps --format "table {{.Names}}\t{{.Status}}" | grep -E '(minio|postgres|iceberg|mlflow|prefect|trino|NAMES)'
-
-# Test endpoints
-echo -e "\n2. Service Endpoints:"
-endpoints=(
-    "MinIO:http://localhost:9000/minio/health/ready"
-    "Iceberg:http://localhost:8181/v1/config"
-    "MLflow:http://localhost:5000/"
-    "Prefect:http://localhost:4200/api/health"
-    "Trino:http://localhost:8081/v1/info"
-)
-
-for endpoint in "${endpoints[@]}"; do
-    IFS=':' read -r name url <<< "$endpoint"
-    if curl -sf "$url" > /dev/null 2>&1; then
-        echo "  ✓ $name: OK"
-    else
-        echo "  ✗ $name: FAILED"
-    fi
-done
-
-# Check databases
-echo -e "\n3. PostgreSQL Databases:"
-docker exec postgres psql -U pvlakehouse -d postgres -c "\l" | grep -E '(iceberg|mlflow|prefect)'
-
-# Check S3 buckets
-echo -e "\n4. MinIO Buckets:"
-docker run --rm --network docker_data-net --entrypoint sh minio/mc:latest -c \
-    "mc alias set local http://minio:9000 pvlakehouse pvlakehouse && mc ls local"
-
-echo -e "\n=== Health Check Complete ==="
+docker compose logs minio
+docker compose logs postgres
+docker compose logs spark-master
 ```
 
-### Run Health Check
-
-**Windows (PowerShell):**
-```powershell
-.\scripts\stack-health.ps1
-```
-
-**Linux/macOS:**
+**Test MinIO buckets:**
 ```bash
-chmod +x scripts/stack-health.sh
-./scripts/stack-health.sh
+docker run --rm --network dlhpv_data-net \
+  -e MC_HOST_local=http://pvlakehouse:pvlakehouse@minio:9000 \
+  minio/mc:latest ls local
 ```
 
-### Manual Health Verification
-
-#### Check Container Status
+**Test Spark S3A:**
 ```bash
-docker compose ps
+# Inside spark-master container
+docker exec spark-master /opt/spark/bin/spark-submit --master local[1] \
+  --class org.apache.spark.examples.SparkPi \
+  /opt/spark/examples/jars/spark-examples*.jar 10
 ```
 
-#### Check Service Logs
+**Connect to Trino:**
 ```bash
-# View logs for a specific service
-docker compose logs <service-name>
-
-# Follow logs in real-time
-docker compose logs -f <service-name>
-
-# View last 100 lines
-docker compose logs --tail 100 <service-name>
+docker exec -it trino trino
+# Then run: SHOW CATALOGS;
 ```
 
-#### Test Individual Endpoints
-
-**MinIO:**
+**Check Postgres databases:**
 ```bash
-curl http://localhost:9000/minio/health/ready
-```
-
-**Iceberg REST:**
-```bash
-curl http://localhost:8181/v1/config
-```
-
-**MLflow:**
-```bash
-curl http://localhost:5000/
-```
-
-**Prefect:**
-```bash
-curl http://localhost:4200/api/health
-```
-
-**Trino:**
-```bash
-curl http://localhost:8081/v1/info
+docker exec postgres psql -U pvlakehouse -c "\l"
 ```
 
 ## Service Access

@@ -1,0 +1,8 @@
+-- Create application databases owned by the configured POSTGRES_USER
+-- Note: docker-compose injects POSTGRES_USER/POSTGRES_PASSWORD via environment when initdb runs
+CREATE DATABASE iceberg OWNER "${POSTGRES_USER}";
+CREATE DATABASE mlflow OWNER "${POSTGRES_USER}";
+CREATE DATABASE prefect OWNER "${POSTGRES_USER}";
+GRANT ALL PRIVILEGES ON DATABASE iceberg TO "${POSTGRES_USER}";
+GRANT ALL PRIVILEGES ON DATABASE mlflow TO "${POSTGRES_USER}";
+GRANT ALL PRIVILEGES ON DATABASE prefect TO "${POSTGRES_USER}";
