@@ -87,7 +87,7 @@ services:
       POSTGRES_DB: ${POSTGRES_DB}
     volumes:
       - postgres-data:/var/lib/postgresql/data
-      - ./postgres-init.sh:/docker-entrypoint-initdb.d/init.sh:ro
+      - ./postgres:/docker-entrypoint-initdb.d:ro
     ports:
       - "5432:5432"
     healthcheck:
@@ -157,7 +157,7 @@ services:
     build:
       context: ./spark
       dockerfile: Dockerfile
-    image: dlhpv-spark:local
+    image: dlhpv-spark-s3a:local
     container_name: spark-master
     command: ["/opt/spark/sbin/start-master.sh", "-p", "7077", "--host", "spark-master"]
     user: root
@@ -166,6 +166,8 @@ services:
       AWS_ACCESS_KEY_ID: ${SPARK_SVC_ACCESS_KEY}
       AWS_SECRET_ACCESS_KEY: ${SPARK_SVC_SECRET_KEY}
       S3_ENDPOINT: ${MINIO_ENDPOINT}
+    volumes:
+      - ./spark/core-site.xml:/opt/spark/conf/core-site.xml:ro
     ports:
       - "${SPARK_UI_PORT}:8080"
       - "7077:7077"
@@ -183,7 +185,7 @@ services:
     build:
       context: ./spark
       dockerfile: Dockerfile
-    image: dlhpv-spark:local
+    image: dlhpv-spark-s3a:local
     container_name: spark-worker
     command: ["/opt/spark/sbin/start-worker.sh", "spark://spark-master:7077"]
     user: root
@@ -197,6 +199,8 @@ services:
       AWS_ACCESS_KEY_ID: ${SPARK_SVC_ACCESS_KEY}
       AWS_SECRET_ACCESS_KEY: ${SPARK_SVC_SECRET_KEY}
       S3_ENDPOINT: ${MINIO_ENDPOINT}
+    volumes:
+      - ./spark/core-site.xml:/opt/spark/conf/core-site.xml:ro
     deploy:
       resources:
         limits:

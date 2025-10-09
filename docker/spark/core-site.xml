@@ -1,0 +1,55 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<?xml-stylesheet type="text/xsl" href="configuration.xsl"?>
+<configuration>
+  <!-- Override duration-string properties with numeric values (in seconds) to avoid NumberFormatException -->
+  <property>
+    <name>yarn.router.subcluster.cleaner.interval.time</name>
+    <value>60</value>
+  </property>
+  <property>
+    <name>fs.s3a.threads.keepalivetime</name>
+    <value>60</value>
+  </property>
+  <property>
+    <name>yarn.resourcemanager.delegation-token-renewer.thread-retry-interval</name>
+    <value>60</value>
+  </property>
+  <property>
+    <name>yarn.resourcemanager.delegation-token-renewer.thread-timeout</name>
+    <value>60</value>
+  </property>
+  <property>
+    <name>hadoop.http.staticuser.user</name>
+    <value>86400</value>
+  </property>
+  <property>
+    <name>ipc.client.connect.timeout</name>
+    <value>20000</value>
+  </property>
+  <property>
+    <name>fs.s3a.connection.timeout</name>
+    <value>60000</value>
+  </property>
+  <property>
+    <name>fs.s3a.connection.establish.timeout</name>
+    <value>60000</value>
+  </property>
+  
+  <!-- S3A configuration for MinIO -->
+  <property>
+    <name>fs.s3a.endpoint</name>
+    <value>http://minio:9000</value>
+  </property>
+  <property>
+    <name>fs.s3a.path.style.access</name>
+    <value>true</value>
+  </property>
+  <property>
+    <name>fs.s3a.aws.credentials.provider</name>
+    <value>org.apache.hadoop.fs.s3a.SimpleAWSCredentialsProvider</value>
+  </property>
+  <property>
+    <name>fs.s3a.impl</name>
+    <value>org.apache.hadoop.fs.s3a.S3AFileSystem</value>
+  </property>
+</configuration>
