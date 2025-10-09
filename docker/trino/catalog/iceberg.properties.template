@@ -1,0 +1,9 @@
+connector.name=iceberg
+iceberg.catalog.type=rest
+iceberg.rest-catalog.uri=http://iceberg-rest:9001/iceberg
+iceberg.warehouse=s3a://${S3_WAREHOUSE_BUCKET}/warehouse
+s3.endpoint=${MINIO_ENDPOINT}
+s3.path-style-access=true
+s3.region=${S3_REGION}
+s3.aws-access-key=${TRINO_SVC_ACCESS_KEY}
+s3.aws-secret-key=${TRINO_SVC_SECRET_KEY}

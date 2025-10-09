@@ -110,11 +110,21 @@ Icon?
 .env.*.local
 .secrets
 
+# Keep .env.example committed
+!docker/.env.example
+!.env.example
+
 # Docker
 docker/minio/data/
 **/docker-compose.override.yml
 docker-compose.override.yml
 docker-compose.override.*.yml
+
+# Docker volumes (MinIO data, Postgres data)
+docker/volumes/
+minio-data/
+postgres-data/
+pgadmin-data/
 
 # Node (if present)
 node_modules/
@@ -156,3 +166,7 @@ local_settings.py
 .vscode-test/
 
 # End of file
+
+# Ignore Trino runtime catalog that may contain secrets - keep the template committed
+docker/trino/catalog/iceberg.properties
+!docker/trino/catalog/iceberg.properties.template
