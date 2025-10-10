@@ -1,7 +1,7 @@
 connector.name=iceberg
 iceberg.catalog.type=rest
 iceberg.rest-catalog.uri=http://iceberg-rest:9001/iceberg
-iceberg.warehouse=s3a://${S3_WAREHOUSE_BUCKET}/warehouse
+fs.native-s3.enabled=true
 s3.endpoint=${MINIO_ENDPOINT}
 s3.path-style-access=true
 s3.region=${S3_REGION}

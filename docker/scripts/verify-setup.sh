@@ -160,8 +160,61 @@ EOF
     fi
 fi
 
-# 7. Service Endpoints
-echo -e "\n${YELLOW}7. Service Endpoints:${NC}"
+# 7. Trino Iceberg Catalog Configuration
+echo -e "\n${YELLOW}7. Trino Iceberg Catalog:${NC}"
+
+# Check if catalog file exists
+if [ -f "./trino/catalog/iceberg.properties" ]; then
+    check 0 "Trino catalog config file exists"
+else
+    check 1 "Trino catalog config file NOT found"
+fi
+
+# Wait a moment for Trino to fully initialize
+sleep 2
+
+# Test SHOW CATALOGS
+CATALOGS=$(docker exec -i trino trino --execute "SHOW CATALOGS;" 2>/dev/null || echo "ERROR")
+if echo "$CATALOGS" | grep -q "iceberg"; then
+    check 0 "SHOW CATALOGS lists 'iceberg'"
+else
+    check 1 "SHOW CATALOGS does NOT list 'iceberg'"
+fi
+
+# Test SHOW SCHEMAS FROM iceberg
+SCHEMAS=$(docker exec -i trino trino --execute "SHOW SCHEMAS FROM iceberg;" 2>/dev/null || echo "ERROR")
+if echo "$SCHEMAS" | grep -qE "(default|information_schema)"; then
+    check 0 "SHOW SCHEMAS FROM iceberg returns schemas"
+else
+    check 1 "SHOW SCHEMAS FROM iceberg FAILED"
+fi
+
+# Test simple SELECT query
+SELECT_RESULT=$(docker exec -i trino trino --execute "SELECT 1 AS test;" 2>/dev/null | grep -o "1" | head -1 || echo "ERROR")
+if [ "$SELECT_RESULT" = "1" ]; then
+    check 0 "SELECT 1 query works"
+else
+    check 1 "SELECT 1 query FAILED"
+fi
+
+# Test DDL permissions - try to create a schema
+CREATE_TEST=$(docker exec -i trino trino --execute "CREATE SCHEMA IF NOT EXISTS iceberg.lh WITH (location = 's3a://lakehouse/warehouse/lh');" 2>&1)
+if echo "$CREATE_TEST" | grep -qiE "(error|failed)"; then
+    check 1 "DDL permissions test FAILED (cannot create schema)"
+else
+    check 0 "DDL permissions verified (schema creation works)"
+fi
+
+# Verify the lh schema exists
+SCHEMAS_LH=$(docker exec -i trino trino --execute "SHOW SCHEMAS FROM iceberg;" 2>/dev/null || echo "ERROR")
+if echo "$SCHEMAS_LH" | grep -q "lh"; then
+    check 0 "Schema 'lh' exists in iceberg catalog"
+else
+    check 1 "Schema 'lh' NOT found in iceberg catalog"
+fi
+
+# 8. Service Endpoints
+echo -e "\n${YELLOW}8. Service Endpoints:${NC}"
 
 ENDPOINTS=(
     "MinIO API:http://localhost:9000/minio/health/ready"
@@ -183,8 +236,8 @@ for endpoint in "${ENDPOINTS[@]}"; do
     fi
 done
 
-# 8. Policy Files in Repository
-echo -e "\n${YELLOW}8. Repository Policy Files:${NC}"
+# 9. Repository Policy Files
+echo -e "\n${YELLOW}9. Repository Policy Files:${NC}"
 
 if [ -f "../infra/minio/policies/lakehouse-rw.json" ]; then
     check 0 "Policy file 'lakehouse-rw.json' exists in repo"

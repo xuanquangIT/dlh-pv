@@ -17,12 +17,13 @@ That's it! ✅
 - ✅ MinIO object storage with buckets: `lakehouse`, `mlflow`
 - ✅ PostgreSQL with databases: `iceberg`, `mlflow`, `prefect`
 - ✅ Apache Iceberg REST catalog
-- ✅ Trino SQL query engine (connected to Iceberg)
+- ✅ Trino SQL query engine with Iceberg catalog configured
 - ✅ Apache Spark cluster with S3A support
 - ✅ MLflow experiment tracking
 - ✅ Prefect workflow orchestration
 - ✅ Service users with least-privilege bucket policies
 - ✅ All networking and healthchecks configured
+- ✅ Trino Iceberg schemas: `default`, `lh`
 
 ## Access Services
 
@@ -77,8 +78,14 @@ The `verify-setup.sh` script checks:
 4. ✅ Service users exist with correct permissions
 5. ✅ PostgreSQL databases exist
 6. ✅ Spark can write/read to S3A
-7. ✅ All service endpoints respond
-8. ✅ Policy files exist in repository
+7. ✅ Trino Iceberg catalog is configured correctly
+   - `SHOW CATALOGS` lists `iceberg`
+   - `SHOW SCHEMAS FROM iceberg` returns schemas
+   - `SELECT 1` query works
+   - DDL permissions verified (schema creation)
+   - Schema `lh` exists in Iceberg catalog
+8. ✅ All service endpoints respond
+9. ✅ Policy files exist in repository
 
 ## Troubleshooting
 
@@ -118,6 +125,48 @@ lsof -i :<port>
 └─────────────┴──────────────┴─────────────┴─────────────┘
 ```
 
+## Trino Iceberg Catalog
+
+Trino is configured with an Iceberg catalog pointing to the Iceberg REST Catalog over MinIO/S3A with path-style access.
+
+**Verify Trino Iceberg Catalog:**
+```bash
+# Connect to Trino CLI
+docker exec -it trino trino
+
+# In the Trino CLI, run:
+SHOW CATALOGS;                    -- Should list: iceberg, system
+SHOW SCHEMAS FROM iceberg;        -- Should list: default, lh, information_schema
+SELECT 1;                          -- Basic query test
+```
+
+**Create tables in Iceberg:**
+```sql
+-- Create a test table
+CREATE TABLE iceberg.lh.test_table (
+    id INT,
+    name VARCHAR
+) WITH (
+    format = 'PARQUET'
+);
+
+-- Insert data
+INSERT INTO iceberg.lh.test_table VALUES (1, 'test');
+
+-- Query data
+SELECT * FROM iceberg.lh.test_table;
+```
+
+**Configuration Details:**
+- Catalog type: `rest`
+- REST endpoint: `http://iceberg-rest:9001/iceberg`
+- Warehouse location: `s3a://lakehouse/warehouse`
+- S3 endpoint: `http://minio:9000`
+- Path-style access: `true`
+- Service user: `trino_svc` with `lakehouse-rw` policy
+
+Configuration file: `docker/trino/catalog/iceberg.properties`
+
 ## What's Different from Standard Setup?
 
 1. **Custom Spark Image**: Built with hadoop-aws and AWS SDK for S3A support
@@ -125,6 +174,7 @@ lsof -i :<port>
 3. **Service Users**: Spark, Trino, and MLflow use dedicated service accounts (not root)
 4. **Least Privilege**: Each service has minimal required permissions
 5. **Hadoop Config**: Custom core-site.xml to fix duration-string parsing issues
+6. **Trino Iceberg Catalog**: Pre-configured to connect to Iceberg REST with S3A path-style access
 
 ## Files Structure
 
@@ -141,7 +191,8 @@ docker/
 │   └── core-site.xml          # Hadoop configuration
 ├── trino/
 │   └── catalog/
-│       └── iceberg.properties # Trino-Iceberg connection
+│       ├── iceberg.properties         # Trino-Iceberg catalog configuration
+│       └── iceberg.properties.template # Template with env vars
 ├── gravitino/
 │   └── Dockerfile             # Iceberg REST catalog image
 └── scripts/
