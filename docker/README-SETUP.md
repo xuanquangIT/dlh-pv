@@ -1,4 +1,4 @@
-# 🚀 Quick Start
+# Quick Start
 
 ## For New Team Members
 
@@ -7,23 +7,23 @@
 ```bash
 cd docker
 docker compose --profile core --profile ml --profile orchestrate up -d --build
-./scripts/verify-setup.sh
+./scripts/health-check.sh
 ```
 
-That's it! ✅
+That's it!
 
 ## What Gets Set Up Automatically
 
 - ✅ MinIO object storage with buckets: `lakehouse`, `mlflow`
-- ✅ PostgreSQL with databases: `iceberg`, `mlflow`, `prefect`
-- ✅ Apache Iceberg REST catalog
+- ✅ PostgreSQL with databases: `iceberg`, `iceberg_catalog`, `mlflow`, `prefect`
+- ✅ **Apache Iceberg JDBC Catalog** (PostgreSQL-based, no Gravitino needed)
 - ✅ Trino SQL query engine with Iceberg catalog configured
 - ✅ Apache Spark cluster with S3A support
 - ✅ MLflow experiment tracking
 - ✅ Prefect workflow orchestration
 - ✅ Service users with least-privilege bucket policies
 - ✅ All networking and healthchecks configured
-- ✅ Trino Iceberg schemas: `default`, `lh`
+- ✅ Trino Iceberg schemas: `lh`
 
 ## Access Services
 
@@ -58,9 +58,9 @@ docker compose logs -f <service-name>
 docker compose restart <service-name>
 ```
 
-**Run verification:**
+**Run health check:**
 ```bash
-./scripts/verify-setup.sh
+./scripts/health-check.sh
 ```
 
 **Clean up (⚠️ removes all data):**
@@ -68,24 +68,25 @@ docker compose restart <service-name>
 docker compose down -v
 ```
 
-## Verification Script
+## Health Check Script
 
-The `verify-setup.sh` script checks:
+The `health-check.sh` script validates:
 
-1. ✅ All containers are healthy
-2. ✅ MinIO buckets exist
-3. ✅ MinIO policies are created  
-4. ✅ Service users exist with correct permissions
-5. ✅ PostgreSQL databases exist
-6. ✅ Spark can write/read to S3A
-7. ✅ Trino Iceberg catalog is configured correctly
-   - `SHOW CATALOGS` lists `iceberg`
-   - `SHOW SCHEMAS FROM iceberg` returns schemas
-   - `SELECT 1` query works
+1. All containers are healthy
+2. MinIO buckets exist
+3. MinIO policies are created  
+4. Service users exist with correct permissions
+5. PostgreSQL databases exist
+6. Iceberg catalog tables exist
+7. Trino Iceberg catalog is configured correctly
+   - SHOW CATALOGS lists `iceberg`
+   - SHOW SCHEMAS FROM iceberg returns schemas
+   - SELECT 1 query works
    - DDL permissions verified (schema creation)
    - Schema `lh` exists in Iceberg catalog
-8. ✅ All service endpoints respond
-9. ✅ Policy files exist in repository
+8. All service endpoints respond
+9. Configuration files exist in repository
+10. End-to-end S3A write test (Trino -> MinIO)
 
 ## Troubleshooting
 
@@ -117,17 +118,20 @@ lsof -i :<port>
 ├─────────────┬──────────────┬─────────────┬─────────────┤
 │   Storage   │   Catalog    │   Compute   │     ML      │
 ├─────────────┼──────────────┼─────────────┼─────────────┤
-│   MinIO     │   Iceberg    │    Trino    │   MLflow    │
-│  (S3 API)   │    REST      │   (SQL)     │ (Tracking)  │
-│             │              │             │             │
-│             │  PostgreSQL  │    Spark    │   Prefect   │
-│             │  (Metadata)  │  (Python)   │ (Workflows) │
+│   MinIO     │  PostgreSQL  │    Trino    │   MLflow    │
+│  (S3 API)   │ JDBC Catalog │   (SQL)     │ (Tracking)  │
+│             │  (Iceberg    │             │             │
+│             │  metadata)   │    Spark    │   Prefect   │
+│             │              │  (Python)   │ (Workflows) │
 └─────────────┴──────────────┴─────────────┴─────────────┘
 ```
 
+**Note:** We use Iceberg's JDBC catalog with PostgreSQL instead of REST catalog.
+This eliminates Hadoop library compatibility issues and simplifies the architecture.
+
 ## Trino Iceberg Catalog
 
-Trino is configured with an Iceberg catalog pointing to the Iceberg REST Catalog over MinIO/S3A with path-style access.
+Trino is configured with an Iceberg catalog using **PostgreSQL JDBC catalog** with S3A storage on MinIO.
 
 **Verify Trino Iceberg Catalog:**
 ```bash
@@ -136,7 +140,7 @@ docker exec -it trino trino
 
 # In the Trino CLI, run:
 SHOW CATALOGS;                    -- Should list: iceberg, system
-SHOW SCHEMAS FROM iceberg;        -- Should list: default, lh, information_schema
+SHOW SCHEMAS FROM iceberg;        -- Should list: information_schema, lh, system
 SELECT 1;                          -- Basic query test
 ```
 
@@ -155,17 +159,34 @@ INSERT INTO iceberg.lh.test_table VALUES (1, 'test');
 
 -- Query data
 SELECT * FROM iceberg.lh.test_table;
+
+-- View metadata in PostgreSQL
+-- Run from host:
+docker exec postgres psql -U pvlakehouse -d iceberg_catalog -c "SELECT * FROM iceberg_tables;"
 ```
 
 **Configuration Details:**
-- Catalog type: `rest`
-- REST endpoint: `http://iceberg-rest:9001/iceberg`
+- Catalog type: `jdbc` (PostgreSQL JDBC)
+- Database: `iceberg_catalog` in PostgreSQL
 - Warehouse location: `s3a://lakehouse/warehouse`
 - S3 endpoint: `http://minio:9000`
 - Path-style access: `true`
 - Service user: `trino_svc` with `lakehouse-rw` policy
 
+**Metadata Tables:**
+- `iceberg_tables` - Stores table locations and metadata
+- `iceberg_namespace_properties` - Stores schema/namespace properties
+
+**Note:** Schema tables are automatically created by `postgres-init.sql` on first startup.
+
 Configuration file: `docker/trino/catalog/iceberg.properties`
+
+**Benefits of JDBC Catalog:**
+- ✅ No Hadoop version conflicts
+- ✅ Simpler architecture (no REST catalog service needed)
+- ✅ Direct PostgreSQL access for debugging
+- ✅ Better performance (no REST overhead)
+- ✅ Production-ready and stable
 
 ## What's Different from Standard Setup?
 
@@ -174,7 +195,8 @@ Configuration file: `docker/trino/catalog/iceberg.properties`
 3. **Service Users**: Spark, Trino, and MLflow use dedicated service accounts (not root)
 4. **Least Privilege**: Each service has minimal required permissions
 5. **Hadoop Config**: Custom core-site.xml to fix duration-string parsing issues
-6. **Trino Iceberg Catalog**: Pre-configured to connect to Iceberg REST with S3A path-style access
+6. **Trino Iceberg Catalog**: Pre-configured with PostgreSQL JDBC catalog (no REST catalog/Gravitino needed)
+7. **Iceberg Metadata**: Catalog schema tables automatically created in PostgreSQL on first startup
 
 ## Files Structure
 
@@ -196,7 +218,7 @@ docker/
 ├── gravitino/
 │   └── Dockerfile             # Iceberg REST catalog image
 └── scripts/
-    └── verify-setup.sh        # Comprehensive verification script
+    └── health-check.sh        # Comprehensive health check script
 ```
 
 ## For More Details
