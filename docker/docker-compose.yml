@@ -118,41 +118,10 @@ services:
     networks: [data-net]
     profiles: [core]
 
-  iceberg-rest:
-    build:
-      context: ./gravitino
-      dockerfile: Dockerfile
-    image: gravitino-iceberg-rest-postgres:latest
-    container_name: iceberg-rest
-    depends_on:
-      minio:
-        condition: service_healthy
-      postgres:
-        condition: service_healthy
-    environment:
-      JAVA_TOOL_OPTIONS: "-Xms256m -Xmx512m"
-      # Gravitino Iceberg REST configuration
-      GRAVITINO_URI: jdbc:postgresql://postgres:5432/${ICEBERG_DB}
-      GRAVITINO_JDBC_DRIVER: org.postgresql.Driver
-      GRAVITINO_JDBC_USER: ${ICEBERG_USER}
-      GRAVITINO_JDBC_PASSWORD: ${ICEBERG_PASSWORD}
-      GRAVITINO_WAREHOUSE: s3a://${S3_WAREHOUSE_BUCKET}/warehouse
-      GRAVITINO_S3_ENDPOINT: ${MINIO_ENDPOINT}
-      GRAVITINO_S3_ACCESS_KEY: ${MINIO_ROOT_USER}
-      GRAVITINO_S3_SECRET_KEY: ${MINIO_ROOT_PASSWORD}
-      GRAVITINO_S3_REGION: ${S3_REGION}
-    ports:
-      - "8181:9001"
-    healthcheck:
-      test: ["CMD-SHELL", "curl -sf http://localhost:9001/iceberg/v1/config >/dev/null || exit 1"]
-      interval: 10s
-      timeout: 5s
-      retries: 12
-    restart: unless-stopped
-    logging: *default-logging
-    networks: [data-net]
-    profiles: [core]
-
+  # iceberg-rest service no longer needed - using JDBC catalog directly with PostgreSQL
+  # Removed Gravitino to eliminate Hadoop compatibility issues
+  # Iceberg metadata is now stored directly in PostgreSQL (iceberg_catalog database)
+  
   spark-master:
     build:
       context: ./spark
@@ -214,7 +183,7 @@ services:
     image: ${TRINO_IMAGE}
     container_name: trino
     depends_on:
-      iceberg-rest:
+      postgres:
         condition: service_healthy
       minio:
         condition: service_healthy
