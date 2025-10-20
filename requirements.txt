@@ -1,8 +1,25 @@
-prefect==2.9.3
-boto3==1.26.149
-psycopg2-binary==2.9.7
+# Core runtime
+prefect>=2.9.0,<3.0.0
 mlflow==2.4.0
+
+# Cloud / storage
+boto3==1.26.149
+
+# Databases / drivers
+psycopg2-binary==2.9.7
+
+# HTTP
 requests==2.31.0
+
+# Data
 pandas==2.2.2
+# pyarrow pin
 pyarrow==11.0.0
-fastparquet==2023.12.0
+# fastparquet: use a permissive range matching available releases
+fastparquet>=2023.10.1,<2025.0.0
+
+# Spark (required by tests and some scripts)
+pyspark==3.5.1
+
+# Testing
+pytest==7.4.0
