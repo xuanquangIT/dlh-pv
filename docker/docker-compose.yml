@@ -136,6 +136,7 @@ services:
       AWS_SECRET_ACCESS_KEY: ${SPARK_SVC_SECRET_KEY}
       S3_ENDPOINT: ${MINIO_ENDPOINT}
     volumes:
+      - ../:/opt/workdir:ro
       - ./spark/core-site.xml:/opt/spark/conf/core-site.xml:ro
     ports:
       - "${SPARK_UI_PORT}:8080"
@@ -169,6 +170,7 @@ services:
       AWS_SECRET_ACCESS_KEY: ${SPARK_SVC_SECRET_KEY}
       S3_ENDPOINT: ${MINIO_ENDPOINT}
     volumes:
+      - ../:/opt/workdir:ro
       - ./spark/core-site.xml:/opt/spark/conf/core-site.xml:ro
     deploy:
       resources:
