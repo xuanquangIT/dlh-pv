@@ -28,16 +28,8 @@ def _delete_s3_path_if_exists(spark, uri: str) -> None:
     if fs.exists(path):
         fs.delete(path, True)
 
-S3_OUTPUT_BASE = "s3a://lakehouse/bronze/openelectricity/facility_timeseries"
-ICEBERG_TABLE = "lh.bronze.openelectricity_timeseries"
-
-DEFAULT_FACILITY_CODES = [
-    "NYNGAN",
-    "COLEASF",
-    "BNGSF1",
-    "CLARESF",
-    "GANNSF",
-]
+S3_OUTPUT_BASE = "s3a://lakehouse/bronze/raw_facility_timeseries"
+ICEBERG_TABLE = "lh.bronze.raw_facility_timeseries"
 
 
 def parse_csv(value: Optional[str]) -> List[str]:
@@ -68,7 +60,7 @@ def resolve_facility_codes(args: argparse.Namespace) -> List[str]:
     codes = parse_csv(args.facility_codes)
     if codes:
         return [code.upper() for code in codes]
-    return list(DEFAULT_FACILITY_CODES)
+    return openelectricity.load_default_facility_codes()
 
 
 def main() -> None:

@@ -135,6 +135,10 @@ services:
       AWS_ACCESS_KEY_ID: ${SPARK_SVC_ACCESS_KEY}
       AWS_SECRET_ACCESS_KEY: ${SPARK_SVC_SECRET_KEY}
       S3_ENDPOINT: ${MINIO_ENDPOINT}
+      PYTHONPATH: /opt/workdir/src:$PYTHONPATH
+      OPEN_NEM_PRIMARY: ${OPEN_NEM_PRIMARY}
+      OPEN_NEM_SECONDARY: ${OPEN_NEM_SECONDARY}
+      OPENELECTRICITY_API_KEY: ${OPEN_NEM_PRIMARY}
     volumes:
       - ../:/opt/workdir:ro
       - ./spark/core-site.xml:/opt/spark/conf/core-site.xml:ro

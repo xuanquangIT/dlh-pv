@@ -53,7 +53,23 @@ TARGET_WINDOW_DAYS = 7
 MAX_LOOKBACK_WINDOWS = 52
 NETWORK_TIMEZONE_IDS = {"NEM": "Australia/Brisbane", "WEM": "Australia/Perth"}
 NETWORK_FALLBACK_OFFSETS = {"NEM": 10, "WEM": 8}
-MAX_RANGE_ERROR_PATTERN = re.compile(r"Maximum range is (\\d+) days", re.IGNORECASE)
+MAX_RANGE_ERROR_PATTERN = re.compile(r"Maximum range is (\d+) days", re.IGNORECASE)
+
+
+def load_default_facility_codes(override_path: Optional[Path] = None) -> List[str]:
+    """Return the canonical list of facility codes shared with JS tooling."""
+
+    js_path = override_path or Path(__file__).resolve().parent / "../bronze/facilities.js"
+    js_path = js_path.resolve()
+    if not js_path.exists():
+        raise FileNotFoundError(f"Missing facilities.js at {js_path}")
+
+    contents = js_path.read_text(encoding="utf-8")
+    matches = re.findall(r'"([^"\n]+)"', contents)
+    if not matches:
+        raise ValueError("Unable to parse facility codes from facilities.js")
+
+    return [code.upper() for code in matches if code.strip()]
 
 
 @dataclass
@@ -444,11 +460,13 @@ def _flatten_timeseries(
             facility_code = columns.get("facility_code") or unit_to_facility.get(unit_code)
             facility_meta = facilities.get(facility_code) if facility_code else None
             facility_name = facility_meta.name if facility_meta else None
+            network_id = facility_meta.network_id if facility_meta else None
             network_region = facility_meta.network_region if facility_meta else None
             for timestamp, value in result.get("data", []):
                 rows.append(
                     {
                         "network_code": network_code,
+                        "network_id": network_id,
                         "network_region": network_region,
                         "facility_code": facility_code,
                         "facility_name": facility_name,

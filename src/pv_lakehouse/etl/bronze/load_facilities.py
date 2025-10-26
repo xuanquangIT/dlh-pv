@@ -13,10 +13,8 @@ from pyspark.sql import functions as F
 from pv_lakehouse.etl.clients import openelectricity
 from pv_lakehouse.etl.utils.spark_utils import create_spark_session, write_iceberg_table
 
-S3_OUTPUT_BASE = "s3a://lakehouse/bronze/openelectricity/facilities"
-ICEBERG_TABLE = "lh.bronze.openelectricity_facilities"
-
-DEFAULT_FACILITY_CODES = ["NYNGAN", "COLEASF", "BNGSF1", "CLARESF", "GANNSF"]
+S3_OUTPUT_BASE = "s3a://lakehouse/bronze/raw_facilities"
+ICEBERG_TABLE = "lh.bronze.raw_facilities"
 
 
 def parse_csv(value: Optional[str]) -> List[str]:
@@ -53,7 +51,7 @@ def resolve_facility_codes(args: argparse.Namespace) -> List[str]:
     codes = parse_csv(args.facility_codes)
     if codes:
         return [code.upper() for code in codes]
-    return list(DEFAULT_FACILITY_CODES)
+    return openelectricity.load_default_facility_codes()
 
 
 def main() -> None:
