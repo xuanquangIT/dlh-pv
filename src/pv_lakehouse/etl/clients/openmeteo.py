@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import datetime as dt
 import logging
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
-from typing import Dict, Iterable, List, Optional
+from typing import Dict, Iterable, List, Optional, Tuple
 
 import pandas as pd
 import requests
@@ -49,19 +51,21 @@ class RateLimiter:
         if max_requests_per_minute > 0:
             self._interval = 60.0 / max_requests_per_minute
         self._last_request: Optional[float] = None
+        self._lock = threading.Lock()
 
     def wait(self) -> None:
         if self._interval <= 0:
             return
         import time
 
-        now = time.monotonic()
-        if self._last_request is not None:
-            delay = self._last_request + self._interval - now
-            if delay > 0:
-                time.sleep(delay)
-                now = time.monotonic()
-        self._last_request = now
+        with self._lock:
+            now = time.monotonic()
+            if self._last_request is not None:
+                delay = self._last_request + self._interval - now
+                if delay > 0:
+                    time.sleep(delay)
+                    now = time.monotonic()
+            self._last_request = now
 
 
 def _augment_http_error(exc: requests.HTTPError) -> requests.HTTPError:
@@ -143,12 +147,14 @@ def fetch_weather_dataframe(
     limiter: Optional[RateLimiter] = None,
     max_retries: int = DEFAULT_MAX_RETRIES,
     retry_backoff: float = DEFAULT_RETRY_BACKOFF,
+    max_workers: int = 4,
 ) -> pd.DataFrame:
-    frames: List[pd.DataFrame] = []
     limiter = limiter or RateLimiter(0)
+    max_workers = max(1, max_workers)
     today = dt.date.today()
     archive_cutoff = today - dt.timedelta(days=FORECAST_MAX_DAYS)
 
+    windows: List[Tuple[dt.date, dt.date]] = []
     cursor = start
     while cursor <= end:
         endpoint_name = _resolve_weather_endpoint(endpoint_preference, cursor, archive_cutoff)
@@ -167,12 +173,22 @@ def fetch_weather_dataframe(
                     break
                 cursor = archive_cutoff + dt.timedelta(days=1)
                 continue
+        windows.append((cursor, window_end))
+        cursor = window_end + dt.timedelta(days=1)
 
+    if not windows:
+        return pd.DataFrame()
+
+    frames: List[pd.DataFrame] = []
+
+    def process_window(window: Tuple[dt.date, dt.date]) -> pd.DataFrame:
+        window_start, window_end = window
+        endpoint_name = _resolve_weather_endpoint(endpoint_preference, window_start, archive_cutoff)
         params = {
             "latitude": f"{facility.latitude:.5f}",
             "longitude": f"{facility.longitude:.5f}",
             "hourly": hourly_variables,
-            "start_date": cursor.isoformat(),
+            "start_date": window_start.isoformat(),
             "end_date": window_end.isoformat(),
             "timezone": timezone,
         }
@@ -190,11 +206,28 @@ def fetch_weather_dataframe(
                     params["end_date"],
                     exc,
                 )
-                fallback_end = min(cursor + dt.timedelta(days=FORECAST_MAX_DAYS) - dt.timedelta(days=1), end)
+                fallback_end = min(
+                    window_start + dt.timedelta(days=FORECAST_MAX_DAYS - 1),
+                    window_end,
+                    end,
+                )
+                if fallback_end < window_start:
+                    return pd.DataFrame()
                 params["end_date"] = fallback_end.isoformat()
                 limiter.wait()
-                payload = _request_json(WEATHER_ENDPOINTS["forecast"], params, retries=max_retries, backoff=retry_backoff)
-                window_end = fallback_end
+                try:
+                    payload = _request_json(
+                        WEATHER_ENDPOINTS["forecast"], params, retries=max_retries, backoff=retry_backoff
+                    )
+                except requests.RequestException as inner_exc:
+                    LOGGER.error(
+                        "Weather fallback request failed for %s (%s -> %s): %s",
+                        facility.code,
+                        params["start_date"],
+                        params["end_date"],
+                        inner_exc,
+                    )
+                    return pd.DataFrame()
             else:
                 LOGGER.error(
                     "Weather request failed for %s (%s -> %s) via %s: %s",
@@ -204,8 +237,7 @@ def fetch_weather_dataframe(
                     endpoint_name,
                     exc,
                 )
-                cursor = window_end + dt.timedelta(days=1)
-                continue
+                return pd.DataFrame()
         except requests.RequestException as exc:
             LOGGER.error(
                 "Weather request failed for %s (%s -> %s) via %s: %s",
@@ -215,19 +247,34 @@ def fetch_weather_dataframe(
                 endpoint_name,
                 exc,
             )
-            cursor = window_end + dt.timedelta(days=1)
-            continue
+            return pd.DataFrame()
 
         frame = _parse_hourly(payload)
         if frame.empty:
-            cursor = window_end + dt.timedelta(days=1)
-            continue
+            return frame
         frame.insert(0, "facility_code", facility.code)
         frame.insert(1, "facility_name", facility.name)
         frame.insert(2, "latitude", facility.latitude)
         frame.insert(3, "longitude", facility.longitude)
-        frames.append(frame)
-        cursor = window_end + dt.timedelta(days=1)
+        return frame
+
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = {executor.submit(process_window, window): window for window in windows}
+        for future in as_completed(futures):
+            window_start, window_end = futures[future]
+            try:
+                frame = future.result()
+            except Exception as exc:  # pragma: no cover - defensive
+                LOGGER.error(
+                    "Weather window task failed for %s (%s -> %s): %s",
+                    facility.code,
+                    window_start,
+                    window_end,
+                    exc,
+                )
+                continue
+            if not frame.empty:
+                frames.append(frame)
 
     if not frames:
         return pd.DataFrame()
@@ -245,11 +292,19 @@ def fetch_air_quality_dataframe(
     limiter: Optional[RateLimiter] = None,
     max_retries: int = DEFAULT_MAX_RETRIES,
     retry_backoff: float = DEFAULT_RETRY_BACKOFF,
+    max_workers: int = 4,
 ) -> pd.DataFrame:
-    frames: List[pd.DataFrame] = []
     limiter = limiter or RateLimiter(0)
+    max_workers = max(1, max_workers)
 
-    for chunk_start, chunk_end in _chunk_dates(start, end, chunk_days):
+    windows = list(_chunk_dates(start, end, chunk_days))
+    if not windows:
+        return pd.DataFrame()
+
+    frames: List[pd.DataFrame] = []
+
+    def process_window(window: Tuple[dt.date, dt.date]) -> pd.DataFrame:
+        chunk_start, chunk_end = window
         params = {
             "latitude": f"{facility.latitude:.5f}",
             "longitude": f"{facility.longitude:.5f}",
@@ -269,15 +324,33 @@ def fetch_air_quality_dataframe(
                 params["end_date"],
                 exc,
             )
-            continue
+            return pd.DataFrame()
         frame = _parse_hourly(payload)
         if frame.empty:
-            continue
+            return frame
         frame.insert(0, "facility_code", facility.code)
         frame.insert(1, "facility_name", facility.name)
         frame.insert(2, "latitude", facility.latitude)
         frame.insert(3, "longitude", facility.longitude)
-        frames.append(frame)
+        return frame
+
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = {executor.submit(process_window, window): window for window in windows}
+        for future in as_completed(futures):
+            window_start, window_end = futures[future]
+            try:
+                frame = future.result()
+            except Exception as exc:  # pragma: no cover - defensive
+                LOGGER.error(
+                    "Air quality window task failed for %s (%s -> %s): %s",
+                    facility.code,
+                    window_start,
+                    window_end,
+                    exc,
+                )
+                continue
+            if not frame.empty:
+                frames.append(frame)
 
     if not frames:
         return pd.DataFrame()

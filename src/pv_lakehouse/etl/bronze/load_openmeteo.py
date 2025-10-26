@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Iterable, List, Optional
 
 import pandas as pd
@@ -37,8 +38,8 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--mode", choices=["backfill", "incremental"], default="incremental")
     parser.add_argument("--facility-codes", help="Comma separated facility codes to include")
-    parser.add_argument("--start", required=True, type=parse_date, help="Start date (YYYY-MM-DD)")
-    parser.add_argument("--end", required=True, type=parse_date, help="End date (YYYY-MM-DD)")
+    parser.add_argument("--start", type=parse_date, help="Start date (YYYY-MM-DD). Defaults to yesterday.")
+    parser.add_argument("--end", type=parse_date, help="End date (YYYY-MM-DD). Defaults to today.")
     parser.add_argument("--weather-chunk-days", type=int, default=30)
     parser.add_argument("--air-chunk-days", type=int, default=openmeteo.AIR_QUALITY_MAX_DAYS)
     parser.add_argument("--weather-vars", default=openmeteo.DEFAULT_WEATHER_VARS)
@@ -50,6 +51,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--timezone", default="UTC")
     parser.add_argument("--max-requests-per-minute", type=float, default=30.0)
+    parser.add_argument("--max-workers", type=int, default=4, help="Concurrent facility fetch workers")
     parser.add_argument("--max-retries", type=int, default=openmeteo.DEFAULT_MAX_RETRIES)
     parser.add_argument("--retry-backoff", type=float, default=openmeteo.DEFAULT_RETRY_BACKOFF)
     parser.add_argument("--s3-weather-path", default=S3_WEATHER_BASE)
@@ -117,11 +119,10 @@ def collect_weather_and_air_data(
     facilities: List[FacilityLocation],
     args: argparse.Namespace,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
-    limiter = build_rate_limiter(args)
-    weather_frames: List[pd.DataFrame] = []
-    air_frames: List[pd.DataFrame] = []
+    weather_limiter = RateLimiter(args.max_requests_per_minute)
+    air_limiter = RateLimiter(args.max_requests_per_minute)
 
-    for facility in facilities:
+    def fetch_for_facility(facility: FacilityLocation) -> tuple[pd.DataFrame, pd.DataFrame]:
         print(f"Fetching weather for facility {facility.code} ({facility.name})")
         weather_frame = openmeteo.fetch_weather_dataframe(
             facility,
@@ -131,12 +132,11 @@ def collect_weather_and_air_data(
             hourly_variables=args.weather_vars,
             endpoint_preference=args.weather_endpoint,
             timezone=args.timezone,
-            limiter=limiter,
+            limiter=weather_limiter,
             max_retries=args.max_retries,
             retry_backoff=args.retry_backoff,
+            max_workers=args.max_workers,
         )
-        if not weather_frame.empty:
-            weather_frames.append(weather_frame)
 
         print(f"Fetching air quality for facility {facility.code} ({facility.name})")
         air_frame = openmeteo.fetch_air_quality_dataframe(
@@ -146,12 +146,31 @@ def collect_weather_and_air_data(
             chunk_days=args.air_chunk_days,
             hourly_variables=args.air_vars,
             timezone=args.timezone,
-            limiter=limiter,
+            limiter=air_limiter,
             max_retries=args.max_retries,
             retry_backoff=args.retry_backoff,
+            max_workers=args.max_workers,
         )
-        if not air_frame.empty:
-            air_frames.append(air_frame)
+
+        return weather_frame, air_frame
+
+    weather_frames: List[pd.DataFrame] = []
+    air_frames: List[pd.DataFrame] = []
+
+    with ThreadPoolExecutor(max_workers=args.max_workers) as executor:
+        futures = {executor.submit(fetch_for_facility, facility): facility for facility in facilities}
+        for future in as_completed(futures):
+            facility = futures[future]
+            try:
+                weather_frame, air_frame = future.result()
+            except Exception as exc:  # pragma: no cover - defensive
+                print(f"Failed to fetch data for facility {facility.code}: {exc}")
+                continue
+
+            if not weather_frame.empty:
+                weather_frames.append(weather_frame)
+            if not air_frame.empty:
+                air_frames.append(air_frame)
 
     weather_df = pd.concat(weather_frames, ignore_index=True) if weather_frames else pd.DataFrame()
     air_df = pd.concat(air_frames, ignore_index=True) if air_frames else pd.DataFrame()
@@ -188,6 +207,11 @@ def write_dataset(
 def main() -> None:
     args = parse_args()
 
+    today = dt.date.today()
+    default_start = today - dt.timedelta(days=1)
+    args.start = args.start or default_start
+    args.end = args.end or today
+
     if args.end < args.start:
         raise SystemExit("End date must not be before start date")
 
@@ -212,6 +236,9 @@ def main() -> None:
             .withColumn("weather_timestamp", F.to_timestamp("date"))
             .withColumn("weather_date", F.to_date("weather_timestamp"))
         )
+        weather_spark_df = weather_spark_df.filter(
+            F.col("weather_timestamp").isNotNull() & (F.col("weather_timestamp") <= ingest_ts)
+        )
         write_dataset(
             weather_spark_df,
             s3_base_path=args.s3_weather_path,
@@ -228,6 +255,9 @@ def main() -> None:
             .withColumn("ingest_timestamp", ingest_ts)
             .withColumn("air_timestamp", F.to_timestamp("date"))
             .withColumn("air_date", F.to_date("air_timestamp"))
+        )
+        air_spark_df = air_spark_df.filter(
+            F.col("air_timestamp").isNotNull() & (F.col("air_timestamp") <= ingest_ts)
         )
         write_dataset(
             air_spark_df,
