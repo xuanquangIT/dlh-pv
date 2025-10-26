@@ -5,34 +5,25 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
-from pathlib import Path
 from typing import Iterable, List, Optional
 
 import pandas as pd
 from pyspark.sql import functions as F
 
-from pv_lakehouse.etl.clients import openmeteo
+from pv_lakehouse.etl.clients import openmeteo, openelectricity
 from pv_lakehouse.etl.clients.openmeteo import FacilityLocation, RateLimiter
 from pv_lakehouse.etl.utils.spark_utils import create_spark_session, write_iceberg_table
 
-S3_WEATHER_BASE = "s3a://lakehouse/bronze/openmeteo/weather"
-S3_AIR_BASE = "s3a://lakehouse/bronze/openmeteo/air_quality"
+S3_WEATHER_BASE = "s3a://lakehouse/bronze/openmeteo/facility_weather"
+S3_AIR_BASE = "s3a://lakehouse/bronze/openmeteo/facility_air_quality"
 ICEBERG_WEATHER_TABLE = "lh.bronze.openmeteo_weather"
 ICEBERG_AIR_TABLE = "lh.bronze.openmeteo_air_quality"
 
-
-REQUIRED_METADATA_COLUMNS = {
-    "facility_code",
-    "facility_name",
-    "location_lat",
-    "location_lng",
-}
+DEFAULT_FACILITY_CODES = ["NYNGAN", "COLEASF", "BNGSF1", "CLARESF", "GANNSF"]
 
 
 def parse_csv(value: Optional[str]) -> List[str]:
-    if not value:
-        return []
-    return [token.strip() for token in value.split(",") if token.strip()]
+    return [token.strip() for token in (value or "").split(",") if token.strip()]
 
 
 def parse_date(value: str) -> dt.date:
@@ -42,56 +33,12 @@ def parse_date(value: str) -> dt.date:
         raise argparse.ArgumentTypeError(f"Invalid date '{value}'. Expected YYYY-MM-DD") from exc
 
 
-def load_facility_locations(metadata_path: Path, filter_codes: Iterable[str]) -> List[FacilityLocation]:
-    if not metadata_path.exists():
-        raise FileNotFoundError(f"Facilities metadata not found: {metadata_path}")
-
-    frame = pd.read_csv(metadata_path)
-    missing = REQUIRED_METADATA_COLUMNS - set(frame.columns)
-    if missing:
-        missing_cols = ", ".join(sorted(missing))
-        raise ValueError(f"Metadata missing required columns: {missing_cols}")
-
-    frame = frame.dropna(subset=["location_lat", "location_lng"])
-    frame["facility_code"] = frame["facility_code"].astype(str).str.strip()
-
-    codes = {code.upper() for code in filter_codes if code}
-    if codes:
-        frame = frame[frame["facility_code"].str.upper().isin(codes)]
-
-    if frame.empty:
-        raise ValueError("No facilities remain after filtering metadata")
-
-    facilities: List[FacilityLocation] = []
-    for row in frame.itertuples(index=False):
-        facilities.append(
-            FacilityLocation(
-                code=str(row.facility_code),
-                name=str(row.facility_name),
-                latitude=float(row.location_lat),
-                longitude=float(row.location_lng),
-            )
-        )
-    return facilities
-
-
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Load Open-Meteo weather and air-quality data into Bronze zone"
     )
     parser.add_argument("--mode", choices=["backfill", "incremental"], default="incremental")
     parser.add_argument("--facility-codes", help="Comma separated facility codes to include")
-    parser.add_argument(
-        "--facility-metadata",
-        type=Path,
-        default=Path("selected_facilities.csv"),
-        help="CSV containing facility_code, facility_name, location_lat, location_lng",
-    )
-    parser.add_argument(
-        "--facility-timeseries",
-        type=Path,
-        help="Optional CSV with facility_code column to derive codes when --facility-codes omitted",
-    )
     parser.add_argument("--start", required=True, type=parse_date, help="Start date (YYYY-MM-DD)")
     parser.add_argument("--end", required=True, type=parse_date, help="End date (YYYY-MM-DD)")
     parser.add_argument("--weather-chunk-days", type=int, default=30)
@@ -111,6 +58,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--s3-air-path", default=S3_AIR_BASE)
     parser.add_argument("--iceberg-weather-table", default=ICEBERG_WEATHER_TABLE)
     parser.add_argument("--iceberg-air-table", default=ICEBERG_AIR_TABLE)
+    parser.add_argument(
+        "--openelectricity-api-key",
+        help="Override OpenElectricity API key used to resolve facility locations",
+    )
     parser.add_argument("--app-name", default="bronze-openmeteo")
     return parser.parse_args()
 
@@ -119,18 +70,49 @@ def resolve_facility_codes(args: argparse.Namespace) -> List[str]:
     codes = parse_csv(args.facility_codes)
     if codes:
         return [code.upper() for code in codes]
-    if args.facility_timeseries and args.facility_timeseries.exists():
-        frame = pd.read_csv(args.facility_timeseries, usecols=["facility_code"])
-        codes = (
-            frame["facility_code"].dropna().astype(str).str.strip().str.upper().unique().tolist()
-        )
-        if codes:
-            return sorted(codes)
-    return []
+    return list(DEFAULT_FACILITY_CODES)
 
 
 def build_rate_limiter(args: argparse.Namespace) -> RateLimiter:
     return RateLimiter(args.max_requests_per_minute)
+
+
+def load_facility_locations(
+    facility_codes: Iterable[str],
+    api_key: Optional[str],
+) -> List[FacilityLocation]:
+    selected_codes = [code.upper() for code in facility_codes if code]
+    facilities_df = openelectricity.fetch_facilities_dataframe(
+        api_key=api_key,
+        selected_codes=selected_codes or None,
+        networks=["NEM", "WEM"],
+        statuses=["operating"],
+        fueltechs=["solar_utility"],
+    )
+
+    if facilities_df.empty:
+        raise ValueError("No facilities returned from OpenElectricity metadata API")
+
+    facilities_df = facilities_df.dropna(subset=["location_lat", "location_lng"])
+    if selected_codes:
+        facilities_df = facilities_df[
+            facilities_df["facility_code"].str.upper().isin(selected_codes)
+        ]
+
+    if facilities_df.empty:
+        raise ValueError("Requested facilities missing latitude/longitude data")
+
+    facilities: List[FacilityLocation] = []
+    for row in facilities_df.itertuples(index=False):
+        facilities.append(
+            FacilityLocation(
+                code=str(row.facility_code),
+                name=str(row.facility_name or row.facility_code),
+                latitude=float(row.location_lat),
+                longitude=float(row.location_lng),
+            )
+        )
+    return facilities
 
 
 def collect_weather_and_air_data(
@@ -178,52 +160,31 @@ def collect_weather_and_air_data(
     return weather_df, air_df
 
 
-def write_weather(
+def write_dataset(
     spark_df,  # type: ignore[valid-type]
+    *,
+    s3_base_path: str,
+    iceberg_table: str,
     args: argparse.Namespace,
     ingest_date: str,
+    label: str,
 ) -> None:
     write_mode = "overwrite" if args.mode == "backfill" else "append"
-
-    s3_target = f"{args.s3_weather_path}/ingest_date={ingest_date}"
+    s3_target = f"{s3_base_path}/ingest_date={ingest_date}"
     (
         spark_df.write.mode(write_mode)
         .format("parquet")
         .option("compression", "snappy")
         .save(s3_target)
     )
-    print(f"Wrote weather parquet to {s3_target}")
+    print(f"Wrote {label} parquet to {s3_target}")
 
     write_iceberg_table(
         spark_df,
-        args.iceberg_weather_table,
-        mode="overwrite" if args.mode == "backfill" else "append",
+        iceberg_table,
+        mode=write_mode,
     )
-    print(f"Upserted weather data into Iceberg table {args.iceberg_weather_table}")
-
-
-def write_air_quality(
-    spark_df,  # type: ignore[valid-type]
-    args: argparse.Namespace,
-    ingest_date: str,
-) -> None:
-    write_mode = "overwrite" if args.mode == "backfill" else "append"
-
-    s3_target = f"{args.s3_air_path}/ingest_date={ingest_date}"
-    (
-        spark_df.write.mode(write_mode)
-        .format("parquet")
-        .option("compression", "snappy")
-        .save(s3_target)
-    )
-    print(f"Wrote air quality parquet to {s3_target}")
-
-    write_iceberg_table(
-        spark_df,
-        args.iceberg_air_table,
-        mode="overwrite" if args.mode == "backfill" else "append",
-    )
-    print(f"Upserted air-quality data into Iceberg table {args.iceberg_air_table}")
+    print(f"Upserted {label} data into Iceberg table {iceberg_table}")
 
 
 def main() -> None:
@@ -233,7 +194,7 @@ def main() -> None:
         raise SystemExit("End date must not be before start date")
 
     facility_codes = resolve_facility_codes(args)
-    facilities = load_facility_locations(args.facility_metadata, facility_codes)
+    facilities = load_facility_locations(facility_codes, args.openelectricity_api_key)
 
     weather_df, air_df = collect_weather_and_air_data(facilities, args)
 
@@ -253,7 +214,14 @@ def main() -> None:
             .withColumn("weather_timestamp", F.to_timestamp("date"))
             .withColumn("weather_date", F.to_date("weather_timestamp"))
         )
-        write_weather(weather_spark_df, args, ingest_date)
+        write_dataset(
+            weather_spark_df,
+            s3_base_path=args.s3_weather_path,
+            iceberg_table=args.iceberg_weather_table,
+            args=args,
+            ingest_date=ingest_date,
+            label="weather",
+        )
 
     if not air_df.empty:
         air_spark_df = spark.createDataFrame(air_df)
@@ -263,7 +231,14 @@ def main() -> None:
             .withColumn("air_timestamp", F.to_timestamp("date"))
             .withColumn("air_date", F.to_date("air_timestamp"))
         )
-        write_air_quality(air_spark_df, args, ingest_date)
+        write_dataset(
+            air_spark_df,
+            s3_base_path=args.s3_air_path,
+            iceberg_table=args.iceberg_air_table,
+            args=args,
+            ingest_date=ingest_date,
+            label="air-quality",
+        )
 
     spark.stop()
 

@@ -5,8 +5,7 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
-from pathlib import Path
-from typing import Iterable, List, Optional
+from typing import List, Optional
 
 import pandas as pd
 from pyspark.sql import functions as F
@@ -17,30 +16,11 @@ from pv_lakehouse.etl.utils.spark_utils import create_spark_session, write_icebe
 S3_OUTPUT_BASE = "s3a://lakehouse/bronze/openelectricity/facilities"
 ICEBERG_TABLE = "lh.bronze.openelectricity_facilities"
 
-DEFAULT_FACILITY_CODES = [
-    "NYNGAN",
-    "COLEASF",
-    "BNGSF1",
-    "CLARESF",
-    "GANNSF",
-]
+DEFAULT_FACILITY_CODES = ["NYNGAN", "COLEASF", "BNGSF1", "CLARESF", "GANNSF"]
 
 
 def parse_csv(value: Optional[str]) -> List[str]:
-    if not value:
-        return []
-    parts = [item.strip() for item in value.split(",")]
-    return [item for item in parts if item]
-
-
-def load_codes_from_csv(path: Path) -> List[str]:
-    if not path.exists():
-        raise FileNotFoundError(f"Facilities CSV not found: {path}")
-    frame = pd.read_csv(path, usecols=["facility_code"])
-    codes = frame["facility_code"].dropna().astype(str).str.strip().unique().tolist()
-    if not codes:
-        raise ValueError(f"No facility codes found in {path}")
-    return sorted(codes)
+    return [item.strip() for item in (value or "").split(",") if item.strip()]
 
 
 def parse_args() -> argparse.Namespace:
@@ -49,11 +29,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--facility-codes",
         help="Comma separated facility codes to filter (defaults to core solar facilities if omitted)",
-    )
-    parser.add_argument(
-        "--facilities-csv",
-        type=Path,
-        help="Optional CSV containing facility_code column used when --facility-codes is omitted",
     )
     parser.add_argument("--networks", default="NEM,WEM", help="Comma separated network_id filters")
     parser.add_argument("--statuses", default="operating", help="Comma separated status_id filters")
@@ -78,8 +53,6 @@ def resolve_facility_codes(args: argparse.Namespace) -> List[str]:
     codes = parse_csv(args.facility_codes)
     if codes:
         return [code.upper() for code in codes]
-    if args.facilities_csv:
-        return load_codes_from_csv(args.facilities_csv)
     return list(DEFAULT_FACILITY_CODES)
 
 
@@ -106,7 +79,7 @@ def main() -> None:
 
     spark = create_spark_session(args.app_name)
 
-    spark_df = spark.createDataFrame(facilities_df)
+    spark_df = spark.createDataFrame(facilities_df, schema=openelectricity.FACILITY_SCHEMA)
     spark_df = (
         spark_df.withColumn("ingest_mode", F.lit(args.mode))
         .withColumn("ingest_timestamp", F.current_timestamp())

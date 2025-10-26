@@ -10,11 +10,35 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 import pandas as pd
+from pyspark.sql import types as T
 import requests
 
 DEFAULT_BASE_URL = os.environ.get("OPENELECTRICITY_API_URL", "https://api.openelectricity.org.au/v4")
 FACILITIES_ENDPOINT = f"{DEFAULT_BASE_URL.rstrip('/')}/facilities/"
 DATA_ENDPOINT_TEMPLATE = f"{DEFAULT_BASE_URL.rstrip('/')}/data/facilities/{{network_code}}"
+
+FACILITY_SCHEMA = T.StructType(
+    [
+        T.StructField("facility_code", T.StringType(), True),
+        T.StructField("facility_name", T.StringType(), True),
+        T.StructField("network_id", T.StringType(), True),
+        T.StructField("network_region", T.StringType(), True),
+        T.StructField("facility_created_at", T.StringType(), True),
+        T.StructField("facility_updated_at", T.StringType(), True),
+        T.StructField("location_lat", T.DoubleType(), True),
+        T.StructField("location_lng", T.DoubleType(), True),
+        T.StructField("unit_count", T.IntegerType(), True),
+        T.StructField("total_capacity_mw", T.DoubleType(), True),
+        T.StructField("total_capacity_registered_mw", T.DoubleType(), True),
+        T.StructField("total_capacity_maximum_mw", T.DoubleType(), True),
+        T.StructField("total_capacity_storage_mwh", T.DoubleType(), True),
+        T.StructField("unit_fueltech_summary", T.StringType(), True),
+        T.StructField("unit_status_summary", T.StringType(), True),
+        T.StructField("unit_dispatch_summary", T.StringType(), True),
+        T.StructField("unit_codes", T.StringType(), True),
+        T.StructField("facility_description", T.StringType(), True),
+    ]
+)
 
 CANDIDATE_ENV_KEYS = [
     "OPENELECTRICITY_API_KEY",
@@ -169,13 +193,18 @@ def _summarize_facility(facility: Dict[str, Any]) -> Dict[str, Any]:
 
     location = facility.get("location") or {}
 
+    def _as_str(value: Any) -> Optional[str]:
+        if value is None or value == "":
+            return None
+        return str(value)
+
     return {
-        "facility_code": facility.get("code"),
-        "facility_name": facility.get("name"),
-        "network_id": facility.get("network_id"),
-        "network_region": facility.get("network_region"),
-        "facility_created_at": facility.get("created_at"),
-        "facility_updated_at": facility.get("updated_at"),
+        "facility_code": _as_str(facility.get("code")),
+        "facility_name": _as_str(facility.get("name")),
+        "network_id": _as_str(facility.get("network_id")),
+        "network_region": _as_str(facility.get("network_region")),
+        "facility_created_at": _as_str(facility.get("created_at")),
+        "facility_updated_at": _as_str(facility.get("updated_at")),
         "location_lat": location.get("lat"),
         "location_lng": location.get("lng"),
         "unit_count": len(units),
@@ -192,8 +221,8 @@ def _summarize_facility(facility: Dict[str, Any]) -> Dict[str, Any]:
         "unit_dispatch_summary": "; ".join(
             f"{key}:{count}" for key, count in sorted(dispatch_counts.items())
         ),
-        "unit_codes": ",".join(unit_codes),
-        "facility_description": facility.get("description"),
+        "unit_codes": ",".join(unit_codes) if unit_codes else None,
+        "facility_description": _as_str(facility.get("description")),
     }
 
 
@@ -524,8 +553,7 @@ def fetch_facility_timeseries_dataframe(
         return dataframe
 
     dataframe = dataframe.sort_values(
-        ["facility_code", "unit_code", "metric", "interval_start"],
-        na_position="last",
+        ["network_id", "network_region", "facility_name"], na_position="last"
     ).reset_index(drop=True)
     return dataframe
 

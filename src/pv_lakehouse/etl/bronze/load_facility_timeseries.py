@@ -5,8 +5,7 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
-from pathlib import Path
-from typing import Iterable, List, Optional
+from typing import List, Optional
 
 import pandas as pd
 from pyspark.sql import functions as F
@@ -42,20 +41,7 @@ DEFAULT_FACILITY_CODES = [
 
 
 def parse_csv(value: Optional[str]) -> List[str]:
-    if not value:
-        return []
-    tokens = [item.strip() for item in value.split(",")]
-    return [item for item in tokens if item]
-
-
-def load_codes_from_csv(path: Path) -> List[str]:
-    if not path.exists():
-        raise FileNotFoundError(f"Facilities CSV not found: {path}")
-    frame = pd.read_csv(path, usecols=["facility_code"])
-    codes = frame["facility_code"].dropna().astype(str).str.strip().unique().tolist()
-    if not codes:
-        raise ValueError(f"No facility codes found in {path}")
-    return sorted(codes)
+    return [item.strip() for item in (value or "").split(",") if item.strip()]
 
 
 def parse_args() -> argparse.Namespace:
@@ -64,11 +50,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--facility-codes",
         help="Comma separated facility codes to fetch (defaults to core solar facilities if omitted)",
-    )
-    parser.add_argument(
-        "--facilities-csv",
-        type=Path,
-        help="Optional CSV containing facility_code column used when --facility-codes omitted",
     )
     parser.add_argument("--metrics", default="power,energy,market_value,price", help="Comma separated metrics")
     parser.add_argument("--interval", default="1h", help="Data interval (5m,1h,1d,...) ")
@@ -87,8 +68,6 @@ def resolve_facility_codes(args: argparse.Namespace) -> List[str]:
     codes = parse_csv(args.facility_codes)
     if codes:
         return [code.upper() for code in codes]
-    if args.facilities_csv:
-        return load_codes_from_csv(args.facilities_csv)
     return list(DEFAULT_FACILITY_CODES)
 
 
