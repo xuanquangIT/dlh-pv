@@ -135,11 +135,13 @@ class GoldFactRootCauseAnalysisLoader(BaseGoldLoader):
             F.when(F.col("weather_severity") == "High", F.lit("Weather"))
             .when(F.col("pm2_5") > 35.4, F.lit("Soiling"))
             .otherwise(F.lit("Equipment")),
-        ).join(
-            issue_mapping,
-            fact["performance_issue_category"] == F.col("dim_issue_category"),
+        )
+        fact = fact.alias("fact").join(
+            issue_mapping.alias("issue"),
+            F.col("fact.performance_issue_category") == F.col("issue.dim_issue_category"),
             how="left",
         )
+        fact = fact.drop("dim_issue_category")
 
         fact = fact.withColumn("expected_energy_mwh", F.col("power_avg_mw"))
         fact = fact.withColumn(

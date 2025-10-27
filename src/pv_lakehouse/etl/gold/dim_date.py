@@ -60,6 +60,9 @@ class GoldDimDateLoader(BaseGoldLoader):
         if self._is_empty(combined):
             return None
 
+        spark_day = F.dayofweek("full_date")
+        monday_based_day = F.pmod(spark_day + F.lit(5), F.lit(7)) + F.lit(1)
+
         result = combined.select(
             compute_date_key(F.col("full_date")).alias("date_key"),
             F.col("full_date"),
@@ -69,9 +72,9 @@ class GoldDimDateLoader(BaseGoldLoader):
             F.date_format("full_date", "MMMM").alias("month_name"),
             F.weekofyear("full_date").alias("week"),
             F.dayofmonth("full_date").alias("day_of_month"),
-            F.date_format("full_date", "u").cast("int").alias("day_of_week"),
+            monday_based_day.cast("int").alias("day_of_week"),
             F.date_format("full_date", "EEEE").alias("day_name"),
-            (F.date_format("full_date", "u").cast("int") >= F.lit(6)).alias("is_weekend"),
+            (monday_based_day >= F.lit(6)).alias("is_weekend"),
             F.lit(False).alias("is_holiday"),
             season_expr(F.month("full_date")).alias("season"),
         )

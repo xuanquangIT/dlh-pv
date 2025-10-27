@@ -143,7 +143,9 @@ class GoldFactKpiPerformanceLoader(BaseGoldLoader):
             F.when(F.col("completeness_pct") >= 95, F.lit("Available"))
             .when(F.col("completeness_pct") >= 70, F.lit("Degraded"))
             .otherwise(F.lit("Unavailable")),
-        ).join(status_mapping, fact["status_name"] == F.col("dim_status_name"), how="left")
+        )
+        fact = fact.join(status_mapping, F.col("status_name") == F.col("dim_status_name"), how="left")
+        fact = fact.drop("dim_status_name")
 
         fact = fact.withColumn("energy_loss_mwh", F.col("expected_energy_mwh") - F.col("actual_energy_mwh"))
         fact = fact.withColumn(

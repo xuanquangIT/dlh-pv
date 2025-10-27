@@ -8,14 +8,14 @@ from pyspark.sql import DataFrame, Window
 from pyspark.sql import functions as F
 from pyspark.sql import types as T
 
-from .base import BaseGoldLoader, GoldTableConfig
+from .base import BaseGoldLoader, GoldTableConfig, SourceTableConfig
 from .common import dec
 
 
 class GoldDimModelVersionLoader(BaseGoldLoader):
     """Materialise model version dimension rows from static metadata."""
 
-    source_tables: Dict[str, None] = {}
+    source_tables: Dict[str, SourceTableConfig] = {}
 
     gold_tables: Dict[str, GoldTableConfig] = {
         "dim_model_version": GoldTableConfig(

@@ -72,7 +72,7 @@ class BaseGoldLoader:
     def run(self) -> int:
         try:
             source_frames = self._read_sources()
-            if not source_frames:
+            if not source_frames and getattr(self, "source_tables", None):
                 return 0
 
             outputs = self.transform(source_frames)

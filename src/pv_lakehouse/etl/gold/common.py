@@ -110,34 +110,35 @@ def build_weather_lookup(
 ) -> Optional[DataFrame]:
     if is_empty(weather_records) or is_empty(dim_weather_condition):
         return None
-    aggregated = (
-        weather_records.groupBy("facility_code", "date", "condition_name")
-        .agg(
-            F.first("shortwave_radiation").alias("shortwave_radiation"),
-            F.first("direct_radiation").alias("direct_radiation"),
-            F.first("diffuse_radiation").alias("diffuse_radiation"),
-            F.first("temperature_2m").alias("temperature_2m"),
-            F.first("cloud_cover").alias("cloud_cover"),
-            F.first("wind_speed_10m").alias("wind_speed_10m"),
-            F.first("precipitation").alias("precipitation"),
-            F.first("sunshine_duration").alias("sunshine_duration"),
-            F.first("weather_severity").alias("weather_severity"),
-        )
-        .join(dim_weather_condition, on="condition_name", how="left")
+    aggregated = weather_records.groupBy("facility_code", "date", "condition_name").agg(
+        F.first("shortwave_radiation").alias("shortwave_radiation"),
+        F.first("direct_radiation").alias("direct_radiation"),
+        F.first("diffuse_radiation").alias("diffuse_radiation"),
+        F.first("temperature_2m").alias("temperature_2m"),
+        F.first("cloud_cover").alias("cloud_cover"),
+        F.first("wind_speed_10m").alias("wind_speed_10m"),
+        F.first("precipitation").alias("precipitation"),
+        F.first("sunshine_duration").alias("sunshine_duration"),
+        F.first("weather_severity").alias("weather_weather_severity"),
     )
+
+    aggregated = aggregated.alias("weather").join(
+        dim_weather_condition.alias("dim"), on="condition_name", how="left"
+    )
+
     return aggregated.select(
-        "facility_code",
-        F.col("date").alias("full_date"),
-        "weather_condition_key",
-        "shortwave_radiation",
-        "direct_radiation",
-        "diffuse_radiation",
-        "temperature_2m",
-        "cloud_cover",
-        "wind_speed_10m",
-        "precipitation",
-        "sunshine_duration",
-        "weather_severity",
+        F.col("weather.facility_code").alias("facility_code"),
+        F.col("weather.date").alias("full_date"),
+        F.col("dim.weather_condition_key").alias("weather_condition_key"),
+        F.col("weather.shortwave_radiation").alias("shortwave_radiation"),
+        F.col("weather.direct_radiation").alias("direct_radiation"),
+        F.col("weather.diffuse_radiation").alias("diffuse_radiation"),
+        F.col("weather.temperature_2m").alias("temperature_2m"),
+        F.col("weather.cloud_cover").alias("cloud_cover"),
+        F.col("weather.wind_speed_10m").alias("wind_speed_10m"),
+        F.col("weather.precipitation").alias("precipitation"),
+        F.col("weather.sunshine_duration").alias("sunshine_duration"),
+        F.col("weather.weather_weather_severity").alias("weather_severity"),
     )
 
 

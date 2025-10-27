@@ -8,11 +8,13 @@ from pyspark.sql import DataFrame, Window
 from pyspark.sql import functions as F
 from pyspark.sql import types as T
 
-from .base import BaseGoldLoader, GoldTableConfig
+from .base import BaseGoldLoader, GoldTableConfig, SourceTableConfig
 
 
 class GoldDimEquipmentStatusLoader(BaseGoldLoader):
     """Materialise equipment status dimension from static definitions."""
+
+    source_tables: Dict[str, SourceTableConfig] = {}
 
     gold_tables: Dict[str, GoldTableConfig] = {
         "dim_equipment_status": GoldTableConfig(
