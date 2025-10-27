@@ -49,9 +49,6 @@ class SilverHourlyEnergyLoader(BaseSilverLoader):
             .where(F.col("metric").isin("energy", "power"))
         )
 
-        if filtered.rdd.isEmpty():
-            return None
-
         hourly = filtered.withColumn("date_hour", F.date_trunc("hour", F.col("interval_ts")))
 
         key_columns = [
@@ -63,12 +60,17 @@ class SilverHourlyEnergyLoader(BaseSilverLoader):
         ]
 
         aggregated = hourly.groupBy(*key_columns).agg(
-            F.sum(F.when(F.col("metric") == F.lit("energy"), F.col("value")).otherwise(F.lit(0.0))).alias("energy_mwh"),
+            F.sum(F.when(F.col("metric") == F.lit("energy"), F.col("value"))).alias("energy_mwh"),
             F.avg(F.when(F.col("metric") == F.lit("power"), F.col("value"))).alias("power_avg_mw"),
             F.countDistinct("interval_ts").alias("intervals_count"),
+            F.sum(F.when(F.col("metric") == F.lit("energy"), F.lit(1)).otherwise(F.lit(0))).alias("energy_records"),
         )
 
-        result = aggregated.withColumn(
+        result = aggregated.filter(F.col("energy_records") > F.lit(0))
+        if not result.columns:
+            return None
+
+        result = result.drop("energy_records").withColumn(
             "completeness_pct",
             F.when(F.col("intervals_count") == F.lit(0), F.lit(0.0)).otherwise(F.lit(100.0)),
         )

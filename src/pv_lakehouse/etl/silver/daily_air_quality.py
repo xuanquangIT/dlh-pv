@@ -56,11 +56,11 @@ class SilverDailyAirQualityLoader(BaseSilverLoader):
         if prepared.rdd.isEmpty():
             return None
 
-        aggregations = []
-        for column in self._numeric_columns.keys():
-            if column not in prepared.columns:
-                continue
-            aggregations.append(F.avg(column).alias(column))
+        aggregations = [
+            F.avg(column).alias(column)
+            for column in self._numeric_columns.keys()
+            if column in prepared.columns
+        ]
 
         grouped = prepared.groupBy("facility_code", "facility_name", "date").agg(*aggregations)
 
@@ -81,25 +81,24 @@ class SilverDailyAirQualityLoader(BaseSilverLoader):
             .otherwise(F.lit("Hazardous")),
         )
 
-        validity_conditions = []
-        for column, (min_value, max_value) in self._numeric_columns.items():
-            validity_conditions.append(
-                (F.col(column).isNull())
-                | ((F.col(column) >= F.lit(min_value)) & (F.col(column) <= F.lit(max_value)))
-            )
-        is_valid_expr = validity_conditions[0]
-        for expr in validity_conditions[1:]:
-            is_valid_expr = is_valid_expr & expr
-        is_valid_expr = is_valid_expr & (
+        validity_conditions = [
+            (F.col(column).isNull())
+            | ((F.col(column) >= F.lit(min_value)) & (F.col(column) <= F.lit(max_value)))
+            for column, (min_value, max_value) in self._numeric_columns.items()
+        ]
+        validity_conditions.append(
             (F.col("aqi_value").isNull())
-            | ((F.col("aqi_value") >= 0) & (F.col("aqi_value") <= 500))
+            | ((F.col("aqi_value") >= F.lit(0)) & (F.col("aqi_value") <= F.lit(500)))
         )
+        is_valid_expr = F.reduce(lambda acc, expr: acc & expr, validity_conditions[1:], validity_conditions[0])
 
         result = grouped.withColumn("is_valid", is_valid_expr)
         result = result.withColumn(
             "quality_flag",
             F.when(F.col("is_valid"), F.lit("GOOD")).otherwise(F.lit("OUT_OF_RANGE")),
         )
+
+        result = result.repartition("facility_code", "date")
 
         current_ts = F.current_timestamp()
         result = result.withColumn("created_at", current_ts).withColumn("updated_at", current_ts)
