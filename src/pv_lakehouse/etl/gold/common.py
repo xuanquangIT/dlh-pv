@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Optional
+from typing import Any, Dict, Optional
 
 from pyspark.sql import Column, DataFrame
 from pyspark.sql import functions as F
@@ -34,10 +34,6 @@ def compute_date_key(date_col: Column) -> Column:
     return F.date_format(date_col, "yyyyMMdd").cast("int")
 
 
-def compute_time_key(timestamp_col: Column) -> Column:
-    return (F.hour(timestamp_col) * F.lit(100) + F.minute(timestamp_col)).cast("int")
-
-
 def season_expr(month_col: Column) -> Column:
     return (
         F.when(month_col.isin(12, 1, 2), F.lit("Summer"))
@@ -54,6 +50,37 @@ def time_of_day_expr(hour_col: Column) -> Column:
         .when((hour_col >= 17) & (hour_col < 21), F.lit("Evening"))
         .otherwise(F.lit("Night"))
     )
+
+
+def build_hourly_fact_base(
+    dataframe: Optional[DataFrame],
+    *,
+    timestamp_column: str = "date_hour",
+) -> Optional[DataFrame]:
+    if dataframe is None or timestamp_column not in dataframe.columns:
+        return None
+
+    ts_col = F.col(timestamp_column)
+    base = dataframe.withColumn("full_date", F.to_date(ts_col))
+    base = base.withColumn("date_key", compute_date_key(F.col("full_date")))
+    base = base.withColumn(
+        "time_key",
+        (F.hour(ts_col) * F.lit(100) + F.minute(ts_col)).cast("int"),
+    )
+    return base
+
+
+def require_sources(
+    sources: Dict[str, Optional[DataFrame]],
+    required: Dict[str, str],
+) -> Dict[str, DataFrame]:
+    resolved: Dict[str, DataFrame] = {}
+    for alias, context in required.items():
+        dataframe = sources.get(alias)
+        if is_empty(dataframe):
+            raise ValueError(f"{alias} must be available before running {context}")
+        resolved[alias] = dataframe  # type: ignore[assignment]
+    return resolved
 
 
 def classify_weather(dataframe: Optional[DataFrame]) -> Optional[DataFrame]:
@@ -119,7 +146,7 @@ def build_weather_lookup(
         F.first("wind_speed_10m").alias("wind_speed_10m"),
         F.first("precipitation").alias("precipitation"),
         F.first("sunshine_duration").alias("sunshine_duration"),
-        F.first("weather_severity").alias("weather_weather_severity"),
+        F.first("weather_severity").alias("weather_severity"),
     )
 
     aggregated = aggregated.alias("weather").join(
@@ -138,7 +165,7 @@ def build_weather_lookup(
         F.col("weather.wind_speed_10m").alias("wind_speed_10m"),
         F.col("weather.precipitation").alias("precipitation"),
         F.col("weather.sunshine_duration").alias("sunshine_duration"),
-        F.col("weather.weather_weather_severity").alias("weather_severity"),
+        F.col("weather.weather_severity").alias("weather_severity"),
     )
 
 

@@ -10,9 +10,11 @@ from pyspark.sql import functions as F
 from .base import BaseGoldLoader, GoldTableConfig, SourceTableConfig
 from .common import (
     build_air_quality_lookup,
+    build_hourly_fact_base,
     classify_air_quality,
     dec,
     is_empty,
+    require_sources,
 )
 
 
@@ -70,25 +72,28 @@ class GoldFactAirQualityImpactLoader(BaseGoldLoader):
         if is_empty(hourly):
             return None
 
-        dim_facility = sources.get("dim_facility")
-        dim_air_quality = sources.get("dim_air_quality_category")
-        dim_time = sources.get("dim_time")
-        for name, dataframe in {
-            "dim_facility": dim_facility,
-            "dim_air_quality_category": dim_air_quality,
-            "dim_time": dim_time,
-        }.items():
-            if is_empty(dataframe):
-                raise ValueError(f"{name} must be available before running fact_air_quality_impact")
+        required = require_sources(
+            {
+                "dim_facility": sources.get("dim_facility"),
+                "dim_air_quality_category": sources.get("dim_air_quality_category"),
+                "dim_time": sources.get("dim_time"),
+            },
+            {
+                "dim_facility": "fact_air_quality_impact",
+                "dim_air_quality_category": "fact_air_quality_impact",
+                "dim_time": "fact_air_quality_impact",
+            },
+        )
+        dim_facility = required["dim_facility"]
+        dim_air_quality = required["dim_air_quality_category"]
+        dim_time = required["dim_time"]
 
         air_quality_records = classify_air_quality(sources.get("daily_air_quality"))
         air_quality_lookup = build_air_quality_lookup(air_quality_records, dim_air_quality)
 
-        base = (
-            hourly.withColumn("full_date", F.to_date("date_hour"))
-            .withColumn("date_key", F.date_format("full_date", "yyyyMMdd").cast("int"))
-            .withColumn("time_key", (F.hour("date_hour") * 100 + F.minute("date_hour")).cast("int"))
-        )
+        base = build_hourly_fact_base(hourly)
+        if is_empty(base):
+            return None
 
         fact = base.join(dim_facility, on="facility_code", how="left")
         if not is_empty(air_quality_lookup):

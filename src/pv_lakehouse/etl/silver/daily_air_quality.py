@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from functools import reduce
 from typing import Optional
 
 from pyspark.sql import DataFrame
@@ -90,7 +91,10 @@ class SilverDailyAirQualityLoader(BaseSilverLoader):
             (F.col("aqi_value").isNull())
             | ((F.col("aqi_value") >= F.lit(0)) & (F.col("aqi_value") <= F.lit(500)))
         )
-        is_valid_expr = F.reduce(lambda acc, expr: acc & expr, validity_conditions[1:], validity_conditions[0])
+        if validity_conditions:
+            is_valid_expr = reduce(lambda acc, expr: acc & expr, validity_conditions)
+        else:
+            is_valid_expr = F.lit(True)
 
         result = grouped.withColumn("is_valid", is_valid_expr)
         result = result.withColumn(

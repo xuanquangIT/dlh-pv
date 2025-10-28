@@ -9,10 +9,12 @@ from pyspark.sql import functions as F
 
 from .base import BaseGoldLoader, GoldTableConfig, SourceTableConfig
 from .common import (
+    build_hourly_fact_base,
     build_weather_lookup,
     classify_weather,
     dec,
     is_empty,
+    require_sources,
 )
 
 
@@ -72,25 +74,28 @@ class GoldFactWeatherImpactLoader(BaseGoldLoader):
         if is_empty(hourly):
             return None
 
-        dim_facility = sources.get("dim_facility")
-        dim_weather_condition = sources.get("dim_weather_condition")
-        dim_time = sources.get("dim_time")
-        for name, dataframe in {
-            "dim_facility": dim_facility,
-            "dim_weather_condition": dim_weather_condition,
-            "dim_time": dim_time,
-        }.items():
-            if is_empty(dataframe):
-                raise ValueError(f"{name} must be available before running fact_weather_impact")
+        required = require_sources(
+            {
+                "dim_facility": sources.get("dim_facility"),
+                "dim_weather_condition": sources.get("dim_weather_condition"),
+                "dim_time": sources.get("dim_time"),
+            },
+            {
+                "dim_facility": "fact_weather_impact",
+                "dim_weather_condition": "fact_weather_impact",
+                "dim_time": "fact_weather_impact",
+            },
+        )
+        dim_facility = required["dim_facility"]
+        dim_weather_condition = required["dim_weather_condition"]
+        dim_time = required["dim_time"]
 
         weather_records = classify_weather(sources.get("daily_weather"))
         weather_lookup = build_weather_lookup(weather_records, dim_weather_condition)
 
-        base = (
-            hourly.withColumn("full_date", F.to_date("date_hour"))
-            .withColumn("date_key", F.date_format("full_date", "yyyyMMdd").cast("int"))
-            .withColumn("time_key", (F.hour("date_hour") * 100 + F.minute("date_hour")).cast("int"))
-        )
+        base = build_hourly_fact_base(hourly)
+        if is_empty(base):
+            return None
 
         fact = base.join(dim_facility, on="facility_code", how="left")
         if not is_empty(weather_lookup):

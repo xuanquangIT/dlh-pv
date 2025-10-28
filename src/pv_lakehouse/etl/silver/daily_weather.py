@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from typing import Optional
+from functools import reduce
 
 from pyspark.sql import DataFrame
 from pyspark.sql import functions as F
@@ -84,7 +85,7 @@ class SilverDailyWeatherLoader(BaseSilverLoader):
             | ((F.col(column) >= F.lit(min_value)) & (F.col(column) <= F.lit(max_value)))
             for column, (min_value, max_value, _) in self._numeric_columns.items()
         ]
-        is_valid_expr = F.reduce(lambda acc, expr: acc & expr, validity_conditions[1:], validity_conditions[0])
+        is_valid_expr = reduce(lambda acc, expr: acc & expr, validity_conditions)
 
         result = grouped.withColumn("is_valid", is_valid_expr)
         result = result.withColumn(
