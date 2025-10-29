@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import logging
+import os
+import shutil
+import tempfile
 from typing import Any, Dict, Iterable, Optional
 
 from pyspark.sql import DataFrame, SparkSession
@@ -48,6 +51,27 @@ DEFAULT_SPARK_CONFIG: Dict[str, str] = {
 }
 
 
+def cleanup_spark_staging(prefix: str = "spark-") -> None:
+    """Delete leftover Spark staging directories in the system temp path."""
+
+    tmp_dir = tempfile.gettempdir()
+    removed = 0
+    for name in os.listdir(tmp_dir):
+        if not name.startswith(prefix):
+            continue
+
+        path = os.path.join(tmp_dir, name)
+        try:
+            if os.path.isdir(path):
+                shutil.rmtree(path, ignore_errors=True)
+                removed += 1
+        except Exception as error:  # pragma: no cover - best effort cleanup
+            LOGGER.debug("Failed to remove staging directory %s: %s", path, error)
+
+    if removed:
+        LOGGER.info("Removed %d Spark staging directories under %s", removed, tmp_dir)
+
+
 def create_spark_session(app_name: str, *, extra_conf: Optional[Dict[str, Any]] = None) -> SparkSession:
     """Create a Spark session configured for Iceberg + MinIO usage."""
 
@@ -71,6 +95,7 @@ def create_spark_session(app_name: str, *, extra_conf: Optional[Dict[str, Any]] 
 
     LOGGER.info("Creating Spark session '%s' with %d config entries", app_name, len(config_items))
     spark = builder.getOrCreate()
+    cleanup_spark_staging()
     return spark
 
 

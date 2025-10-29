@@ -10,7 +10,7 @@ from pyspark.sql import DataFrame, SparkSession
 from pyspark.sql import functions as F
 from pyspark.sql.utils import AnalysisException
 
-from ..utils.spark_utils import create_spark_session, write_iceberg_table
+from ..utils.spark_utils import cleanup_spark_staging, create_spark_session, write_iceberg_table
 
 
 @dataclass
@@ -68,6 +68,7 @@ class BaseGoldLoader:
         if self._spark is not None:
             self._spark.stop()
             self._spark = None
+            cleanup_spark_staging()
 
     def run(self) -> int:
         try:
