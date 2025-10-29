@@ -132,13 +132,17 @@ services:
     user: root
     environment:
       SPARK_NO_DAEMONIZE: "true"
-      AWS_ACCESS_KEY_ID: ${SPARK_SVC_ACCESS_KEY}
-      AWS_SECRET_ACCESS_KEY: ${SPARK_SVC_SECRET_KEY}
+      AWS_ACCESS_KEY_ID: ${MLFLOW_SVC_ACCESS_KEY}
+      AWS_SECRET_ACCESS_KEY: ${MLFLOW_SVC_SECRET_KEY}
+      AWS_REGION: ${S3_REGION}
+      MLFLOW_S3_ENDPOINT_URL: http://minio:9000
       S3_ENDPOINT: ${MINIO_ENDPOINT}
       PYTHONPATH: /opt/workdir/src:$PYTHONPATH
       OPEN_NEM_PRIMARY: ${OPEN_NEM_PRIMARY}
       OPEN_NEM_SECONDARY: ${OPEN_NEM_SECONDARY}
       OPENELECTRICITY_API_KEY: ${OPEN_NEM_PRIMARY}
+      MLFLOW_TRACKING_URI: http://mlflow:${MLFLOW_PORT}
+      SPARK_SUBMIT_OPTIONS: "--conf spark.mlflow.tracking.uri=http://mlflow:${MLFLOW_PORT}"
     volumes:
       - ../:/opt/workdir:ro
       - ./spark/core-site.xml:/opt/spark/conf/core-site.xml:ro
@@ -170,9 +174,13 @@ services:
       SPARK_NO_DAEMONIZE: "true"
       SPARK_WORKER_MEMORY: 4G
       SPARK_WORKER_CORES: 2
-      AWS_ACCESS_KEY_ID: ${SPARK_SVC_ACCESS_KEY}
-      AWS_SECRET_ACCESS_KEY: ${SPARK_SVC_SECRET_KEY}
+      AWS_ACCESS_KEY_ID: ${MLFLOW_SVC_ACCESS_KEY}
+      AWS_SECRET_ACCESS_KEY: ${MLFLOW_SVC_SECRET_KEY}
+      AWS_REGION: ${S3_REGION}
+      MLFLOW_S3_ENDPOINT_URL: http://minio:9000
       S3_ENDPOINT: ${MINIO_ENDPOINT}
+      MLFLOW_TRACKING_URI: http://mlflow:${MLFLOW_PORT}
+      SPARK_SUBMIT_OPTIONS: "--conf spark.mlflow.tracking.uri=http://mlflow:${MLFLOW_PORT}"
     volumes:
       - ../:/opt/workdir:ro
       - ./spark/core-site.xml:/opt/spark/conf/core-site.xml:ro
@@ -233,11 +241,12 @@ services:
       --host 0.0.0.0 --port ${MLFLOW_PORT}
       "
     environment:
-      MLFLOW_S3_ENDPOINT_URL: ${MINIO_ENDPOINT}
+      MLFLOW_S3_ENDPOINT_URL: http://minio:9000
       AWS_ACCESS_KEY_ID: ${MLFLOW_SVC_ACCESS_KEY}
       AWS_SECRET_ACCESS_KEY: ${MLFLOW_SVC_SECRET_KEY}
       AWS_REGION: ${S3_REGION}
       MLFLOW_TRACKING_URI: "http://mlflow:${MLFLOW_PORT}"
+      MLFLOW_SERVER_ALLOWED_HOSTS: "mlflow,mlflow:${MLFLOW_PORT},spark-master,spark-master:${MLFLOW_PORT},spark-master.dlhpv_data-net,spark-master.dlhpv_data-net:${MLFLOW_PORT},localhost,localhost:${MLFLOW_PORT},127.0.0.1,127.0.0.1:${MLFLOW_PORT}"
     ports:
       - "${MLFLOW_PORT}:${MLFLOW_PORT}"
     healthcheck:

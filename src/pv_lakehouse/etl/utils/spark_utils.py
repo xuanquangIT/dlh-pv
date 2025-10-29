@@ -75,6 +75,7 @@ def cleanup_spark_staging(prefix: str = "spark-") -> None:
 def create_spark_session(app_name: str, *, extra_conf: Optional[Dict[str, Any]] = None) -> SparkSession:
     """Create a Spark session configured for Iceberg + MinIO usage."""
 
+    cleanup_spark_staging()
     builder = SparkSession.builder.appName(app_name)
     config_items = dict(DEFAULT_SPARK_CONFIG)
     builder = builder.config(
@@ -94,9 +95,7 @@ def create_spark_session(app_name: str, *, extra_conf: Optional[Dict[str, Any]] 
         builder = builder.config(key, value)
 
     LOGGER.info("Creating Spark session '%s' with %d config entries", app_name, len(config_items))
-    spark = builder.getOrCreate()
-    cleanup_spark_staging()
-    return spark
+    return builder.getOrCreate()
 
 
 def write_iceberg_table(
