@@ -12,7 +12,6 @@ from pyspark.sql import functions as F
 from pv_lakehouse.etl.clients import openelectricity
 from pv_lakehouse.etl.utils.spark_utils import create_spark_session, write_iceberg_table
 
-S3_OUTPUT_BASE = "s3a://lakehouse/bronze/raw_facilities"
 ICEBERG_TABLE = "lh.bronze.raw_facilities"
 
 
@@ -63,20 +62,10 @@ def main() -> None:
         .withColumn("ingest_date", F.to_date("ingest_timestamp"))
     )
 
-    ingest_date = dt.date.today().isoformat()
-    write_mode = "overwrite"
-
-    s3_target = f"{S3_OUTPUT_BASE}/ingest_date={ingest_date}"
-    (
-        spark_df.write.mode(write_mode)
-        .format("parquet")
-        .option("compression", "snappy")
-        .save(s3_target)
-    )
-    print(f"Wrote facilities to {s3_target}")
-
-    write_iceberg_table(spark_df, ICEBERG_TABLE, mode=write_mode)
-    print(f"Wrote to Iceberg table {ICEBERG_TABLE}")
+    # Facilities metadata: always overwrite (master data)
+    write_iceberg_table(spark_df, ICEBERG_TABLE, mode="overwrite")
+    row_count = spark_df.count()
+    print(f"Wrote {row_count} rows to {ICEBERG_TABLE} (mode=overwrite)")
 
     spark.stop()
 

@@ -16,7 +16,6 @@ from pv_lakehouse.etl.clients import openmeteo
 from pv_lakehouse.etl.clients.openmeteo import FacilityLocation, RateLimiter
 from pv_lakehouse.etl.utils.spark_utils import create_spark_session
 
-S3_AIR_BASE = "s3a://lakehouse/bronze/raw_facility_air_quality"
 ICEBERG_AIR_TABLE = "lh.bronze.raw_facility_air_quality"
 
 
@@ -89,7 +88,6 @@ def main() -> None:
 
     spark = create_spark_session(args.app_name)
     ingest_ts = F.current_timestamp()
-    ingest_date = today.isoformat()
 
     air_spark_df = spark.createDataFrame(air_df)
     air_spark_df = (
@@ -102,10 +100,8 @@ def main() -> None:
 
     openmeteo_common.write_dataset(
         air_spark_df,
-        s3_base_path=S3_AIR_BASE,
         iceberg_table=ICEBERG_AIR_TABLE,
         mode=args.mode,
-        ingest_date=ingest_date,
         label="air-quality",
     )
 

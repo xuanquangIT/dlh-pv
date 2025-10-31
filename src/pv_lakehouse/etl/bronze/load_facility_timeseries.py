@@ -15,18 +15,6 @@ from pv_lakehouse.etl.utils.spark_utils import (
     write_iceberg_table,
 )
 
-
-def _delete_s3_path_if_exists(spark, uri: str) -> None:
-    """Delete an S3 path (recursively) if it already exists."""
-
-    jvm = spark._jvm
-    path_cls = jvm.org.apache.hadoop.fs.Path
-    path = path_cls(uri)
-    fs = jvm.org.apache.hadoop.fs.FileSystem.get(path.toUri(), spark._jsc.hadoopConfiguration())
-    if fs.exists(path):
-        fs.delete(path, True)
-
-S3_OUTPUT_BASE = "s3a://lakehouse/bronze/raw_facility_timeseries"
 ICEBERG_TABLE = "lh.bronze.raw_facility_timeseries"
 
 
@@ -115,56 +103,50 @@ def main() -> None:
         .withColumn("interval_date", F.to_date("interval_ts"))
     )
 
-    ingest_date = dt.date.today().isoformat()
-    write_mode = "overwrite" if args.mode == "backfill" else "append"
-
-    # For incremental mode, deduplicate with existing data
-    if args.mode == "incremental":
+    if args.mode == "backfill":
+        # Backfill: overwrite entire table
+        write_iceberg_table(spark_df, ICEBERG_TABLE, mode="overwrite")
+        row_count = spark_df.count()
+        print(f"Wrote {row_count} rows to {ICEBERG_TABLE} (mode=overwrite)")
+        
+    else:  # incremental - use MERGE INTO for upsert
+        # Create temp view for MERGE INTO
+        temp_view = "temp_timeseries_data"
+        spark_df.createOrReplaceTempView(temp_view)
+        
+        # Get all column names
+        columns = spark_df.columns
+        update_set = ", ".join([f"target.{col} = source.{col}" for col in columns])
+        insert_cols = ", ".join(columns)
+        insert_vals = ", ".join([f"source.{col}" for col in columns])
+        
         try:
-            from pyspark.sql.window import Window
+            # Iceberg MERGE INTO: upsert based on (facility_code, interval_ts, metric)
+            merge_sql = f"""
+            MERGE INTO {ICEBERG_TABLE} AS target
+            USING {temp_view} AS source
+            ON target.facility_code = source.facility_code 
+                AND target.interval_ts = source.interval_ts 
+                AND target.metric = source.metric
+            WHEN MATCHED THEN
+                UPDATE SET {update_set}
+            WHEN NOT MATCHED THEN
+                INSERT ({insert_cols})
+                VALUES ({insert_vals})
+            """
             
-            # Read existing data from Iceberg table
-            existing_df = spark.read.table(ICEBERG_TABLE)
+            print("Executing MERGE INTO for timeseries...")
+            spark.sql(merge_sql)
             
-            # Union new + existing data
-            combined_df = spark_df.unionByName(existing_df, allowMissingColumns=True)
-            
-            # Deduplicate: keep latest record per (facility_code, interval_ts, metric)
-            window_spec = Window.partitionBy("facility_code", "interval_ts", "metric").orderBy(
-                F.col("ingest_timestamp").desc()
-            )
-            deduped_df = (
-                combined_df
-                .withColumn("_row_num", F.row_number().over(window_spec))
-                .filter(F.col("_row_num") == 1)
-                .drop("_row_num")
-            )
-            
-            print(f"Deduplicated timeseries: {combined_df.count()} → {deduped_df.count()} rows")
-            spark_df = deduped_df
-            write_mode = "overwrite"  # Overwrite with deduped data
+            row_count = spark_df.count()
+            print(f"Merged {row_count} rows into {ICEBERG_TABLE} (upsert mode)")
             
         except Exception as e:
-            print(f"Could not read existing table (may not exist yet): {e}")
-            # If table doesn't exist, just write new data
-
-    s3_target = f"{S3_OUTPUT_BASE}/ingest_date={ingest_date}"
-
-    # Remove any stale commit state left from interrupted runs
-    _delete_s3_path_if_exists(spark, f"{s3_target}/_temporary")
-    if write_mode == "overwrite":
-        _delete_s3_path_if_exists(spark, s3_target)
-
-    (
-        spark_df.write.mode(write_mode)
-        .format("parquet")
-        .option("compression", "snappy")
-        .save(s3_target)
-    )
-    print(f"Wrote timeseries to {s3_target}")
-
-    write_iceberg_table(spark_df, ICEBERG_TABLE, mode=write_mode)
-    print(f"Wrote to Iceberg table {ICEBERG_TABLE} (mode={write_mode})")
+            print(f"MERGE INTO failed (table may not exist): {e}")
+            print("Falling back to append mode for first load...")
+            write_iceberg_table(spark_df, ICEBERG_TABLE, mode="append")
+            row_count = spark_df.count()
+            print(f"Appended {row_count} rows to {ICEBERG_TABLE}")
 
     spark.stop()
 

@@ -74,66 +74,68 @@ def load_facility_locations(
 def write_dataset(
     spark_df,  # type: ignore[valid-type]
     *,
-    s3_base_path: str,
     iceberg_table: str,
     mode: str,
-    ingest_date: str,
     label: str,
 ) -> None:
-    """Persist a Spark DataFrame to S3 and Iceberg with Bronze conventions."""
-    from pyspark.sql import functions as F
-    from pyspark.sql.window import Window
+    """
+    Persist a Spark DataFrame to Iceberg Bronze table using MERGE INTO for deduplication.
     
-    write_mode = "overwrite" if mode == "backfill" else "append"
+    Modes:
+    - backfill: Overwrite entire table
+    - incremental: MERGE INTO (upsert) - updates existing records, inserts new ones
     
-    # For incremental mode, deduplicate with existing data in Iceberg table
-    if mode == "incremental":
-        spark = spark_df.sparkSession
+    Uses Iceberg MERGE INTO SQL for efficient deduplication without loading full table.
+    """
+    spark = spark_df.sparkSession
+    
+    if mode == "backfill":
+        # Backfill: overwrite entire table
+        write_iceberg_table(spark_df, iceberg_table, mode="overwrite")
+        row_count = spark_df.count()
+        print(f"Wrote {row_count} rows of {label} data to {iceberg_table} (mode=overwrite)")
+        
+    else:  # incremental
+        # Create temp view for MERGE INTO
+        temp_view = "temp_bronze_data"
+        spark_df.createOrReplaceTempView(temp_view)
+        
+        # Determine merge keys based on table type
+        if "weather_timestamp" in spark_df.columns:
+            merge_keys = "target.facility_code = source.facility_code AND target.weather_timestamp = source.weather_timestamp"
+        elif "air_timestamp" in spark_df.columns:
+            merge_keys = "target.facility_code = source.facility_code AND target.air_timestamp = source.air_timestamp"
+        else:
+            merge_keys = "target.facility_code = source.facility_code AND target.date = source.date"
+        
+        # Get all column names for UPDATE SET and INSERT
+        columns = spark_df.columns
+        update_set = ", ".join([f"target.{col} = source.{col}" for col in columns])
+        insert_cols = ", ".join(columns)
+        insert_vals = ", ".join([f"source.{col}" for col in columns])
+        
         try:
-            # Read existing data from Iceberg table
-            existing_df = spark.read.table(iceberg_table)
+            # Iceberg MERGE INTO: upsert (update if exists, insert if new)
+            merge_sql = f"""
+            MERGE INTO {iceberg_table} AS target
+            USING {temp_view} AS source
+            ON {merge_keys}
+            WHEN MATCHED THEN
+                UPDATE SET {update_set}
+            WHEN NOT MATCHED THEN
+                INSERT ({insert_cols})
+                VALUES ({insert_vals})
+            """
             
-            # Determine dedup keys based on table (weather vs air_quality)
-            if "weather_timestamp" in spark_df.columns:
-                dedup_cols = ["facility_code", "weather_timestamp"]
-            elif "air_timestamp" in spark_df.columns:
-                dedup_cols = ["facility_code", "air_timestamp"]
-            else:
-                dedup_cols = ["facility_code", "date"]
+            print(f"Executing MERGE INTO for {label}...")
+            spark.sql(merge_sql)
             
-            # Union new + existing data, then deduplicate keeping latest ingest_timestamp
-            combined_df = spark_df.unionByName(existing_df, allowMissingColumns=True)
-            
-            # Use window function to keep only the latest record per key
-            window_spec = Window.partitionBy(*dedup_cols).orderBy(F.col("ingest_timestamp").desc())
-            deduped_df = (
-                combined_df
-                .withColumn("_row_num", F.row_number().over(window_spec))
-                .filter(F.col("_row_num") == 1)
-                .drop("_row_num")
-            )
-            
-            print(f"Deduplicated: {combined_df.count()} → {deduped_df.count()} rows")
-            spark_df = deduped_df
-            write_mode = "overwrite"  # Overwrite with deduped data
+            row_count = spark_df.count()
+            print(f"Merged {row_count} rows into {iceberg_table} (upsert mode)")
             
         except Exception as e:
-            print(f"Could not read existing table (may not exist yet): {e}")
-            # If table doesn't exist, just write new data
-            pass
-    
-    s3_target = f"{s3_base_path}/ingest_date={ingest_date}"
-    (
-        spark_df.write.mode(write_mode)
-        .format("parquet")
-        .option("compression", "snappy")
-        .save(s3_target)
-    )
-    print(f"Wrote {label} parquet to {s3_target}")
-
-    write_iceberg_table(
-        spark_df,
-        iceberg_table,
-        mode=write_mode,
-    )
-    print(f"Wrote {label} data to Iceberg table {iceberg_table} (mode={write_mode})")
+            print(f"MERGE INTO failed (table may not exist): {e}")
+            print(f"Falling back to append mode for first load...")
+            write_iceberg_table(spark_df, iceberg_table, mode="append")
+            row_count = spark_df.count()
+            print(f"Appended {row_count} rows to {iceberg_table}")
