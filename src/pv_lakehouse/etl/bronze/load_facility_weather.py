@@ -21,50 +21,34 @@ ICEBERG_WEATHER_TABLE = "lh.bronze.raw_facility_weather"
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Load Open-Meteo facility weather data into Bronze zone")
+    parser = argparse.ArgumentParser(description="Load facility weather data into Bronze zone")
     parser.add_argument("--mode", choices=["backfill", "incremental"], default="incremental")
-    parser.add_argument("--facility-codes", help="Comma separated facility codes to include")
-    parser.add_argument("--start", type=openmeteo_common.parse_date, help="Start date (YYYY-MM-DD). Defaults to yesterday.")
-    parser.add_argument("--end", type=openmeteo_common.parse_date, help="End date (YYYY-MM-DD). Defaults to today.")
-    parser.add_argument("--weather-chunk-days", type=int, default=30)
-    parser.add_argument("--weather-vars", default=openmeteo.DEFAULT_WEATHER_VARS)
-    parser.add_argument(
-        "--weather-endpoint",
-        choices=sorted({"auto", *openmeteo.WEATHER_ENDPOINTS.keys()}),
-        default="auto",
-    )
-    parser.add_argument("--timezone", default="UTC")
-    parser.add_argument("--max-requests-per-minute", type=float, default=30.0)
-    parser.add_argument("--max-workers", type=int, default=4, help="Concurrent facility fetch workers")
-    parser.add_argument("--max-retries", type=int, default=openmeteo.DEFAULT_MAX_RETRIES)
-    parser.add_argument("--retry-backoff", type=float, default=openmeteo.DEFAULT_RETRY_BACKOFF)
-    parser.add_argument("--s3-weather-path", default=S3_WEATHER_BASE)
-    parser.add_argument("--iceberg-weather-table", default=ICEBERG_WEATHER_TABLE)
-    parser.add_argument(
-        "--openelectricity-api-key",
-        help="Override OpenElectricity API key used to resolve facility locations",
-    )
-    parser.add_argument("--app-name", default="bronze-facility-weather")
+    parser.add_argument("--facility-codes", help="Comma-separated facility codes (default: all solar facilities)")
+    parser.add_argument("--start", type=openmeteo_common.parse_date, help="Start date YYYY-MM-DD (default: yesterday)")
+    parser.add_argument("--end", type=openmeteo_common.parse_date, help="End date YYYY-MM-DD (default: today)")
+    parser.add_argument("--api-key", help="Override OpenElectricity API key")
+    parser.add_argument("--max-workers", type=int, default=4, help="Concurrent threads (default: 4)")
+    parser.add_argument("--app-name", default="bronze-weather")
     return parser.parse_args()
 
 
 def collect_weather_data(facilities: List[FacilityLocation], args: argparse.Namespace) -> pd.DataFrame:
-    limiter = RateLimiter(args.max_requests_per_minute)
+    limiter = RateLimiter(30.0)  # 30 requests/minute for free API
     frames: List[pd.DataFrame] = []
 
     def fetch_for_facility(facility: FacilityLocation) -> pd.DataFrame:
-        print(f"Fetching weather for facility {facility.code} ({facility.name})")
+        print(f"Fetching weather: {facility.code} ({facility.name})")
         return openmeteo.fetch_weather_dataframe(
             facility,
             start=args.start,
             end=args.end,
-            chunk_days=args.weather_chunk_days,
-            hourly_variables=args.weather_vars,
-            endpoint_preference=args.weather_endpoint,
-            timezone=args.timezone,
+            chunk_days=30,  # 30 days per chunk for archive API
+            hourly_variables=openmeteo.DEFAULT_WEATHER_VARS,
+            endpoint_preference="auto",
+            timezone="UTC",
             limiter=limiter,
-            max_retries=args.max_retries,
-            retry_backoff=args.retry_backoff,
+            max_retries=openmeteo.DEFAULT_MAX_RETRIES,
+            retry_backoff=openmeteo.DEFAULT_RETRY_BACKOFF,
             max_workers=args.max_workers,
         )
 
@@ -97,7 +81,7 @@ def main() -> None:
         raise SystemExit("End date must not be before start date")
 
     facility_codes = openmeteo_common.resolve_facility_codes(args.facility_codes)
-    facilities = openmeteo_common.load_facility_locations(facility_codes, args.openelectricity_api_key)
+    facilities = openmeteo_common.load_facility_locations(facility_codes, args.api_key)
 
     weather_df = collect_weather_data(facilities, args)
     if weather_df.empty:
@@ -121,8 +105,8 @@ def main() -> None:
 
     openmeteo_common.write_dataset(
         weather_spark_df,
-        s3_base_path=args.s3_weather_path,
-        iceberg_table=args.iceberg_weather_table,
+        s3_base_path=S3_WEATHER_BASE,
+        iceberg_table=ICEBERG_WEATHER_TABLE,
         mode=args.mode,
         ingest_date=ingest_date,
         label="weather",

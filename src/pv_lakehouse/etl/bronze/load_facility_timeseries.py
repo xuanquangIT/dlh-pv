@@ -7,13 +7,11 @@ import argparse
 import datetime as dt
 from typing import List, Optional
 
-import pandas as pd
 from pyspark.sql import functions as F
 
 from pv_lakehouse.etl.clients import openelectricity
 from pv_lakehouse.etl.utils.spark_utils import (
     create_spark_session,
-    register_iceberg_table_with_trino,
     write_iceberg_table,
 )
 
@@ -39,20 +37,11 @@ def parse_csv(value: Optional[str]) -> List[str]:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Load OpenElectricity facility timeseries into Bronze zone")
     parser.add_argument("--mode", choices=["backfill", "incremental"], default="incremental")
-    parser.add_argument(
-        "--facility-codes",
-        help="Comma separated facility codes to fetch (defaults to core solar facilities if omitted)",
-    )
-    parser.add_argument("--metrics", default="power,energy,market_value,price", help="Comma separated metrics")
-    parser.add_argument("--interval", default="1h", help="Data interval (5m,1h,1d,...) ")
+    parser.add_argument("--facility-codes", help="Comma-separated facility codes (default: all solar facilities)")
     parser.add_argument("--date-start", help="Start timestamp (YYYY-MM-DDTHH:MM:SS)")
     parser.add_argument("--date-end", help="End timestamp (YYYY-MM-DDTHH:MM:SS)")
-    parser.add_argument("--api-key", help="Override API key (otherwise env/.env)")
-    parser.add_argument("--target-window-days", type=int, default=7)
-    parser.add_argument("--max-lookback-windows", type=int, default=52)
-    parser.add_argument("--s3-base-path", default=S3_OUTPUT_BASE)
-    parser.add_argument("--iceberg-table", default=ICEBERG_TABLE)
-    parser.add_argument("--app-name", default="bronze-openelectricity-timeseries")
+    parser.add_argument("--api-key", help="Override API key")
+    parser.add_argument("--app-name", default="bronze-timeseries")
     return parser.parse_args()
 
 
@@ -63,21 +52,53 @@ def resolve_facility_codes(args: argparse.Namespace) -> List[str]:
     return openelectricity.load_default_facility_codes()
 
 
+def adjust_utc_to_brisbane(utc_datetime_str: Optional[str]) -> Optional[str]:
+    """
+    Convert UTC datetime string to Brisbane local time (UTC+10) for OpenElectricity API.
+    
+    OpenElectricity API interprets datetime parameters in network local time.
+    For NEM (Brisbane), we need to add 10 hours to UTC time.
+    
+    Example:
+        Input:  "2025-10-01T00:00:00" (intended as UTC)
+        Output: "2025-10-01T10:00:00" (Brisbane time, equals 2025-10-01 00:00 UTC)
+    """
+    if not utc_datetime_str:
+        return None
+    
+    # Parse the UTC datetime
+    utc_dt = dt.datetime.fromisoformat(utc_datetime_str)
+    
+    # Add 10 hours offset for Brisbane (UTC+10)
+    brisbane_dt = utc_dt + dt.timedelta(hours=10)
+    
+    # Return in the same format
+    return brisbane_dt.strftime("%Y-%m-%dT%H:%M:%S")
+
+
 def main() -> None:
     args = parse_args()
 
     facility_codes = resolve_facility_codes(args)
-    metrics = parse_csv(args.metrics)
+
+    # Convert UTC datetime to Brisbane timezone for OpenElectricity API
+    # API interprets datetime as network local time (Brisbane = UTC+10)
+    adjusted_start = adjust_utc_to_brisbane(args.date_start)
+    adjusted_end = adjust_utc_to_brisbane(args.date_end)
+    
+    if adjusted_start and adjusted_end:
+        print(f"UTC request: {args.date_start} → {args.date_end}")
+        print(f"Brisbane time (API): {adjusted_start} → {adjusted_end}")
 
     dataframe = openelectricity.fetch_facility_timeseries_dataframe(
         facility_codes=facility_codes,
-        metrics=metrics or None,
-        interval=args.interval,
-        date_start=args.date_start,
-        date_end=args.date_end,
+        metrics=["energy"],  
+        interval="1h", 
+        date_start=adjusted_start,
+        date_end=adjusted_end,
         api_key=args.api_key,
-        target_window_days=args.target_window_days,
-        max_lookback_windows=args.max_lookback_windows,
+        target_window_days=7,
+        max_lookback_windows=52,
     )
 
     if dataframe.empty:
@@ -97,9 +118,39 @@ def main() -> None:
     ingest_date = dt.date.today().isoformat()
     write_mode = "overwrite" if args.mode == "backfill" else "append"
 
-    s3_target = f"{args.s3_base_path}/ingest_date={ingest_date}"
+    # For incremental mode, deduplicate with existing data
+    if args.mode == "incremental":
+        try:
+            from pyspark.sql.window import Window
+            
+            # Read existing data from Iceberg table
+            existing_df = spark.read.table(ICEBERG_TABLE)
+            
+            # Union new + existing data
+            combined_df = spark_df.unionByName(existing_df, allowMissingColumns=True)
+            
+            # Deduplicate: keep latest record per (facility_code, interval_ts, metric)
+            window_spec = Window.partitionBy("facility_code", "interval_ts", "metric").orderBy(
+                F.col("ingest_timestamp").desc()
+            )
+            deduped_df = (
+                combined_df
+                .withColumn("_row_num", F.row_number().over(window_spec))
+                .filter(F.col("_row_num") == 1)
+                .drop("_row_num")
+            )
+            
+            print(f"Deduplicated timeseries: {combined_df.count()} → {deduped_df.count()} rows")
+            spark_df = deduped_df
+            write_mode = "overwrite"  # Overwrite with deduped data
+            
+        except Exception as e:
+            print(f"Could not read existing table (may not exist yet): {e}")
+            # If table doesn't exist, just write new data
 
-    # Remove any stale commit state left from interrupted runs which can break S3 renames
+    s3_target = f"{S3_OUTPUT_BASE}/ingest_date={ingest_date}"
+
+    # Remove any stale commit state left from interrupted runs
     _delete_s3_path_if_exists(spark, f"{s3_target}/_temporary")
     if write_mode == "overwrite":
         _delete_s3_path_if_exists(spark, s3_target)
@@ -110,16 +161,10 @@ def main() -> None:
         .option("compression", "snappy")
         .save(s3_target)
     )
-    print(f"Wrote timeseries parquet to {s3_target}")
+    print(f"Wrote timeseries to {s3_target}")
 
-    write_iceberg_table(
-        spark_df,
-        args.iceberg_table,
-        mode="overwrite" if args.mode == "backfill" else "append",
-    )
-    print(f"Upserted timeseries into Iceberg table {args.iceberg_table}")
-
-    register_iceberg_table_with_trino(spark, args.iceberg_table)
+    write_iceberg_table(spark_df, ICEBERG_TABLE, mode=write_mode)
+    print(f"Wrote to Iceberg table {ICEBERG_TABLE} (mode={write_mode})")
 
     spark.stop()
 

@@ -48,6 +48,7 @@ DEFAULT_SPARK_CONFIG: Dict[str, str] = {
     "spark.hadoop.mapreduce.fileoutputcommitter.cleanup-failures.ignored": "true",
     "spark.sql.iceberg.compression-codec": "snappy",
     "spark.sql.adaptive.enabled": "true",
+    "spark.sql.session.timeZone": "UTC",
 }
 
 

@@ -21,44 +21,33 @@ ICEBERG_AIR_TABLE = "lh.bronze.raw_facility_air_quality"
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Load Open-Meteo facility air quality data into Bronze zone")
+    parser = argparse.ArgumentParser(description="Load facility air quality data into Bronze zone")
     parser.add_argument("--mode", choices=["backfill", "incremental"], default="incremental")
-    parser.add_argument("--facility-codes", help="Comma separated facility codes to include")
-    parser.add_argument("--start", type=openmeteo_common.parse_date, help="Start date (YYYY-MM-DD). Defaults to yesterday.")
-    parser.add_argument("--end", type=openmeteo_common.parse_date, help="End date (YYYY-MM-DD). Defaults to today.")
-    parser.add_argument("--air-chunk-days", type=int, default=openmeteo.AIR_QUALITY_MAX_DAYS)
-    parser.add_argument("--air-vars", default=openmeteo.DEFAULT_AIR_VARS)
-    parser.add_argument("--timezone", default="UTC")
-    parser.add_argument("--max-requests-per-minute", type=float, default=30.0)
-    parser.add_argument("--max-workers", type=int, default=4, help="Concurrent facility fetch workers")
-    parser.add_argument("--max-retries", type=int, default=openmeteo.DEFAULT_MAX_RETRIES)
-    parser.add_argument("--retry-backoff", type=float, default=openmeteo.DEFAULT_RETRY_BACKOFF)
-    parser.add_argument("--s3-air-path", default=S3_AIR_BASE)
-    parser.add_argument("--iceberg-air-table", default=ICEBERG_AIR_TABLE)
-    parser.add_argument(
-        "--openelectricity-api-key",
-        help="Override OpenElectricity API key used to resolve facility locations",
-    )
-    parser.add_argument("--app-name", default="bronze-facility-air-quality")
+    parser.add_argument("--facility-codes", help="Comma-separated facility codes (default: all solar facilities)")
+    parser.add_argument("--start", type=openmeteo_common.parse_date, help="Start date YYYY-MM-DD (default: yesterday)")
+    parser.add_argument("--end", type=openmeteo_common.parse_date, help="End date YYYY-MM-DD (default: today)")
+    parser.add_argument("--api-key", help="Override OpenElectricity API key")
+    parser.add_argument("--max-workers", type=int, default=4, help="Concurrent threads (default: 4)")
+    parser.add_argument("--app-name", default="bronze-air-quality")
     return parser.parse_args()
 
 
 def collect_air_quality_data(facilities: List[FacilityLocation], args: argparse.Namespace) -> pd.DataFrame:
-    limiter = RateLimiter(args.max_requests_per_minute)
+    limiter = RateLimiter(30.0)  # 30 requests/minute for free API
     frames: List[pd.DataFrame] = []
 
     def fetch_for_facility(facility: FacilityLocation) -> pd.DataFrame:
-        print(f"Fetching air quality for facility {facility.code} ({facility.name})")
+        print(f"Fetching air quality: {facility.code} ({facility.name})")
         return openmeteo.fetch_air_quality_dataframe(
             facility,
             start=args.start,
             end=args.end,
-            chunk_days=args.air_chunk_days,
-            hourly_variables=args.air_vars,
-            timezone=args.timezone,
+            chunk_days=openmeteo.AIR_QUALITY_MAX_DAYS,  # 14 days max
+            hourly_variables=openmeteo.DEFAULT_AIR_VARS,
+            timezone="UTC",
             limiter=limiter,
-            max_retries=args.max_retries,
-            retry_backoff=args.retry_backoff,
+            max_retries=openmeteo.DEFAULT_MAX_RETRIES,
+            retry_backoff=openmeteo.DEFAULT_RETRY_BACKOFF,
             max_workers=args.max_workers,
         )
 
@@ -91,7 +80,7 @@ def main() -> None:
         raise SystemExit("End date must not be before start date")
 
     facility_codes = openmeteo_common.resolve_facility_codes(args.facility_codes)
-    facilities = openmeteo_common.load_facility_locations(facility_codes, args.openelectricity_api_key)
+    facilities = openmeteo_common.load_facility_locations(facility_codes, args.api_key)
 
     air_df = collect_air_quality_data(facilities, args)
     if air_df.empty:
@@ -113,8 +102,8 @@ def main() -> None:
 
     openmeteo_common.write_dataset(
         air_spark_df,
-        s3_base_path=args.s3_air_path,
-        iceberg_table=args.iceberg_air_table,
+        s3_base_path=S3_AIR_BASE,
+        iceberg_table=ICEBERG_AIR_TABLE,
         mode=args.mode,
         ingest_date=ingest_date,
         label="air-quality",

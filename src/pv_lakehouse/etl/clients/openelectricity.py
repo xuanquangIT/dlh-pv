@@ -538,17 +538,6 @@ def fetch_facility_timeseries_dataframe(
 
         if manual_start and manual_end:
             window_rows = fetch_window(manual_start, manual_end)
-            if not window_rows:
-                fallback_end = manual_end
-                fallback_start = manual_start
-                attempts = 0
-                while attempts < max_lookback_windows and fallback_start < fallback_end:
-                    fallback_start = fallback_end - dt.timedelta(days=target_window_days)
-                    window_rows = fetch_window(fallback_start, fallback_end)
-                    if window_rows:
-                        break
-                    fallback_end = fallback_start
-                    attempts += 1
             rows.extend(window_rows)
             continue
 

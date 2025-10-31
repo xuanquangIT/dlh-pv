@@ -81,7 +81,47 @@ def write_dataset(
     label: str,
 ) -> None:
     """Persist a Spark DataFrame to S3 and Iceberg with Bronze conventions."""
+    from pyspark.sql import functions as F
+    from pyspark.sql.window import Window
+    
     write_mode = "overwrite" if mode == "backfill" else "append"
+    
+    # For incremental mode, deduplicate with existing data in Iceberg table
+    if mode == "incremental":
+        spark = spark_df.sparkSession
+        try:
+            # Read existing data from Iceberg table
+            existing_df = spark.read.table(iceberg_table)
+            
+            # Determine dedup keys based on table (weather vs air_quality)
+            if "weather_timestamp" in spark_df.columns:
+                dedup_cols = ["facility_code", "weather_timestamp"]
+            elif "air_timestamp" in spark_df.columns:
+                dedup_cols = ["facility_code", "air_timestamp"]
+            else:
+                dedup_cols = ["facility_code", "date"]
+            
+            # Union new + existing data, then deduplicate keeping latest ingest_timestamp
+            combined_df = spark_df.unionByName(existing_df, allowMissingColumns=True)
+            
+            # Use window function to keep only the latest record per key
+            window_spec = Window.partitionBy(*dedup_cols).orderBy(F.col("ingest_timestamp").desc())
+            deduped_df = (
+                combined_df
+                .withColumn("_row_num", F.row_number().over(window_spec))
+                .filter(F.col("_row_num") == 1)
+                .drop("_row_num")
+            )
+            
+            print(f"Deduplicated: {combined_df.count()} → {deduped_df.count()} rows")
+            spark_df = deduped_df
+            write_mode = "overwrite"  # Overwrite with deduped data
+            
+        except Exception as e:
+            print(f"Could not read existing table (may not exist yet): {e}")
+            # If table doesn't exist, just write new data
+            pass
+    
     s3_target = f"{s3_base_path}/ingest_date={ingest_date}"
     (
         spark_df.write.mode(write_mode)
@@ -96,4 +136,4 @@ def write_dataset(
         iceberg_table,
         mode=write_mode,
     )
-    print(f"Upserted {label} data into Iceberg table {iceberg_table}")
+    print(f"Wrote {label} data to Iceberg table {iceberg_table} (mode={write_mode})")
