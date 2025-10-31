@@ -35,12 +35,12 @@ class GoldFactKpiPerformanceLoader(BaseGoldLoader):
                 "completeness_pct",
             ],
         ),
-        "daily_weather": SourceTableConfig(
-            table_name="lh.silver.clean_daily_weather",
+        "hourly_weather": SourceTableConfig(
+            table_name="lh.silver.clean_hourly_weather",
             timestamp_column="updated_at",
             required_columns=[
                 "facility_code",
-                "date",
+                "date_hour",
                 "shortwave_radiation",
                 "direct_radiation",
                 "diffuse_radiation",
@@ -51,12 +51,12 @@ class GoldFactKpiPerformanceLoader(BaseGoldLoader):
                 "sunshine_duration",
             ],
         ),
-        "daily_air_quality": SourceTableConfig(
-            table_name="lh.silver.clean_daily_air_quality",
+        "hourly_air_quality": SourceTableConfig(
+            table_name="lh.silver.clean_hourly_air_quality",
             timestamp_column="updated_at",
             required_columns=[
                 "facility_code",
-                "date",
+                "date_hour",
                 "pm2_5",
                 "pm10",
                 "dust",
@@ -110,8 +110,8 @@ class GoldFactKpiPerformanceLoader(BaseGoldLoader):
             if is_empty(dataframe):
                 raise ValueError(f"{name} must be populated before running fact_kpi_performance")
 
-        weather_records = classify_weather(sources.get("daily_weather"))
-        air_quality_records = classify_air_quality(sources.get("daily_air_quality"))
+        weather_records = classify_weather(sources.get("hourly_weather"))
+        air_quality_records = classify_air_quality(sources.get("hourly_air_quality"))
 
         weather_lookup = build_weather_lookup(weather_records, dim_weather_condition)
         air_quality_lookup = build_air_quality_lookup(air_quality_records, dim_air_quality_category)

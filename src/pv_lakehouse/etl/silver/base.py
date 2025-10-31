@@ -34,6 +34,10 @@ class BaseSilverLoader:
     s3_base_path: str
     timestamp_column: str
     partition_cols: Sequence[str] = ()
+    
+    # Default Iceberg file size settings
+    DEFAULT_TARGET_FILE_SIZE_MB = 8
+    DEFAULT_MAX_RECORDS_PER_FILE = 10_000
 
     def __init__(self, options: Optional[LoadOptions] = None) -> None:
         self.options = options or LoadOptions()
@@ -55,24 +59,98 @@ class BaseSilverLoader:
             self._spark = None
             cleanup_spark_staging()
 
-    def run(self) -> int:
+    def _process_in_chunks(self, bronze_df: DataFrame, chunk_days: int) -> int:
+        """
+        Process bronze data in time-based chunks to limit concurrent partition writers.
+        
+        Args:
+            bronze_df: Source bronze DataFrame
+            chunk_days: Chunk size in days (e.g., 3 for energy, 7 for weather/air_quality)
+            
+        Returns:
+            Total number of rows written across all chunks
+        """
+        timestamp_col = self.timestamp_column
+        if timestamp_col not in bronze_df.columns:
+            raise ValueError(
+                f"Timestamp column '{timestamp_col}' missing from bronze table {self.bronze_table}"
+            )
+
+        # Get data time range
+        min_ts = bronze_df.select(F.min(F.col(timestamp_col))).collect()[0][0]
+        max_ts = bronze_df.select(F.max(F.col(timestamp_col))).collect()[0][0]
+        if min_ts is None or max_ts is None:
+            return 0
+
+        # Apply user-specified time range filters
+        if isinstance(self.options.start, dt.datetime):
+            min_ts = max(min_ts, self.options.start)
+        elif isinstance(self.options.start, dt.date):
+            min_ts = max(min_ts, dt.datetime.combine(self.options.start, dt.time.min))
+
+        if isinstance(self.options.end, dt.datetime):
+            max_ts = min(max_ts, self.options.end)
+        elif isinstance(self.options.end, dt.date):
+            max_ts = min(max_ts, dt.datetime.combine(self.options.end, dt.time.max))
+
+        if min_ts > max_ts:
+            return 0
+
+        # Process in chunks
+        chunk_start = min_ts.replace(hour=0, minute=0, second=0, microsecond=0)
+        total_rows = 0
+
+        # Backup original options to restore after chunking
+        original_start = self.options.start
+        original_end = self.options.end
+
         try:
-            bronze_df = self._read_bronze()
-            if bronze_df is None:
-                return 0
+            while chunk_start <= max_ts:
+                chunk_end = min(max_ts, chunk_start + dt.timedelta(days=chunk_days) - dt.timedelta(microseconds=1))
 
-            transformed_df = self.transform(bronze_df)
-            if transformed_df is None:
-                return 0
+                print(
+                    f"Processing {chunk_days}-day chunk ({chunk_start.strftime('%Y-%m-%d')}): "
+                    f"{chunk_start.isoformat()} -> {chunk_end.isoformat()}"
+                )
 
-            row_count = transformed_df.count()
-            if row_count == 0:
-                return 0
+                # Filter to chunk time range
+                chunk_df = bronze_df.filter(
+                    (F.col(timestamp_col) >= F.lit(chunk_start)) & (F.col(timestamp_col) <= F.lit(chunk_end))
+                )
 
-            self._write_outputs(transformed_df, row_count)
-            return row_count
+                # Persist to avoid recomputation
+                chunk_df.persist()
+                
+                try:
+                    transformed_df = self.transform(chunk_df)
+                    if transformed_df is None:
+                        chunk_start = chunk_end + dt.timedelta(microseconds=1)
+                        continue
+
+                    # Materialize count before write to ensure transform is complete
+                    row_count = transformed_df.count()
+                    if row_count == 0:
+                        chunk_start = chunk_end + dt.timedelta(microseconds=1)
+                        continue
+
+                    # Update options for partition-aware write
+                    self.options.start = chunk_start
+                    self.options.end = chunk_end
+                    self._write_outputs(transformed_df)
+                    total_rows += row_count
+
+                    print(f"Finished {chunk_days}-day chunk: wrote {row_count} rows to {self.silver_table}")
+                finally:
+                    # Release memory immediately after processing each chunk
+                    chunk_df.unpersist()
+
+                chunk_start = chunk_end + dt.timedelta(microseconds=1)
         finally:
-            self.close()
+            # Restore original options
+            self.options.start = original_start
+            self.options.end = original_end
+
+        return total_rows
 
     # ------------------------------------------------------------------
     # Abstract hooks
@@ -94,12 +172,10 @@ class BaseSilverLoader:
                 f"Timestamp column '{self.timestamp_column}' missing from bronze table {self.bronze_table}"
             )
 
+        # Mode validation already done in _validate_options()
         start_literal = self._normalise_datetime(self.options.start)
         end_literal = self._normalise_datetime(self.options.end)
         timestamp_col = F.col(self.timestamp_column)
-
-        if self.options.mode not in {"full", "incremental"}:
-            raise ValueError("mode must be either 'full' or 'incremental'")
 
         if start_literal:
             df = df.filter(timestamp_col >= F.to_timestamp(F.lit(start_literal)))
@@ -119,12 +195,10 @@ class BaseSilverLoader:
             return value
         raise TypeError(f"Unsupported datetime value: {value!r}")
 
-    def _write_outputs(self, dataframe: DataFrame, row_count: int) -> None:
+    def _write_outputs(self, dataframe: DataFrame) -> None:
+        # Strategy validation already done in _validate_options()
+        # Both 'merge' and 'overwrite' use overwritePartitions mode
         load_strategy = self.options.load_strategy
-        if load_strategy not in {"overwrite", "merge"}:
-            raise ValueError("load_strategy must be 'overwrite' or 'merge'")
-
-        # 'merge' uses overwritePartitions to replace impacted slices
         iceberg_mode = "overwrite" if load_strategy in {"overwrite", "merge"} else "append"
         s3_mode = "overwrite" if load_strategy in {"overwrite", "merge"} else "append"
 
@@ -174,13 +248,6 @@ class BaseSilverLoader:
             return self.spark.table(self.silver_table)
         except AnalysisException:
             return None
-
-    def _maybe_add_columns(self, dataframe: DataFrame, columns: Iterable[str]) -> DataFrame:
-        result = dataframe
-        for column in columns:
-            if column not in result.columns:
-                result = result.withColumn(column, F.lit(None))
-        return result
 
     def _validate_options(self) -> None:
         if self.options.mode not in {"full", "incremental"}:

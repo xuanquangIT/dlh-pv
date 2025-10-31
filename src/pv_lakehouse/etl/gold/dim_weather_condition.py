@@ -12,15 +12,15 @@ from .common import classify_weather, is_empty
 
 
 class GoldDimWeatherConditionLoader(BaseGoldLoader):
-    """Builds the weather condition dimension from Silver daily weather."""
+    """Builds the weather condition dimension from Silver hourly weather."""
 
     source_tables: Dict[str, SourceTableConfig] = {
-        "daily_weather": SourceTableConfig(
-            table_name="lh.silver.clean_daily_weather",
+        "hourly_weather": SourceTableConfig(
+            table_name="lh.silver.clean_hourly_weather",
             timestamp_column="updated_at",
             required_columns=[
                 "facility_code",
-                "date",
+                "date_hour",
                 "shortwave_radiation",
                 "direct_radiation",
                 "diffuse_radiation",
@@ -38,7 +38,7 @@ class GoldDimWeatherConditionLoader(BaseGoldLoader):
     }
 
     def transform(self, sources: Dict[str, DataFrame]) -> Optional[Dict[str, DataFrame]]:
-        weather = sources.get("daily_weather")
+        weather = sources.get("hourly_weather")
         weather_records = classify_weather(weather)
         if is_empty(weather_records):
             return None

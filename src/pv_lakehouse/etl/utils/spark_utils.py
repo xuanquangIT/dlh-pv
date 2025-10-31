@@ -49,6 +49,13 @@ DEFAULT_SPARK_CONFIG: Dict[str, str] = {
     "spark.sql.iceberg.compression-codec": "snappy",
     "spark.sql.adaptive.enabled": "true",
     "spark.sql.session.timeZone": "UTC",
+    # Optimized for scalable batch processing with partition-aware writes
+    "spark.sql.shuffle.partitions": "200",  # Default for larger datasets
+    "spark.sql.adaptive.coalescePartitions.enabled": "true",
+    "spark.sql.adaptive.advisoryPartitionSizeInBytes": "64MB",  # Larger for efficiency
+    "spark.sql.files.maxPartitionBytes": "128MB",  # Read larger chunks
+    "spark.memory.fraction": "0.7",  # More memory for processing
+    "spark.memory.storageFraction": "0.4",  # Better caching
 }
 
 

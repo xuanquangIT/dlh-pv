@@ -7,8 +7,6 @@ import datetime as dt
 from typing import Dict, Optional, Type
 
 from pv_lakehouse.etl.silver.base import BaseSilverLoader, LoadOptions
-from pv_lakehouse.etl.silver.daily_air_quality import SilverDailyAirQualityLoader
-from pv_lakehouse.etl.silver.daily_weather import SilverDailyWeatherLoader
 from pv_lakehouse.etl.silver.facility_master import SilverFacilityMasterLoader
 from pv_lakehouse.etl.silver.hourly_air_quality import SilverHourlyAirQualityLoader
 from pv_lakehouse.etl.silver.hourly_energy import SilverHourlyEnergyLoader
@@ -20,9 +18,6 @@ _LOADER_REGISTRY: Dict[str, Type[BaseSilverLoader]] = {
     "hourly_energy": SilverHourlyEnergyLoader,
     "hourly_weather": SilverHourlyWeatherLoader,
     "hourly_air_quality": SilverHourlyAirQualityLoader,
-    # Legacy daily loaders (deprecated, use hourly versions)
-    "daily_weather": SilverDailyWeatherLoader,
-    "daily_air_quality": SilverDailyAirQualityLoader,
 }
 
 

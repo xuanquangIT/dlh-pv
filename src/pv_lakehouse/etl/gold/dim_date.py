@@ -13,18 +13,18 @@ from .common import compute_date_key, season_expr
 
 
 class GoldDimDateLoader(BaseGoldLoader):
-    """Builds the Gold dim_date table from Silver weather and energy data."""
+    """Builds the Gold dim_date table from Silver hourly data."""
 
     source_tables: Dict[str, SourceTableConfig] = {
-        "daily_weather": SourceTableConfig(
-            table_name="lh.silver.clean_daily_weather",
+        "hourly_weather": SourceTableConfig(
+            table_name="lh.silver.clean_hourly_weather",
             timestamp_column="updated_at",
-            required_columns=["date"],
+            required_columns=["date_hour"],
         ),
-        "daily_air_quality": SourceTableConfig(
-            table_name="lh.silver.clean_daily_air_quality",
+        "hourly_air_quality": SourceTableConfig(
+            table_name="lh.silver.clean_hourly_air_quality",
             timestamp_column="updated_at",
-            required_columns=["date"],
+            required_columns=["date_hour"],
         ),
         "hourly_energy": SourceTableConfig(
             table_name="lh.silver.clean_hourly_energy",
@@ -43,14 +43,10 @@ class GoldDimDateLoader(BaseGoldLoader):
 
     def transform(self, sources: Dict[str, DataFrame]) -> Optional[Dict[str, DataFrame]]:
         frames = []
-        for alias in ("daily_weather", "daily_air_quality"):
+        for alias in ("hourly_weather", "hourly_air_quality", "hourly_energy"):
             dataframe = sources.get(alias)
-            if dataframe is not None and "date" in dataframe.columns and not self._is_empty(dataframe):
-                frames.append(dataframe.select(F.col("date").alias("full_date")))
-
-        hourly = sources.get("hourly_energy")
-        if hourly is not None and "date_hour" in hourly.columns and not self._is_empty(hourly):
-            frames.append(hourly.select(F.to_date("date_hour").alias("full_date")))
+            if dataframe is not None and "date_hour" in dataframe.columns and not self._is_empty(dataframe):
+                frames.append(dataframe.select(F.to_date("date_hour").alias("full_date")))
 
         if not frames:
             return None

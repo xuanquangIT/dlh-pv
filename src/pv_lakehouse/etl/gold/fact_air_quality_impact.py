@@ -31,12 +31,12 @@ class GoldFactAirQualityImpactLoader(BaseGoldLoader):
                 "energy_mwh",
             ],
         ),
-        "daily_air_quality": SourceTableConfig(
-            table_name="lh.silver.clean_daily_air_quality",
+        "hourly_air_quality": SourceTableConfig(
+            table_name="lh.silver.clean_hourly_air_quality",
             timestamp_column="updated_at",
             required_columns=[
                 "facility_code",
-                "date",
+                "date_hour",
                 "pm2_5",
                 "pm10",
                 "dust",
@@ -88,7 +88,7 @@ class GoldFactAirQualityImpactLoader(BaseGoldLoader):
         dim_air_quality = required["dim_air_quality_category"]
         dim_time = required["dim_time"]
 
-        air_quality_records = classify_air_quality(sources.get("daily_air_quality"))
+        air_quality_records = classify_air_quality(sources.get("hourly_air_quality"))
         air_quality_lookup = build_air_quality_lookup(air_quality_records, dim_air_quality)
 
         base = build_hourly_fact_base(hourly)

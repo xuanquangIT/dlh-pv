@@ -18,6 +18,31 @@ class SilverHourlyAirQualityLoader(BaseSilverLoader):
     timestamp_column = "air_timestamp"
     partition_cols = ("date_hour",)
 
+    def __init__(self, options=None):
+        from .base import LoadOptions
+        if options is None:
+            options = LoadOptions(
+                target_file_size_mb=self.DEFAULT_TARGET_FILE_SIZE_MB,
+                max_records_per_file=self.DEFAULT_MAX_RECORDS_PER_FILE,
+            )
+        else:
+            options.target_file_size_mb = min(options.target_file_size_mb, self.DEFAULT_TARGET_FILE_SIZE_MB)
+            options.max_records_per_file = min(options.max_records_per_file, self.DEFAULT_MAX_RECORDS_PER_FILE)
+        super().__init__(options)
+
+    def run(self) -> int:
+        """
+        Process bronze air quality data in 7-day chunks.
+        
+        Weekly chunks balance memory usage with processing efficiency for moderately wide tables (9 columns).
+        """
+        bronze_df = self._read_bronze()
+        if bronze_df is None or not bronze_df.columns:
+            return 0
+
+        # Process in 7-day chunks (moderate table: 9 columns)
+        return self._process_in_chunks(bronze_df, chunk_days=7)
+
     _numeric_columns = {
         "pm2_5": (0.0, 500.0),
         "pm10": (0.0, 500.0),
@@ -56,9 +81,6 @@ class SilverHourlyAirQualityLoader(BaseSilverLoader):
             .where(F.col("facility_code").isNotNull())
             .where(F.col("air_timestamp").isNotNull())
         )
-
-        if prepared.rdd.isEmpty():
-            return None
 
         # Apply numeric column rounding and add missing columns
         result = prepared
@@ -102,8 +124,9 @@ class SilverHourlyAirQualityLoader(BaseSilverLoader):
             F.when(F.col("is_valid"), F.lit("GOOD")).otherwise(F.lit("OUT_OF_RANGE")),
         )
 
-        # Repartition for efficient writes
-        result = result.repartition("facility_code", "date_hour")
+        # Coalesce to 1 partition to minimize concurrent Iceberg partition writers
+        # With hourly partitioning, FanoutDataWriter keeps ALL partition writers open
+        result = result.coalesce(1)
 
         # Add metadata timestamps
         current_ts = F.current_timestamp()
