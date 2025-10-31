@@ -37,7 +37,7 @@ DIM_MODEL_VERSION_TABLE = "lh.gold.dim_model_version"
 GOLD_OUTPUT_TABLE = "lh.gold.fact_solar_forecast"
 GOLD_WRITE_MODE = "overwrite"
 
-FEATURE_COLUMNS = ["power_avg_mw", "intervals_count", "completeness_pct"]
+FEATURE_COLUMNS = ["intervals_count", "completeness_pct", "hour_of_day"]
 LABEL_COLUMN = "energy_high_flag"
 
 
@@ -56,14 +56,13 @@ def load_silver_features(spark: SparkSession, limit_rows: int = DEFAULT_SAMPLE_L
             "facility_code",
             "date_hour",
             F.col("energy_mwh").cast("double").alias("energy_mwh"),
-            F.col("power_avg_mw").cast("double").alias("power_avg_mw"),
             F.col("intervals_count").cast("double").alias("intervals_count"),
             F.col("completeness_pct").cast("double").alias("completeness_pct"),
         )
         .where(F.col("energy_mwh").isNotNull())
-        .where(F.col("power_avg_mw").isNotNull())
         .where(F.col("intervals_count").isNotNull())
         .where(F.col("completeness_pct").isNotNull())
+        .withColumn("hour_of_day", F.hour("date_hour").cast("double"))
     )
 
     subset = filtered.orderBy(F.col("date_hour").desc())
