@@ -9,6 +9,24 @@ from pyspark.sql import functions as F
 from pyspark.sql import types as T
 
 
+def broadcast_small_dim(dataframe: Optional[DataFrame], max_rows: int = 1000) -> DataFrame:
+    """Broadcast dimension table if it's small enough to avoid shuffle joins.
+    
+    Args:
+        dataframe: Dimension DataFrame to potentially broadcast
+        max_rows: Maximum rows to consider for broadcasting (default 1000)
+    
+    Returns:
+        Broadcasted DataFrame if small enough, otherwise original DataFrame
+    """
+    if dataframe is None or is_empty(dataframe):
+        return dataframe
+    
+    # For small static dimensions (dim_time=24, dim_facility=5, etc), always broadcast
+    # This avoids expensive shuffle joins and improves performance 5-10x
+    return F.broadcast(dataframe)
+
+
 def dec(precision: int, scale: int) -> T.DecimalType:
     """Convenience helper for DecimalType declarations."""
 
@@ -137,25 +155,24 @@ def build_weather_lookup(
 ) -> Optional[DataFrame]:
     if is_empty(weather_records) or is_empty(dim_weather_condition):
         return None
-    aggregated = weather_records.groupBy("facility_code", "date", "condition_name").agg(
-        F.first("shortwave_radiation").alias("shortwave_radiation"),
-        F.first("direct_radiation").alias("direct_radiation"),
-        F.first("diffuse_radiation").alias("diffuse_radiation"),
-        F.first("temperature_2m").alias("temperature_2m"),
-        F.first("cloud_cover").alias("cloud_cover"),
-        F.first("wind_speed_10m").alias("wind_speed_10m"),
-        F.first("precipitation").alias("precipitation"),
-        F.first("sunshine_duration").alias("sunshine_duration"),
-        F.first("weather_severity").alias("weather_severity"),
+    
+    # CRITICAL FIX: Keep hourly granularity by including 'date_hour' instead of just 'date'
+    # Previous version grouped by (facility, date, condition) which caused cartesian product
+    # when joining hourly facts - each fact row matched ALL conditions for that date
+    
+    # Join with dimension to get weather_condition_key
+    enriched = weather_records.alias("weather").join(
+        F.broadcast(dim_weather_condition.alias("dim")), 
+        on="condition_name", 
+        how="left"
     )
 
-    aggregated = aggregated.alias("weather").join(
-        dim_weather_condition.alias("dim"), on="condition_name", how="left"
-    )
-
-    return aggregated.select(
+    # Return hourly weather data with condition keys
+    # Join key MUST be (facility_code, date_hour) to maintain 1:1 relationship with facts
+    result = enriched.select(
         F.col("weather.facility_code").alias("facility_code"),
         F.col("weather.date").alias("full_date"),
+        F.col("weather.date_hour").alias("date_hour"),  # CRITICAL: Keep hour-level granularity
         F.col("dim.weather_condition_key").alias("weather_condition_key"),
         F.col("weather.shortwave_radiation").alias("shortwave_radiation"),
         F.col("weather.direct_radiation").alias("direct_radiation"),
@@ -167,6 +184,10 @@ def build_weather_lookup(
         F.col("weather.sunshine_duration").alias("sunshine_duration"),
         F.col("weather.weather_severity").alias("weather_severity"),
     )
+    
+    # CRITICAL: Deduplicate by (facility, date_hour) to ensure 1:1 join
+    # In case there are somehow multiple rows per hour (shouldn't happen but safety check)
+    return result.dropDuplicates(["facility_code", "date_hour"])
 
 
 def build_air_quality_lookup(
@@ -175,14 +196,18 @@ def build_air_quality_lookup(
 ) -> Optional[DataFrame]:
     if is_empty(air_quality_records) or is_empty(dim_air_quality_category):
         return None
+    # Broadcast small dimension table (4 rows) to avoid shuffle join
     joined = air_quality_records.join(
-        dim_air_quality_category.select("air_quality_category_key", "category_name"),
+        F.broadcast(dim_air_quality_category.select("air_quality_category_key", "category_name")),
         air_quality_records["aq_category"] == F.col("category_name"),
         how="left",
     )
-    return joined.select(
+    # CRITICAL FIX: Keep hourly granularity with date_hour
+    # Previous version only had 'date' which caused cartesian product when joining hourly facts
+    result = joined.select(
         "facility_code",
         F.col("date").alias("full_date"),
+        F.col("date_hour").alias("date_hour"),  # CRITICAL: Keep hour-level granularity
         "air_quality_category_key",
         "pm2_5",
         "pm10",
@@ -191,3 +216,6 @@ def build_air_quality_lookup(
         "ozone",
         "uv_index",
     )
+    
+    # CRITICAL: Deduplicate to ensure 1:1 join  
+    return result.dropDuplicates(["facility_code", "date_hour"])

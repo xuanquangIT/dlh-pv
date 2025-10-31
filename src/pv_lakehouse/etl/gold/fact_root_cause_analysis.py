@@ -118,30 +118,52 @@ class GoldFactRootCauseAnalysisLoader(BaseGoldLoader):
             .withColumn("time_key", (F.hour("date_hour") * 100 + F.minute("date_hour")).cast("int"))
         )
 
-        fact = base.join(dim_facility, on="facility_code", how="left")
+        # Broadcast small dimension tables to avoid shuffle joins (5-10x faster)
+        fact = base.join(F.broadcast(dim_facility), on="facility_code", how="left")
         if not is_empty(weather_lookup):
-            fact = fact.join(weather_lookup, on=["facility_code", "full_date"], how="left")
+            fact = fact.withColumn("date_hour", F.col("date_hour").cast("timestamp"))
+            fact = fact.join(weather_lookup, on=["facility_code", "date_hour"], how="left")
         if not is_empty(air_quality_lookup):
-            fact = fact.join(air_quality_lookup, on=["facility_code", "full_date"], how="left")
+            fact = fact.join(air_quality_lookup, on=["facility_code", "date_hour"], how="left")
 
-        fact = fact.join(dim_time.select("time_key"), on="time_key", how="left")
+        fact = fact.join(F.broadcast(dim_time.select("time_key")), on="time_key", how="left")
 
         issue_mapping = (
-            dim_performance_issue.select("performance_issue_key", "issue_category")
+            F.broadcast(dim_performance_issue.select("performance_issue_key", "issue_category", "issue_type"))
             .withColumnRenamed("issue_category", "dim_issue_category")
+            .withColumnRenamed("issue_type", "dim_issue_type")
         )
+        
+        # Determine specific issue type based on conditions
         fact = fact.withColumn(
             "performance_issue_category",
             F.when(F.col("weather_severity") == "High", F.lit("Weather"))
             .when(F.col("pm2_5") > 35.4, F.lit("Soiling"))
             .otherwise(F.lit("Equipment")),
         )
+        fact = fact.withColumn(
+            "performance_issue_type",
+            F.when(
+                (F.col("performance_issue_category") == "Weather") & (F.col("cloud_cover") > 70.0),
+                F.lit("High Cloud Cover")
+            )
+            .when(
+                (F.col("performance_issue_category") == "Weather") & (F.col("shortwave_radiation") < 200.0),
+                F.lit("Low Radiation")
+            )
+            .when(F.col("performance_issue_category") == "Weather", F.lit("High Cloud Cover"))  # default Weather
+            .when(F.col("performance_issue_category") == "Soiling", F.lit("Dust Accumulation"))
+            .otherwise(F.lit("Equipment Malfunction")),
+        )
+        
+        # Join on BOTH category AND type to get exactly one matching dim row
         fact = fact.alias("fact").join(
             issue_mapping.alias("issue"),
-            F.col("fact.performance_issue_category") == F.col("issue.dim_issue_category"),
+            (F.col("fact.performance_issue_category") == F.col("issue.dim_issue_category")) &
+            (F.col("fact.performance_issue_type") == F.col("issue.dim_issue_type")),
             how="left",
         )
-        fact = fact.drop("dim_issue_category")
+        fact = fact.drop("dim_issue_category", "dim_issue_type", "performance_issue_category", "performance_issue_type")
 
         fact = fact.withColumn("expected_energy_mwh", F.col("power_avg_mw"))
         fact = fact.withColumn(

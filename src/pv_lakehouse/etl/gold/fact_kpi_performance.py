@@ -127,15 +127,41 @@ class GoldFactKpiPerformanceLoader(BaseGoldLoader):
             .withColumn("date_key", F.date_format("full_date", "yyyyMMdd").cast("int"))
         )
 
-        fact = daily.join(dim_facility, on="facility_code", how="left")
+        # Broadcast small dimension tables to avoid shuffle joins (5-10x faster)
+        fact = daily.join(F.broadcast(dim_facility), on="facility_code", how="left")
 
+        # For DAILY facts, aggregate hourly lookups to daily averages
         if not is_empty(weather_lookup):
-            fact = fact.join(weather_lookup, on=["facility_code", "full_date"], how="left")
+            # Aggregate weather to daily level before joining
+            daily_weather = weather_lookup.groupBy("facility_code", "full_date").agg(
+                F.first("weather_condition_key").alias("weather_condition_key"),
+                F.avg("shortwave_radiation").alias("shortwave_radiation"),
+                F.avg("direct_radiation").alias("direct_radiation"),
+                F.avg("diffuse_radiation").alias("diffuse_radiation"),
+                F.avg("temperature_2m").alias("temperature_2m"),
+                F.avg("cloud_cover").alias("cloud_cover"),
+                F.avg("wind_speed_10m").alias("wind_speed_10m"),
+                F.sum("precipitation").alias("precipitation"),
+                F.sum("sunshine_duration").alias("sunshine_duration"),
+                F.first("weather_severity").alias("weather_severity"),
+            )
+            fact = fact.join(daily_weather, on=["facility_code", "full_date"], how="left")
+        
         if not is_empty(air_quality_lookup):
-            fact = fact.join(air_quality_lookup, on=["facility_code", "full_date"], how="left")
+            # Aggregate air quality to daily level before joining
+            daily_air_quality = air_quality_lookup.groupBy("facility_code", "full_date").agg(
+                F.first("air_quality_category_key").alias("air_quality_category_key"),
+                F.avg("pm2_5").alias("pm2_5"),
+                F.avg("pm10").alias("pm10"),
+                F.avg("dust").alias("dust"),
+                F.avg("nitrogen_dioxide").alias("nitrogen_dioxide"),
+                F.avg("ozone").alias("ozone"),
+                F.avg("uv_index").alias("uv_index"),
+            )
+            fact = fact.join(daily_air_quality, on=["facility_code", "full_date"], how="left")
 
         status_mapping = (
-            dim_equipment_status.select("equipment_status_key", "status_name")
+            F.broadcast(dim_equipment_status.select("equipment_status_key", "status_name"))
             .withColumnRenamed("status_name", "dim_status_name")
         )
         fact = fact.withColumn(

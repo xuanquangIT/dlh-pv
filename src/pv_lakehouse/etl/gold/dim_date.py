@@ -9,7 +9,7 @@ from pyspark.sql import DataFrame
 from pyspark.sql import functions as F
 
 from .base import BaseGoldLoader, GoldTableConfig, SourceTableConfig
-from .common import compute_date_key, season_expr
+from .common import compute_date_key, is_empty, season_expr
 
 
 class GoldDimDateLoader(BaseGoldLoader):
@@ -45,7 +45,7 @@ class GoldDimDateLoader(BaseGoldLoader):
         frames = []
         for alias in ("hourly_weather", "hourly_air_quality", "hourly_energy"):
             dataframe = sources.get(alias)
-            if dataframe is not None and "date_hour" in dataframe.columns and not self._is_empty(dataframe):
+            if dataframe is not None and "date_hour" in dataframe.columns and not is_empty(dataframe):
                 frames.append(dataframe.select(F.to_date("date_hour").alias("full_date")))
 
         if not frames:
@@ -53,7 +53,7 @@ class GoldDimDateLoader(BaseGoldLoader):
 
         combined = reduce(lambda left, right: left.unionByName(right, allowMissingColumns=True), frames)
         combined = combined.filter(F.col("full_date").isNotNull()).dropDuplicates(["full_date"])
-        if self._is_empty(combined):
+        if is_empty(combined):
             return None
 
         spark_day = F.dayofweek("full_date")

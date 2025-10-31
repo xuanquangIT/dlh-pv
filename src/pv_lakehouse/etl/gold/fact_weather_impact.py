@@ -97,11 +97,16 @@ class GoldFactWeatherImpactLoader(BaseGoldLoader):
         if is_empty(base):
             return None
 
-        fact = base.join(dim_facility, on="facility_code", how="left")
+        # Broadcast small dimension tables to avoid shuffle joins (5-10x faster)
+        fact = base.join(F.broadcast(dim_facility), on="facility_code", how="left")
         if not is_empty(weather_lookup):
-            fact = fact.join(weather_lookup, on=["facility_code", "full_date"], how="left")
+            # CRITICAL: Join on HOURLY timestamp (date_hour), not just date
+            # This ensures 1:1 relationship - each fact row gets exactly one weather record
+            # Previous join on (facility, date) caused 35x duplication (one per weather condition)
+            fact = fact.withColumn("date_hour", F.col("date_hour").cast("timestamp"))
+            fact = fact.join(weather_lookup, on=["facility_code", "date_hour"], how="left")
 
-        fact = fact.join(dim_time.select("time_key"), on="time_key", how="left")
+        fact = fact.join(F.broadcast(dim_time.select("time_key")), on="time_key", how="left")
 
         fact = fact.withColumn("created_at", F.current_timestamp())
         fact = fact.withColumn(

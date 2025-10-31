@@ -62,6 +62,11 @@ class BaseGoldLoader:
     def spark(self) -> SparkSession:
         if self._spark is None:
             self._spark = create_spark_session(self.options.app_name)
+            # Optimize for Gold layer: smaller datasets, many small dimension joins
+            # Reduce shuffle partitions from default 200 to 8 for better performance
+            self._maybe_set_conf("spark.sql.shuffle.partitions", "8")
+            # Enable broadcast join auto-detection for tables < 10MB
+            self._maybe_set_conf("spark.sql.autoBroadcastJoinThreshold", "10485760")
         return self._spark
 
     def close(self) -> None:
@@ -221,11 +226,6 @@ class BaseGoldLoader:
         current = self.spark.conf.get(key, None)
         if current is None:
             self.spark.conf.set(key, value)
-
-    def _is_empty(self, dataframe: Optional[DataFrame]) -> bool:
-        if dataframe is None:
-            return True
-        return dataframe.rdd.isEmpty()
 
     def _validate_options(self) -> None:
         if self.options.mode not in {"full", "incremental"}:

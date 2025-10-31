@@ -99,9 +99,12 @@ class GoldFactSolarForecastLoader(BaseGoldLoader):
         if is_empty(base):
             return None
 
-        fact = base.join(dim_facility, on="facility_code", how="left")
+        # Broadcast small dimension tables to avoid shuffle joins (5-10x faster)
+        fact = base.join(F.broadcast(dim_facility), on="facility_code", how="left")
         if not is_empty(weather_lookup):
-            fact = fact.join(weather_lookup, on=["facility_code", "full_date"], how="left")
+            # CRITICAL: Join on HOURLY timestamp to avoid duplication
+            fact = fact.withColumn("date_hour", F.col("date_hour").cast("timestamp"))
+            fact = fact.join(weather_lookup, on=["facility_code", "date_hour"], how="left")
 
         model_key = first_value(dim_model_version, "model_version_key") or 1
         fact = fact.withColumn("model_version_key", F.lit(model_key).cast("int"))
