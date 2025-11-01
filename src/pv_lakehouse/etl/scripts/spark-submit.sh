@@ -70,6 +70,13 @@ fi
 echo -e "${GREEN}===================================================${NC}"
 echo ""
 
+# Load environment variables from .env file
+set -a
+if [ -f "docker/.env" ]; then
+    source docker/.env
+fi
+set +a
+
 # Execute spark-submit in container
 docker compose -f "$COMPOSE_FILE" exec "$CONTAINER" bash -lc "
     cd $WORKDIR && \

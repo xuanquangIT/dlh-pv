@@ -101,9 +101,50 @@ ANALYZE TABLE iceberg.bronze.oe_generation_hourly_raw;
 | Database full | No cleanup | Run retention cleanup |
 | Slow ingestion | API rate limit | Add exponential backoff retry |
 
-## 3. Backup & Recovery
+## 3. Data Management
 
-### 3.1 Backup Strategy
+### 3.1 Data Deletion Tool
+
+**Safe deletion of data across Bronze/Silver/Gold layers.**
+
+Quick examples:
+
+```bash
+# Dry-run to see what would be deleted
+./src/pv_lakehouse/etl/scripts/delete-data.sh \
+  --start-datetime "2025-10-01T00:00:00" \
+  --dry-run
+
+# Delete data from specific date range
+./src/pv_lakehouse/etl/scripts/delete-data.sh \
+  --start-datetime "2025-10-01T00:00:00" \
+  --end-datetime "2025-10-31T23:59:59"
+
+# Delete from specific layers
+./src/pv_lakehouse/etl/scripts/delete-data.sh \
+  --start-datetime "2025-10-01T00:00:00" \
+  --layers bronze,silver
+
+# Drop entire table
+./src/pv_lakehouse/etl/scripts/delete-data.sh \
+  --delete-table Y \
+  --layers bronze \
+  --tables raw_facilities
+```
+
+**Features:**
+- ✅ Dry-run preview before execution
+- ✅ Date range filtering
+- ✅ Layer and table selection
+- ✅ Parallel execution for performance
+- ✅ Complete cleanup (Iceberg + MinIO + PostgreSQL)
+- ✅ User confirmation required
+
+**Documentation:**
+- [Full Guide](./data-deletion-tool.md)
+- [Quick Reference](./data-deletion-quick-reference.md)
+
+### 3.2 Backup & Recovery
 
 **Critical Data:**
 1. PostgreSQL databases (metadata)
@@ -125,7 +166,7 @@ mc mirror local/mlflow /backup/mlflow-$(date +%Y%m%d)
 tar -czf /backup/config_$(date +%Y%m%d).tar.gz docker/.env *.sql
 ```
 
-### 3.2 Recovery Procedures
+### 3.3 Recovery Procedures
 
 **PostgreSQL Recovery:**
 ```bash

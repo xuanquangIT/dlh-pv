@@ -51,6 +51,7 @@ Hệ thống PV Lakehouse documentation được tổ chức thành 6 thư mục
 - [postgresql-catalog.md](../infrastructure/postgresql-catalog.md) - PostgreSQL & Iceberg Catalog - TBD
 - [trino-configuration.md](../infrastructure/trino-configuration.md) - Trino setup - TBD
 - [spark-setup.md](../infrastructure/spark-setup.md) - Spark configuration - TBD
+- [power-bi-integration.md](../infrastructure/power-bi-integration.md) - Kết nối Trino đến Power BI
 
 **Dành cho:** Infrastructure engineers, DevOps
 
@@ -68,6 +69,7 @@ Hệ thống PV Lakehouse documentation được tổ chức thành 6 thư mục
 | **Thiết lập Bronze tables** | [Bronze Layer](../data-model/bronze-layer.md) |
 | **Vận hành hệ thống** | [Operations](../operations/operations.md) |
 | **Cấu hình MinIO** | [MinIO Setup](../infrastructure/minio-setup.md) |
+| **Kết nối Power BI** | [Power BI Integration](../infrastructure/power-bi-integration.md) |
 | **Debug issues** | [Troubleshooting](../setup/troubleshooting.md) |
 
 ## 📖 Reading Paths
