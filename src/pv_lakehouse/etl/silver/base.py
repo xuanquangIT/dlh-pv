@@ -32,8 +32,9 @@ class BaseSilverLoader:
     bronze_table: str
     silver_table: str
     s3_base_path: str
-    timestamp_column: str
+    timestamp_column: str  # Bronze timestamp column for filtering
     partition_cols: Sequence[str] = ()
+    silver_timestamp_column: Optional[str] = None  # Silver timestamp column (defaults to partition_cols[0])
     
     # Default Iceberg file size settings
     DEFAULT_TARGET_FILE_SIZE_MB = 8
@@ -42,6 +43,9 @@ class BaseSilverLoader:
     def __init__(self, options: Optional[LoadOptions] = None) -> None:
         self.options = options or LoadOptions()
         self._spark: Optional[SparkSession] = None
+        # Default silver_timestamp_column to first partition column if not set
+        if self.silver_timestamp_column is None and self.partition_cols:
+            self.silver_timestamp_column = self.partition_cols[0]
         self._validate_options()
 
     # ------------------------------------------------------------------
@@ -152,6 +156,30 @@ class BaseSilverLoader:
 
         return total_rows
 
+    def run(self) -> int:
+        """
+        Default run method: read bronze, transform, and write to silver.
+        Subclasses can override this method to implement chunking (e.g., hourly loaders).
+        """
+        try:
+            bronze_df = self._read_bronze()
+            if bronze_df is None or not bronze_df.columns:
+                return 0
+
+            transformed_df = self.transform(bronze_df)
+            if transformed_df is None:
+                return 0
+
+            # Materialize count before write
+            row_count = transformed_df.count()
+            if row_count == 0:
+                return 0
+
+            self._write_outputs(transformed_df)
+            return row_count
+        finally:
+            self.close()
+
     # ------------------------------------------------------------------
     # Abstract hooks
     # ------------------------------------------------------------------
@@ -171,6 +199,31 @@ class BaseSilverLoader:
             raise ValueError(
                 f"Timestamp column '{self.timestamp_column}' missing from bronze table {self.bronze_table}"
             )
+
+        # Auto-detection: Query last loaded timestamp from Silver if incremental mode without start date
+        if self.options.mode == "incremental" and self.options.start is None and self.silver_timestamp_column:
+            try:
+                max_ts_row = self.spark.sql(f"""
+                    SELECT MAX({self.silver_timestamp_column}) as max_ts
+                    FROM {self.silver_table}
+                """).collect()
+                
+                if max_ts_row and max_ts_row[0]["max_ts"] is not None:
+                    max_ts = max_ts_row[0]["max_ts"]
+                    # Start from the next hour after last loaded timestamp
+                    if isinstance(max_ts, dt.datetime):
+                        self.options.start = max_ts + dt.timedelta(hours=1)
+                    else:
+                        # If timestamp is date type, start from next day
+                        self.options.start = max_ts + dt.timedelta(days=1)
+                    print(f"[SILVER INCREMENTAL] Auto-detected last loaded: {max_ts}", flush=True)
+                    print(f"[SILVER INCREMENTAL] Will load from: {self.options.start}", flush=True)
+                else:
+                    print("[SILVER INCREMENTAL] No existing Silver data found, will process all Bronze data", flush=True)
+            except Exception as e:
+                # Silver table doesn't exist yet or query failed - process all Bronze data
+                print(f"[SILVER INCREMENTAL] Could not query Silver table (likely first run): {e}", flush=True)
+                print("[SILVER INCREMENTAL] Will process all Bronze data", flush=True)
 
         # Mode validation already done in _validate_options()
         start_literal = self._normalise_datetime(self.options.start)

@@ -185,8 +185,6 @@ def build_weather_lookup(
         F.col("weather.weather_severity").alias("weather_severity"),
     )
     
-    # CRITICAL: Deduplicate by (facility, date_hour) to ensure 1:1 join
-    # In case there are somehow multiple rows per hour (shouldn't happen but safety check)
     return result.dropDuplicates(["facility_code", "date_hour"])
 
 

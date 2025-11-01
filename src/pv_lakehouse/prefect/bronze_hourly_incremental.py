@@ -27,12 +27,12 @@ DOCKER_COMPOSE_CMD = os.environ.get("DOCKER_COMPOSE_CMD", "docker compose")
 DEFAULT_WORK_POOL = os.environ.get("PREFECT_WORK_POOL", "default-pool")
 DEFAULT_DEPLOYMENT_NAME = "bronze-hourly"
 
-# Script paths inside the spark-master container
+# Script paths inside the spark-master container (mapped from host PROJECT_ROOT to /opt/workdir)
 BRONZE_SCRIPTS = {
-    "facilities": f"{PROJECT_ROOT}/src/pv_lakehouse/etl/bronze/load_facilities.py",
-    "air_quality": f"{PROJECT_ROOT}/src/pv_lakehouse/etl/bronze/load_facility_air_quality.py",
-    "timeseries": f"{PROJECT_ROOT}/src/pv_lakehouse/etl/bronze/load_facility_timeseries.py",
-    "weather": f"{PROJECT_ROOT}/src/pv_lakehouse/etl/bronze/load_facility_weather.py",
+    "facilities": "/opt/workdir/src/pv_lakehouse/etl/bronze/load_facilities.py",
+    "air_quality": "/opt/workdir/src/pv_lakehouse/etl/bronze/load_facility_air_quality.py",
+    "timeseries": "/opt/workdir/src/pv_lakehouse/etl/bronze/load_facility_timeseries.py",
+    "weather": "/opt/workdir/src/pv_lakehouse/etl/bronze/load_facility_weather.py",
 }
 
 
@@ -109,7 +109,7 @@ def run_air_quality_loader() -> None:
 def run_timeseries_loader() -> None:
     command = _build_shell_command(
         BRONZE_SCRIPTS["timeseries"],
-        ["--mode", "incremental", "--interval", "1h", "--metrics", "power,energy"],
+        ["--mode", "incremental"],
     )
     _run_subprocess(command, env_overrides=[("PYTHONPATH", "/opt/workdir/src")])
 

@@ -113,7 +113,61 @@ class BaseGoldLoader:
     # ------------------------------------------------------------------
     # Shared utilities
     # ------------------------------------------------------------------
+    def _auto_detect_start_time(self) -> None:
+        """
+        Auto-detect start time from Silver source tables' updated_at timestamps.
+        Uses the MINIMUM of MAX(updated_at) across Silver sources to ensure consistency.
+        """
+        if self.options.mode != "incremental" or self.options.start is not None:
+            return  # Only auto-detect for incremental mode without explicit start
+        
+        if not hasattr(self, "source_tables") or not self.source_tables:
+            return  # No source tables defined
+        
+        max_timestamps = []
+        
+        # Query MAX(timestamp_column) from each Silver source table
+        for source_name, source_config in self.source_tables.items():
+            if not source_config.timestamp_column:
+                continue  # Skip sources without timestamp column (e.g., dimension tables)
+            
+            try:
+                max_ts_row = self.spark.sql(f"""
+                    SELECT MAX({source_config.timestamp_column}) as max_ts
+                    FROM {source_config.table_name}
+                """).collect()
+                
+                if max_ts_row and max_ts_row[0]["max_ts"] is not None:
+                    max_ts = max_ts_row[0]["max_ts"]
+                    max_timestamps.append((source_config.table_name, max_ts))
+            except Exception:
+                # Table doesn't exist yet or query failed - skip
+                continue
+        
+        if max_timestamps:
+            # Use the MINIMUM of all max timestamps to ensure we don't miss any data
+            # (in case some Silver tables are behind others)
+            min_of_max = min(ts for _, ts in max_timestamps)
+            
+            # Start from the next hour after the earliest max timestamp
+            if isinstance(min_of_max, dt.datetime):
+                self.options.start = min_of_max + dt.timedelta(hours=1)
+            else:
+                # If timestamp is date type, start from next day
+                self.options.start = min_of_max + dt.timedelta(days=1)
+            
+            print("[GOLD INCREMENTAL] Auto-detected last loaded timestamps from Silver sources:", flush=True)
+            for table_name, max_ts in max_timestamps:
+                print(f"[GOLD INCREMENTAL]   {table_name}: {max_ts}", flush=True)
+            print(f"[GOLD INCREMENTAL]   Using earliest: {min_of_max}", flush=True)
+            print(f"[GOLD INCREMENTAL]   Will load from: {self.options.start}", flush=True)
+        else:
+            print("[GOLD INCREMENTAL] No existing Silver data found, will process all Silver data", flush=True)
+
     def _read_sources(self) -> Dict[str, DataFrame]:
+        # Auto-detect start time before reading sources
+        self._auto_detect_start_time()
+        
         frames: Dict[str, DataFrame] = {}
         for name, config in self.source_tables.items():
             dataframe = self._read_table(config)

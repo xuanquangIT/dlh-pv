@@ -71,8 +71,28 @@ def main() -> None:
     args = parse_args()
 
     today = dt.date.today()
-    default_start = today - dt.timedelta(days=1)
-    args.start = args.start or default_start
+    
+    # Auto-detect start date for incremental mode
+    if args.mode == "incremental" and args.start is None:
+        spark = create_spark_session(args.app_name)
+        try:
+            max_ts = spark.sql(f"SELECT MAX(air_timestamp) FROM {ICEBERG_AIR_QUALITY_TABLE}").collect()[0][0]
+            if max_ts:
+                # Start from day after last loaded data
+                args.start = (max_ts.date() + dt.timedelta(days=1))
+                print(f"Incremental mode: Loading from {args.start} (last loaded: {max_ts.date()})")
+            else:
+                args.start = today - dt.timedelta(days=1)
+                print(f"Incremental mode: No existing data, loading from {args.start}")
+        except Exception as e:
+            print(f"Warning: Could not detect last loaded timestamp: {e}")
+            args.start = today - dt.timedelta(days=1)
+        finally:
+            spark.stop()
+            spark = None  # Will recreate later
+    else:
+        args.start = args.start or (today - dt.timedelta(days=1))
+    
     args.end = args.end or today
 
     if args.end < args.start:

@@ -121,10 +121,12 @@ class GoldFactKpiPerformanceLoader(BaseGoldLoader):
             base.groupBy("facility_code", "full_date")
             .agg(
                 F.sum("energy_mwh").alias("actual_energy_mwh"),
-                F.avg("energy_mwh").alias("expected_energy_mwh"),
                 F.avg("completeness_pct").alias("completeness_pct"),
             )
             .withColumn("date_key", F.date_format("full_date", "yyyyMMdd").cast("int"))
+            # Use 1.2x actual as "expected" baseline (assumes 20% underperformance)
+            # In production, this should come from facility capacity model based on solar radiation
+            .withColumn("expected_energy_mwh", F.col("actual_energy_mwh") * 1.2)
         )
 
         # Broadcast small dimension tables to avoid shuffle joins (5-10x faster)
@@ -173,20 +175,39 @@ class GoldFactKpiPerformanceLoader(BaseGoldLoader):
         fact = fact.join(status_mapping, F.col("status_name") == F.col("dim_status_name"), how="left")
         fact = fact.drop("dim_status_name")
 
-        fact = fact.withColumn("energy_loss_mwh", F.col("expected_energy_mwh") - F.col("actual_energy_mwh"))
+        # Calculate energy loss
+        fact = fact.withColumn(
+            "energy_loss_mwh", 
+            F.coalesce(F.col("expected_energy_mwh") - F.col("actual_energy_mwh"), F.lit(0.0))
+        )
+        
+        # Calculate energy loss percentage (handle division by zero and NULLs)
         fact = fact.withColumn(
             "energy_loss_pct",
-            F.when(F.col("expected_energy_mwh") == 0, F.lit(0.0)).otherwise(
-                (F.col("energy_loss_mwh") / F.col("expected_energy_mwh")) * 100
+            F.when(
+                (F.col("expected_energy_mwh").isNull()) | (F.col("expected_energy_mwh") == 0), 
+                F.lit(0.0)
+            ).otherwise(
+                F.coalesce((F.col("energy_loss_mwh") / F.col("expected_energy_mwh")) * 100, F.lit(0.0))
             ),
         )
+        
+        # Calculate performance ratio (actual / expected * 100)
         fact = fact.withColumn(
             "performance_ratio_pct",
-            F.when(F.col("expected_energy_mwh") == 0, F.lit(0.0)).otherwise(
-                (F.col("actual_energy_mwh") / F.col("expected_energy_mwh")) * 100
+            F.when(
+                (F.col("expected_energy_mwh").isNull()) | (F.col("expected_energy_mwh") == 0), 
+                F.lit(0.0)
+            ).otherwise(
+                F.coalesce((F.col("actual_energy_mwh") / F.col("expected_energy_mwh")) * 100, F.lit(0.0))
             ),
         )
-        fact = fact.withColumn("capacity_utilization_factor_pct", F.col("performance_ratio_pct"))
+        
+        # Capacity utilization factor is same as performance ratio
+        fact = fact.withColumn(
+            "capacity_utilization_factor_pct", 
+            F.coalesce(F.col("performance_ratio_pct"), F.lit(0.0))
+        )
         fact = fact.withColumn("specific_yield_kwh_per_kwp", F.col("actual_energy_mwh") * 1000)
         fact = fact.withColumn("system_availability_pct", F.col("completeness_pct"))
         fact = fact.withColumn("grid_availability_pct", F.col("completeness_pct"))

@@ -69,6 +69,24 @@ def main() -> None:
 
     facility_codes = resolve_facility_codes(args)
 
+    # Auto-detect start datetime for incremental mode
+    if args.mode == "incremental" and args.date_start is None:
+        spark = create_spark_session(args.app_name)
+        try:
+            max_ts = spark.sql(f"SELECT MAX(interval_ts) FROM {ICEBERG_TABLE}").collect()[0][0]
+            if max_ts:
+                # Start from 1 hour after last loaded data
+                next_hour = max_ts + dt.timedelta(hours=1)
+                args.date_start = next_hour.strftime("%Y-%m-%dT%H:%M:%S")
+                args.date_end = args.date_end or dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")
+                print(f"Incremental mode: Loading from {args.date_start} (last loaded: {max_ts})")
+            else:
+                print("Incremental mode: No existing data, using default lookback")
+        except Exception as e:
+            print(f"Warning: Could not detect last loaded timestamp: {e}")
+        finally:
+            spark.stop()
+
     # Convert UTC datetime to Brisbane timezone for OpenElectricity API
     # API interprets datetime as network local time (Brisbane = UTC+10)
     adjusted_start = adjust_utc_to_brisbane(args.date_start)
