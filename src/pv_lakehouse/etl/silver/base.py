@@ -210,14 +210,32 @@ class BaseSilverLoader:
                 
                 if max_ts_row and max_ts_row[0]["max_ts"] is not None:
                     max_ts = max_ts_row[0]["max_ts"]
-                    # Start from the next hour after last loaded timestamp
+                    # Get current time for comparison
+                    now = dt.datetime.now(dt.timezone.utc).replace(tzinfo=None)
+                    
                     if isinstance(max_ts, dt.datetime):
-                        self.options.start = max_ts + dt.timedelta(hours=1)
+                        last_hour = max_ts.replace(minute=0, second=0, microsecond=0)
+                        current_hour = now.replace(minute=0, second=0, microsecond=0)
+                        
+                        # If last loaded is current hour or future, reload from current hour
+                        # Otherwise start from next hour after last loaded
+                        if last_hour >= current_hour:
+                            self.options.start = current_hour
+                            print(f"[SILVER INCREMENTAL] Reloading current hour {self.options.start} (last loaded: {max_ts})", flush=True)
+                        else:
+                            self.options.start = last_hour + dt.timedelta(hours=1)
+                            print(f"[SILVER INCREMENTAL] Loading from {self.options.start} (last loaded: {max_ts})", flush=True)
                     else:
                         # If timestamp is date type, start from next day
-                        self.options.start = max_ts + dt.timedelta(days=1)
-                    print(f"[SILVER INCREMENTAL] Auto-detected last loaded: {max_ts}", flush=True)
-                    print(f"[SILVER INCREMENTAL] Will load from: {self.options.start}", flush=True)
+                        today = now.date()
+                        last_date = max_ts if isinstance(max_ts, dt.date) else max_ts.date()
+                        
+                        if last_date >= today:
+                            self.options.start = today
+                            print(f"[SILVER INCREMENTAL] Reloading today {self.options.start} (last loaded: {last_date})", flush=True)
+                        else:
+                            self.options.start = last_date + dt.timedelta(days=1)
+                            print(f"[SILVER INCREMENTAL] Loading from {self.options.start} (last loaded: {last_date})", flush=True)
                 else:
                     print("[SILVER INCREMENTAL] No existing Silver data found, will process all Bronze data", flush=True)
             except Exception as e:
