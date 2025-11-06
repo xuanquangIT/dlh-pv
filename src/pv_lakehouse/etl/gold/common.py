@@ -217,3 +217,64 @@ def build_air_quality_lookup(
     
     # CRITICAL: Deduplicate to ensure 1:1 join  
     return result.dropDuplicates(["facility_code", "date_hour"])
+
+
+def build_aqi_lookup(
+    air_quality_records: Optional[DataFrame],
+    dim_aqi_category: Optional[DataFrame],
+) -> Optional[DataFrame]:
+    """Build AQI lookup table with category keys based on AQI value ranges.
+    
+    Args:
+        air_quality_records: Silver air quality data with aqi_value column
+        dim_aqi_category: Dimension table with AQI categories and ranges
+        
+    Returns:
+        DataFrame with facility_code, date_hour, and aqi_category_key for joining with facts
+    """
+    if is_empty(air_quality_records) or is_empty(dim_aqi_category):
+        return None
+    
+    # Ensure we have the required columns
+    if "aqi_value" not in air_quality_records.columns:
+        return None
+    
+    # Broadcast small dimension table (6 rows) to avoid shuffle join
+    dim_broadcast = F.broadcast(dim_aqi_category.select(
+        "aqi_category_key",
+        "aqi_category", 
+        "aqi_range_min",
+        "aqi_range_max"
+    ))
+    
+    # Join based on AQI value falling within range
+    # Use cross join + filter for range-based matching
+    result = air_quality_records.alias("aq").crossJoin(dim_broadcast.alias("dim"))
+    
+    # Filter to match AQI value with correct category range
+    result = result.filter(
+        (F.col("aq.aqi_value") >= F.col("dim.aqi_range_min")) &
+        (F.col("aq.aqi_value") <= F.col("dim.aqi_range_max"))
+    )
+    
+    # Select required columns for fact table join
+    # CRITICAL: Keep hourly granularity with date_hour to maintain 1:1 relationship
+    result = result.select(
+        F.col("aq.facility_code").alias("facility_code"),
+        F.col("aq.date").alias("full_date"),
+        F.col("aq.date_hour").alias("date_hour"),  # CRITICAL: Hour-level granularity
+        F.col("dim.aqi_category_key").alias("aqi_category_key"),
+        F.col("aq.pm2_5").alias("pm2_5"),
+        F.col("aq.pm10").alias("pm10"),
+        F.col("aq.dust").alias("dust"),
+        F.col("aq.nitrogen_dioxide").alias("nitrogen_dioxide"),
+        F.col("aq.ozone").alias("ozone"),
+        F.col("aq.sulphur_dioxide").alias("sulphur_dioxide"),
+        F.col("aq.carbon_monoxide").alias("carbon_monoxide"),
+        F.col("aq.uv_index").alias("uv_index"),
+        F.col("aq.uv_index_clear_sky").alias("uv_index_clear_sky"),
+        F.col("aq.aqi_value").alias("aqi_value"),
+    )
+    
+    # CRITICAL: Deduplicate to ensure 1:1 join with fact table
+    return result.dropDuplicates(["facility_code", "date_hour"])
