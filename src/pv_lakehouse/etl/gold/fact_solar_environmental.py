@@ -319,6 +319,17 @@ class GoldFactSolarEnvironmentalLoader(BaseGoldLoader):
             .otherwise(F.lit("BAD"))
         )
 
+        # Calculate irr_kwh_m2_hour: Convert W/m² (average hourly) to kWh/m²-hour
+        # Formula: irr_kwh_m2_hour = shortwave_radiation * 3600 / 1000
+        # This is critical for Performance Ratio (PR) calculation in Power BI
+        fact = fact.withColumn(
+            "irr_kwh_m2_hour",
+            F.when(
+                F.col("shortwave_radiation").isNotNull(),
+                F.col("shortwave_radiation") * F.lit(3600.0) / F.lit(1000.0)
+            ).otherwise(F.lit(None))
+        )
+
         # Add audit timestamps
         fact = fact.withColumn("created_at", F.current_timestamp())
         fact = fact.withColumn("updated_at", F.current_timestamp())
@@ -341,6 +352,7 @@ class GoldFactSolarEnvironmentalLoader(BaseGoldLoader):
             F.col("direct_radiation").cast(dec(10, 4)).alias("direct_radiation"),
             F.col("diffuse_radiation").cast(dec(10, 4)).alias("diffuse_radiation"),
             F.col("direct_normal_irradiance").cast(dec(10, 4)).alias("direct_normal_irradiance"),
+            F.col("irr_kwh_m2_hour").cast(dec(10, 6)).alias("irr_kwh_m2_hour"),  # Calculated field for PR
             F.col("temperature_2m").cast(dec(6, 2)).alias("temperature_2m"),
             F.col("dew_point_2m").cast(dec(6, 2)).alias("dew_point_2m"),
             F.col("humidity_2m").cast(dec(5, 2)).alias("humidity_2m"),
