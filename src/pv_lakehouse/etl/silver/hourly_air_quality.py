@@ -14,7 +14,6 @@ from .base import BaseSilverLoader
 class SilverHourlyAirQualityLoader(BaseSilverLoader):
     bronze_table = "lh.bronze.raw_facility_air_quality"
     silver_table = "lh.silver.clean_hourly_air_quality"
-    s3_base_path = "s3a://lakehouse/silver/clean_hourly_air_quality"
     timestamp_column = "air_timestamp"
     partition_cols = ("date_hour",)
 

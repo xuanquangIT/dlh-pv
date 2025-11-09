@@ -31,7 +31,6 @@ class BaseSilverLoader:
 
     bronze_table: str
     silver_table: str
-    s3_base_path: str
     timestamp_column: str  # Bronze timestamp column for filtering
     partition_cols: Sequence[str] = ()
     silver_timestamp_column: Optional[str] = None  # Silver timestamp column (defaults to partition_cols[0])
@@ -271,7 +270,6 @@ class BaseSilverLoader:
         # Both 'merge' and 'overwrite' use overwritePartitions mode
         load_strategy = self.options.load_strategy
         iceberg_mode = "overwrite" if load_strategy in {"overwrite", "merge"} else "append"
-        s3_mode = "overwrite" if load_strategy in {"overwrite", "merge"} else "append"
 
         self._maybe_set_conf(
             "spark.sql.iceberg.target-file-size-bytes",
@@ -286,33 +284,13 @@ class BaseSilverLoader:
             str(self.options.max_records_per_file),
         )
 
-        load_date = self._resolve_load_date()
-        s3_target = f"{self.s3_base_path}/load_date={load_date}"
-
-        (
-            dataframe.write.mode(s3_mode)
-            .format("parquet")
-            .option("compression", "snappy")
-            .save(s3_target)
-        )
-
+        # Write only to Iceberg table (no S3/MinIO write like bronze layer)
         write_iceberg_table(
             dataframe,
             self.silver_table,
             mode=iceberg_mode,
             partition_cols=self.partition_cols,
         )
-
-    def _resolve_load_date(self) -> str:
-        if isinstance(self.options.end, dt.datetime):
-            return self.options.end.date().isoformat()
-        if isinstance(self.options.start, dt.datetime):
-            return self.options.start.date().isoformat()
-        if isinstance(self.options.start, dt.date):
-            return self.options.start.isoformat()
-        if isinstance(self.options.end, dt.date):
-            return self.options.end.isoformat()
-        return dt.date.today().isoformat()
 
     def _safe_read_silver(self) -> Optional[DataFrame]:
         try:
