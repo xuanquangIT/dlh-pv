@@ -14,7 +14,6 @@ from .base import BaseSilverLoader, LoadOptions
 class SilverHourlyEnergyLoader(BaseSilverLoader):
     bronze_table = "lh.bronze.raw_facility_timeseries"
     silver_table = "lh.silver.clean_hourly_energy"
-    s3_base_path = "s3a://lakehouse/silver/clean_hourly_energy"
     timestamp_column = "interval_ts"
     partition_cols = ("date_hour",)
 

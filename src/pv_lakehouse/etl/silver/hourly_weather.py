@@ -14,7 +14,6 @@ from .base import BaseSilverLoader
 class SilverHourlyWeatherLoader(BaseSilverLoader):
     bronze_table = "lh.bronze.raw_facility_weather"
     silver_table = "lh.silver.clean_hourly_weather"
-    s3_base_path = "s3a://lakehouse/silver/clean_hourly_weather"
     timestamp_column = "weather_timestamp"
     partition_cols = ("date_hour",)
 

@@ -14,7 +14,6 @@ from .base import BaseSilverLoader
 class SilverFacilityMasterLoader(BaseSilverLoader):
     bronze_table = "lh.bronze.raw_facilities"
     silver_table = "lh.silver.clean_facility_master"
-    s3_base_path = "s3a://lakehouse/silver/clean_facility_master"
     timestamp_column = "ingest_timestamp"
     partition_cols = ("facility_code",)
 
