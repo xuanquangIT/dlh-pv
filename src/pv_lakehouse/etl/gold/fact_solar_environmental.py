@@ -34,7 +34,7 @@ class GoldFactSolarEnvironmentalLoader(BaseGoldLoader):
     source_tables: Dict[str, SourceTableConfig] = {
         "hourly_energy": SourceTableConfig(
             table_name="lh.silver.clean_hourly_energy",
-            timestamp_column="updated_at",
+            timestamp_column="date_hour",  # Filter by data hour, not update time
             required_columns=[
                 "facility_code",
                 "facility_name",
@@ -51,7 +51,7 @@ class GoldFactSolarEnvironmentalLoader(BaseGoldLoader):
         ),
         "hourly_weather": SourceTableConfig(
             table_name="lh.silver.clean_hourly_weather",
-            timestamp_column="updated_at",
+            timestamp_column="date_hour",  # Filter by data hour, not update time
             required_columns=[
                 "facility_code",
                 "date_hour",
@@ -75,7 +75,7 @@ class GoldFactSolarEnvironmentalLoader(BaseGoldLoader):
         ),
         "hourly_air_quality": SourceTableConfig(
             table_name="lh.silver.clean_hourly_air_quality",
-            timestamp_column="updated_at",
+            timestamp_column="date_hour",  # Filter by data hour, not update time
             required_columns=[
                 "facility_code",
                 "date_hour",
@@ -159,12 +159,20 @@ class GoldFactSolarEnvironmentalLoader(BaseGoldLoader):
         hourly_weather = sources.get("hourly_weather")
 
         # Join with dimension tables to get surrogate keys
-        # CRITICAL: All joins on (facility_code, date_hour) to maintain hourly grain
+        # CRITICAL: All joins on (facility_code, date_hour_ts_utc) to maintain hourly grain
+        
+        # 0) Chuẩn hóa timestamp (UTC → local nếu cần)
+        # date_hour is already timestamp(6) with time zone from Silver, just alias it
+        fact = base.withColumn("date_hour_ts_utc", F.col("date_hour"))
+        # Nếu toàn bộ phân tích dùng UTC, dùng date_hour_ts_utc luôn
+        # Nếu muốn local (ví dụ Asia/Ho_Chi_Minh), bật dòng sau:
+        # fact = fact.withColumn("date_hour_ts_local", F.from_utc_timestamp("date_hour_ts_utc", F.lit("Asia/Ho_Chi_Minh")))
+        # rồi thay mọi join/time-extract dùng date_hour_ts_local
         
         # 1. Join with facility dimension (broadcast join - small dimension)
-        fact = base.join(dim_facility, on="facility_code", how="left")
+        fact = fact.join(dim_facility, on="facility_code", how="left")
 
-        # 2. Join with date dimension (broadcast join)
+        # 2) Join dim_date bằng ngày local/UTC nhất quán
         # Rename dim_date columns to avoid ambiguity with base table
         dim_date_selected = dim_date.select(
             F.col("full_date").alias("dim_full_date"),
@@ -179,11 +187,9 @@ class GoldFactSolarEnvironmentalLoader(BaseGoldLoader):
             F.col("season"),
         )
         
-        # Cast to timestamp for consistent join
-        fact = fact.withColumn("date_hour_ts", F.col("date_hour").cast("timestamp"))
         fact = fact.join(
             dim_date_selected,
-            F.to_date(F.col("date_hour_ts")) == F.col("dim_full_date"),
+            F.to_date(F.col("date_hour_ts_utc")) == F.col("dim_full_date"),  # hoặc ts_local nếu dùng local
             how="left"
         )
         
@@ -202,7 +208,7 @@ class GoldFactSolarEnvironmentalLoader(BaseGoldLoader):
         
         fact = fact.join(
             dim_time_selected,
-            F.hour(F.col("date_hour_ts")) == F.col("hour"),
+            F.hour(F.col("date_hour_ts_utc")) == F.col("hour"),
             how="left"
         )
         
@@ -211,35 +217,42 @@ class GoldFactSolarEnvironmentalLoader(BaseGoldLoader):
 
         # 4. Join with weather data (left join to preserve all energy records)
         if not is_empty(hourly_weather):
+            # 3) WEATHER: tính RH và chuyển đổi đơn vị đúng
             # Prepare weather data with consistent timestamp
+            # date_hour is already timestamp(6) with time zone, just alias it
             weather = hourly_weather.withColumn(
-                "date_hour_ts", 
-                F.col("date_hour").cast("timestamp")
+                "date_hour_ts_utc", 
+                F.col("date_hour")
             )
             
             # Calculate relative humidity from dew point and temperature
             # Formula: RH = 100 * (exp((17.625*TD)/(243.04+TD))/exp((17.625*T)/(243.04+T)))
             # where TD is dew point and T is temperature in Celsius
+            # Clamp to [0, 100]
             weather = weather.withColumn(
-                "humidity_2m",
+                "humidity_2m_raw",
                 F.when(
                     F.col("dew_point_2m").isNotNull() & F.col("temperature_2m").isNotNull(),
-                    100.0 * F.exp((17.625 * F.col("dew_point_2m")) / (243.04 + F.col("dew_point_2m"))) /
-                    F.exp((17.625 * F.col("temperature_2m")) / (243.04 + F.col("temperature_2m")))
+                    100.0 * F.exp((F.lit(17.625)*F.col("dew_point_2m"))/(F.lit(243.04)+F.col("dew_point_2m"))) /
+                    F.exp((F.lit(17.625)*F.col("temperature_2m"))/(F.lit(243.04)+F.col("temperature_2m")))
                 ).otherwise(F.lit(None))
-            )
+            ).withColumn(
+                "humidity_2m",
+                F.when(F.col("humidity_2m_raw") < 0, 0.0).when(F.col("humidity_2m_raw") > 100, 100.0).otherwise(F.col("humidity_2m_raw"))
+            ).drop("humidity_2m_raw")
             
+            # >>> JOIN
             fact = fact.join(
                 weather.select(
                     "facility_code",
-                    "date_hour_ts",
+                    "date_hour_ts_utc",
                     "shortwave_radiation",
                     "direct_radiation",
                     "diffuse_radiation",
                     "direct_normal_irradiance",
                     "temperature_2m",
                     "dew_point_2m",
-                    "humidity_2m",  # Calculated relative humidity
+                    "humidity_2m",
                     "cloud_cover",
                     "cloud_cover_low",
                     "cloud_cover_mid",
@@ -251,34 +264,23 @@ class GoldFactSolarEnvironmentalLoader(BaseGoldLoader):
                     "wind_gusts_10m",
                     "pressure_msl",
                 ),
-                on=["facility_code", "date_hour_ts"],
+                on=["facility_code", "date_hour_ts_utc"],
                 how="left"
             )
 
         # 5. Join with AQI lookup (left join to preserve all energy records)
         if not is_empty(aqi_lookup):
-            fact = fact.join(
-                aqi_lookup.select(
-                    "facility_code",
-                    F.col("date_hour").cast("timestamp").alias("date_hour_ts"),
-                    "aqi_category_key",
-                    "pm2_5",
-                    "pm10",
-                    "dust",
-                    "nitrogen_dioxide",
-                    "ozone",
-                    "sulphur_dioxide",
-                    "carbon_monoxide",
-                    "uv_index",
-                    "uv_index_clear_sky",
-                    "aqi_value",
-                ),
-                on=["facility_code", "date_hour_ts"],
-                how="left"
+            # 4) AQI lookup giữ nguyên join theo UTC
+            aqi = aqi_lookup.select(
+                "facility_code", F.col("date_hour").cast("timestamp").alias("date_hour_ts_utc"),
+                "aqi_category_key","pm2_5","pm10","dust","nitrogen_dioxide","ozone",
+                "sulphur_dioxide","carbon_monoxide","uv_index","uv_index_clear_sky","aqi_value"
             )
+            fact = fact.join(aqi, on=["facility_code","date_hour_ts_utc"], how="left")
 
         # Calculate data quality metrics
         # Completeness based on presence of energy, weather, and air quality data
+        # 5) Completeness / Validity giữ nguyên logic của bạn
         fact = fact.withColumn(
             "has_energy",
             F.col("energy_mwh").isNotNull()
@@ -319,72 +321,81 @@ class GoldFactSolarEnvironmentalLoader(BaseGoldLoader):
             .otherwise(F.lit("BAD"))
         )
 
-        # Calculate irr_kwh_m2_hour: Convert W/m² (average hourly) to kWh/m²-hour
-        # Formula: irr_kwh_m2_hour = shortwave_radiation * 3600 / 1000
-        # This is critical for Performance Ratio (PR) calculation in Power BI
+        # 6) >>> SỬA QUAN TRỌNG: chuyển W/m² (mean 1h) → kWh/m²·h
         fact = fact.withColumn(
             "irr_kwh_m2_hour",
-            F.when(
-                F.col("shortwave_radiation").isNotNull(),
-                F.col("shortwave_radiation") * F.lit(3600.0) / F.lit(1000.0)
-            ).otherwise(F.lit(None))
+            F.when(F.col("shortwave_radiation").isNotNull(), F.col("shortwave_radiation") / F.lit(1000.0))
+             .otherwise(F.lit(None))
+        )
+
+        # 7) Thêm trợ giúp BI: giờ nắng (h) và mẫu số PR đã cân công suất
+        # cần cột total_capacity_mw từ dim_facility đã join trước đó
+        fact = fact.withColumn("sunshine_hours",
+            F.when(F.col("sunshine_duration").isNotNull(), F.col("sunshine_duration")/F.lit(3600.0))
+             .otherwise(F.lit(None))
+        )
+        fact = fact.withColumn("yr_weighted_kwh",
+            F.when(F.col("irr_kwh_m2_hour").isNotNull() & F.col("total_capacity_mw").isNotNull(),
+                   F.col("irr_kwh_m2_hour") * F.col("total_capacity_mw") * F.lit(1000.0))
+             .otherwise(F.lit(None))
         )
 
         # Add audit timestamps
         fact = fact.withColumn("created_at", F.current_timestamp())
         fact = fact.withColumn("updated_at", F.current_timestamp())
 
-        # Select and cast final columns according to schema
+        # 8) Select cuối cùng: thêm sunshine_hours & yr_weighted_kwh
         result = fact.select(
             # Keys
-            F.col("facility_key").cast("bigint").alias("facility_key"),
-            F.col("date_key").cast("int").alias("date_key"),
-            F.col("time_key").cast("int").alias("time_key"),
-            F.col("aqi_category_key").cast("bigint").alias("aqi_category_key"),
+            "facility_key",
+            "date_key",
+            "time_key",
+            "aqi_category_key",
             
             # Energy metrics
             F.col("energy_mwh").cast(dec(12, 6)).alias("energy_mwh"),
             F.col("power_avg_mw").cast(dec(12, 6)).alias("power_avg_mw"),
-            F.col("intervals_count").cast("int").alias("intervals_count"),
+            "intervals_count",
             
             # Weather metrics
             F.col("shortwave_radiation").cast(dec(10, 4)).alias("shortwave_radiation"),
             F.col("direct_radiation").cast(dec(10, 4)).alias("direct_radiation"),
             F.col("diffuse_radiation").cast(dec(10, 4)).alias("diffuse_radiation"),
             F.col("direct_normal_irradiance").cast(dec(10, 4)).alias("direct_normal_irradiance"),
-            F.col("irr_kwh_m2_hour").cast(dec(10, 6)).alias("irr_kwh_m2_hour"),  # Calculated field for PR
-            F.col("temperature_2m").cast(dec(6, 2)).alias("temperature_2m"),
-            F.col("dew_point_2m").cast(dec(6, 2)).alias("dew_point_2m"),
-            F.col("humidity_2m").cast(dec(5, 2)).alias("humidity_2m"),
-            F.col("cloud_cover").cast(dec(5, 2)).alias("cloud_cover"),
-            F.col("cloud_cover_low").cast(dec(5, 2)).alias("cloud_cover_low"),
-            F.col("cloud_cover_mid").cast(dec(5, 2)).alias("cloud_cover_mid"),
-            F.col("cloud_cover_high").cast(dec(5, 2)).alias("cloud_cover_high"),
-            F.col("precipitation").cast(dec(8, 3)).alias("precipitation"),
-            F.col("sunshine_duration").cast(dec(10, 2)).alias("sunshine_duration"),
-            F.col("wind_speed_10m").cast(dec(6, 2)).alias("wind_speed_10m"),
-            F.col("wind_direction_10m").cast(dec(6, 2)).alias("wind_direction_10m"),
-            F.col("wind_gusts_10m").cast(dec(6, 2)).alias("wind_gusts_10m"),
-            F.col("pressure_msl").cast(dec(8, 1)).alias("pressure_msl"),
+            F.col("irr_kwh_m2_hour").cast(dec(10, 6)).alias("irr_kwh_m2_hour"),
+            F.col("sunshine_hours").cast(dec(6, 3)).alias("sunshine_hours"),
+            "temperature_2m",
+            "dew_point_2m",
+            "humidity_2m",
+            "cloud_cover",
+            "cloud_cover_low",
+            "cloud_cover_mid",
+            "cloud_cover_high",
+            "precipitation",
+            "wind_speed_10m",
+            "wind_direction_10m",
+            "wind_gusts_10m",
+            "pressure_msl",
             
             # Air quality metrics
-            F.col("pm2_5").cast(dec(8, 3)).alias("pm2_5"),
-            F.col("pm10").cast(dec(8, 3)).alias("pm10"),
-            F.col("dust").cast(dec(8, 3)).alias("dust"),
-            F.col("nitrogen_dioxide").cast(dec(8, 3)).alias("nitrogen_dioxide"),
-            F.col("ozone").cast(dec(8, 3)).alias("ozone"),
-            F.col("sulphur_dioxide").cast(dec(8, 3)).alias("sulphur_dioxide"),
-            F.col("carbon_monoxide").cast(dec(10, 3)).alias("carbon_monoxide"),
-            F.col("uv_index").cast(dec(6, 2)).alias("uv_index"),
-            F.col("uv_index_clear_sky").cast(dec(6, 2)).alias("uv_index_clear_sky"),
-            F.col("aqi_value").cast("int").alias("aqi_value"),
+            "pm2_5",
+            "pm10",
+            "dust",
+            "nitrogen_dioxide",
+            "ozone",
+            "sulphur_dioxide",
+            "carbon_monoxide",
+            "uv_index",
+            "uv_index_clear_sky",
+            "aqi_value",
             
             # Data quality
-            F.col("is_valid").cast("boolean").alias("is_valid"),
-            F.col("quality_flag").cast("string").alias("quality_flag"),
-            F.col("completeness_pct").cast(dec(5, 2)).alias("completeness_pct"),
-            F.col("created_at").cast("timestamp").alias("created_at"),
-            F.col("updated_at").cast("timestamp").alias("updated_at"),
+            "is_valid",
+            "quality_flag",
+            "completeness_pct",
+            F.col("yr_weighted_kwh").cast(dec(16, 6)).alias("yr_weighted_kwh"),
+            "created_at",
+            "updated_at",
         )
 
         if is_empty(result):

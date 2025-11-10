@@ -1,0 +1,7 @@
+aqi_category_key,aqi_category,aqi_range_min,aqi_range_max,health_advisory,color_code,pm2_5_min_ug_m3,pm2_5_max_ug_m3,created_at
+1,Good,0,50,No risk,#00E400,0.000,12.000,2025-11-09T07:32:14.013Z
+2,Moderate,51,100,Acceptable risk,#FFFF00,12.100,35.000,2025-11-09T07:32:14.013Z
+3,Unhealthy for Sensitive,101,150,Sensitive groups affected,#FF7E00,35.100,55.000,2025-11-09T07:32:14.013Z
+4,Unhealthy,151,200,General public affected,#FF0000,55.100,150.000,2025-11-09T07:32:14.013Z
+5,Very Unhealthy,201,300,Emergency conditions,#8F3F97,150.100,250.000,2025-11-09T07:32:14.013Z
+6,Hazardous,301,500,Health emergency,#7E0023,250.100,500.000,2025-11-09T07:32:14.013Z

@@ -32,16 +32,8 @@ GOLD_TABLES = [
     "lh.gold.dim_facility",
     "lh.gold.dim_date",
     "lh.gold.dim_time",
-    "lh.gold.dim_weather_condition",
-    "lh.gold.dim_air_quality_category",
-    "lh.gold.dim_equipment_status",
-    "lh.gold.dim_model_version",
-    "lh.gold.dim_performance_issue",
-    "lh.gold.fact_kpi_performance",
-    "lh.gold.fact_weather_impact",
-    "lh.gold.fact_air_quality_impact",
-    "lh.gold.fact_solar_forecast",
-    "lh.gold.fact_root_cause_analysis",
+    "lh.gold.dim_aqi_category",
+    "lh.gold.fact_solar_environmental",
 ]
 
 
