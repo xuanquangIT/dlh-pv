@@ -31,7 +31,6 @@ class BaseSilverLoader:
 
     bronze_table: str
     silver_table: str
-    s3_base_path: str
     timestamp_column: str  # Bronze timestamp column for filtering
     partition_cols: Sequence[str] = ()
     silver_timestamp_column: Optional[str] = None  # Silver timestamp column (defaults to partition_cols[0])
@@ -210,14 +209,32 @@ class BaseSilverLoader:
                 
                 if max_ts_row and max_ts_row[0]["max_ts"] is not None:
                     max_ts = max_ts_row[0]["max_ts"]
-                    # Start from the next hour after last loaded timestamp
+                    # Get current time for comparison
+                    now = dt.datetime.now(dt.timezone.utc).replace(tzinfo=None)
+                    
                     if isinstance(max_ts, dt.datetime):
-                        self.options.start = max_ts + dt.timedelta(hours=1)
+                        last_hour = max_ts.replace(minute=0, second=0, microsecond=0)
+                        current_hour = now.replace(minute=0, second=0, microsecond=0)
+                        
+                        # If last loaded is current hour or future, reload from current hour
+                        # Otherwise start from next hour after last loaded
+                        if last_hour >= current_hour:
+                            self.options.start = current_hour
+                            print(f"[SILVER INCREMENTAL] Reloading current hour {self.options.start} (last loaded: {max_ts})", flush=True)
+                        else:
+                            self.options.start = last_hour + dt.timedelta(hours=1)
+                            print(f"[SILVER INCREMENTAL] Loading from {self.options.start} (last loaded: {max_ts})", flush=True)
                     else:
                         # If timestamp is date type, start from next day
-                        self.options.start = max_ts + dt.timedelta(days=1)
-                    print(f"[SILVER INCREMENTAL] Auto-detected last loaded: {max_ts}", flush=True)
-                    print(f"[SILVER INCREMENTAL] Will load from: {self.options.start}", flush=True)
+                        today = now.date()
+                        last_date = max_ts if isinstance(max_ts, dt.date) else max_ts.date()
+                        
+                        if last_date >= today:
+                            self.options.start = today
+                            print(f"[SILVER INCREMENTAL] Reloading today {self.options.start} (last loaded: {last_date})", flush=True)
+                        else:
+                            self.options.start = last_date + dt.timedelta(days=1)
+                            print(f"[SILVER INCREMENTAL] Loading from {self.options.start} (last loaded: {last_date})", flush=True)
                 else:
                     print("[SILVER INCREMENTAL] No existing Silver data found, will process all Bronze data", flush=True)
             except Exception as e:
@@ -253,7 +270,6 @@ class BaseSilverLoader:
         # Both 'merge' and 'overwrite' use overwritePartitions mode
         load_strategy = self.options.load_strategy
         iceberg_mode = "overwrite" if load_strategy in {"overwrite", "merge"} else "append"
-        s3_mode = "overwrite" if load_strategy in {"overwrite", "merge"} else "append"
 
         self._maybe_set_conf(
             "spark.sql.iceberg.target-file-size-bytes",
@@ -268,33 +284,13 @@ class BaseSilverLoader:
             str(self.options.max_records_per_file),
         )
 
-        load_date = self._resolve_load_date()
-        s3_target = f"{self.s3_base_path}/load_date={load_date}"
-
-        (
-            dataframe.write.mode(s3_mode)
-            .format("parquet")
-            .option("compression", "snappy")
-            .save(s3_target)
-        )
-
+        # Write only to Iceberg table (no S3/MinIO write like bronze layer)
         write_iceberg_table(
             dataframe,
             self.silver_table,
             mode=iceberg_mode,
             partition_cols=self.partition_cols,
         )
-
-    def _resolve_load_date(self) -> str:
-        if isinstance(self.options.end, dt.datetime):
-            return self.options.end.date().isoformat()
-        if isinstance(self.options.start, dt.datetime):
-            return self.options.start.date().isoformat()
-        if isinstance(self.options.start, dt.date):
-            return self.options.start.isoformat()
-        if isinstance(self.options.end, dt.date):
-            return self.options.end.isoformat()
-        return dt.date.today().isoformat()
 
     def _safe_read_silver(self) -> Optional[DataFrame]:
         try:
