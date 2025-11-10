@@ -1,0 +1,28 @@
+name: CI - Smoke Test (scaffold export)
+
+on: [push]
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+      - name: Prepare sample dataset
+        run: |
+          python - <<'PY'
+          import pandas as pd
+          df = pd.read_csv('test/sample_dataset.csv')
+          df.to_parquet('data/model_ready/dataset.parquet', index=False)
+          print('Wrote data/model_ready/dataset.parquet')
+          PY
+      - name: Run smoke training (1 fold)
+        run: |
+          python train_task.py --dataset data/model_ready/dataset.parquet --n-splits 1 --test-size 1 --initial-train-size 3 --estimator ridge
