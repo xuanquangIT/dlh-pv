@@ -79,7 +79,7 @@ class SilverHourlyAirQualityLoader(BaseSilverLoader):
             bronze_df.select(
                 "facility_code",
                 "facility_name",
-                F.col("air_timestamp").cast("timestamp").alias("timestamp"),
+                F.col("air_timestamp").cast("timestamp").alias("timestamp_utc"),
                 *[F.col(column) for column in self._numeric_columns.keys() if column in bronze_df.columns],
             )
             .where(F.col("facility_code").isNotNull())
@@ -101,14 +101,14 @@ class SilverHourlyAirQualityLoader(BaseSilverLoader):
             F.create_map([F.lit(x) for pair in timezone_map.items() for x in pair])[F.col("facility_code")]
         )
         
-        # Convert UTC → local time based on timezone mapping (no JOIN shuffle!)
+        # Convert to local time for analysis
         prepared = prepared.withColumn(
-            "timestamp",
-            F.from_utc_timestamp(F.col("timestamp"), F.col("tz_string"))
+            "timestamp_local",
+            F.from_utc_timestamp(F.col("timestamp_utc"), F.col("tz_string"))
         )
-        # Extract both date_hour and date in ONE operation (avoid multiple withColumn calls)
-        prepared = prepared.withColumn("date_hour", F.date_trunc("hour", F.col("timestamp"))) \
-                           .withColumn("date", F.to_date(F.col("timestamp"))) \
+        # Extract date_hour from UTC timestamps to avoid data loss
+        prepared = prepared.withColumn("date_hour", F.date_trunc("hour", F.col("timestamp_utc"))) \
+                           .withColumn("date", F.to_date(F.col("timestamp_utc"))) \
                            .drop("tz_string")
 
         # Apply numeric column rounding and add missing columns
@@ -161,11 +161,11 @@ class SilverHourlyAirQualityLoader(BaseSilverLoader):
         current_ts = F.current_timestamp()
         result = result.withColumn("created_at", current_ts).withColumn("updated_at", current_ts)
 
-        # Select and order columns
+        # Select and order columns (rename timestamp_utc back to timestamp for backward compatibility)
         ordered_columns = [
             "facility_code",
             "facility_name",
-            "timestamp",
+            "timestamp_utc",
             "date_hour",
             "date",
             "pm2_5",
@@ -184,7 +184,11 @@ class SilverHourlyAirQualityLoader(BaseSilverLoader):
             "created_at",
             "updated_at",
         ]
-        return result.select(*ordered_columns)
+        result = result.select(
+            F.col("timestamp_utc").alias("timestamp"),
+            *[F.col(c) for c in ordered_columns if c != "timestamp_utc"]
+        )
+        return result.select(*["facility_code", "facility_name", "timestamp", "date_hour", "date", "pm2_5", "pm10", "dust", "nitrogen_dioxide", "ozone", "sulphur_dioxide", "carbon_monoxide", "uv_index", "uv_index_clear_sky", "aqi_category", "aqi_value", "is_valid", "quality_flag", "created_at", "updated_at"])
 
     def _aqi_from_pm25(self, column: F.Column) -> F.Column:
         """Calculate AQI (Air Quality Index) from PM2.5 concentration using EPA breakpoints."""

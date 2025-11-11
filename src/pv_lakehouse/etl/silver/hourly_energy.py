@@ -74,7 +74,10 @@ class SilverHourlyEnergyLoader(BaseSilverLoader):
             .where(F.col("metric").isin("energy", "power"))
         )
         
-        # Convert UTC → local time based on network_code and region
+        # Rename to mark as UTC
+        filtered = filtered.withColumn("interval_ts_utc", F.col("interval_ts")).drop("interval_ts")
+        
+        # Convert UTC → local time based on network_code and region for analysis
         # NEM regions: QLD/NSW/VIC → Brisbane UTC+10; SA → Adelaide UTC+9:30
         # WEM → Perth UTC+8
         filtered = filtered.withColumn(
@@ -86,11 +89,12 @@ class SilverHourlyEnergyLoader(BaseSilverLoader):
              .otherwise(F.lit("Australia/Brisbane"))
         )
         filtered = filtered.withColumn(
-            "interval_ts",
-            F.from_utc_timestamp(F.col("interval_ts"), F.col("tz_string"))
+            "interval_ts_local",
+            F.from_utc_timestamp(F.col("interval_ts_utc"), F.col("tz_string"))
         ).drop("tz_string")
 
-        hourly = filtered.withColumn("date_hour", F.date_trunc("hour", F.col("interval_ts")))
+        # Use UTC timestamps for hourly aggregation to avoid data loss
+        hourly = filtered.withColumn("date_hour", F.date_trunc("hour", F.col("interval_ts_utc")))
 
         key_columns = [
             "facility_code",
@@ -104,6 +108,8 @@ class SilverHourlyEnergyLoader(BaseSilverLoader):
         aggregated = hourly.groupBy(*key_columns).agg(
             F.sum(F.when(F.col("metric") == F.lit("energy"), F.col("metric_value"))).alias("energy_mwh"),
             F.sum(F.when(F.col("metric") == F.lit("energy"), F.lit(1))).alias("energy_intervals"),
+            F.first(F.col("interval_ts_utc")).alias("interval_ts_utc"),
+            F.first(F.col("interval_ts_local")).alias("interval_ts_local"),
         )
 
         result = aggregated.filter(F.col("energy_intervals") > F.lit(0))
