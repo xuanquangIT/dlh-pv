@@ -56,6 +56,16 @@ NETWORK_FALLBACK_OFFSETS = {"NEM": 10, "WEM": 8}
 MAX_RANGE_ERROR_PATTERN = re.compile(r"Maximum range is (\d+) days", re.IGNORECASE)
 
 
+def get_timezone_offset_hours(network_id: str) -> int:
+    """Get timezone offset in hours for a network (handles DST fallback)."""
+    return NETWORK_FALLBACK_OFFSETS.get(network_id, 10)
+
+
+def get_timezone_id(network_id: str) -> str:
+    """Get IANA timezone ID for a network."""
+    return NETWORK_TIMEZONE_IDS.get(network_id, "Australia/Brisbane")
+
+
 def load_default_facility_codes(override_path: Optional[Path] = None) -> List[str]:
     """Return the canonical list of facility codes shared with JS tooling."""
 

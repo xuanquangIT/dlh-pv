@@ -31,16 +31,18 @@ class SilverHourlyAirQualityLoader(BaseSilverLoader):
 
     def run(self) -> int:
         """
-        Process bronze air quality data in 7-day chunks.
+        Process bronze air quality data in 3-day chunks.
         
-        Weekly chunks balance memory usage with processing efficiency for moderately wide tables (9 columns).
+        3-day chunks limit concurrent partition writers to 72 (3 days × 24 hours),
+        preventing OOM from Iceberg FanoutDataWriter which keeps all partition writers open.
+        Reduces memory usage and improves performance compared to 7-day chunks.
         """
         bronze_df = self._read_bronze()
         if bronze_df is None or not bronze_df.columns:
             return 0
 
-        # Process in 7-day chunks (moderate table: 9 columns)
-        return self._process_in_chunks(bronze_df, chunk_days=7)
+        # Process in 3-day chunks (same as energy loader for consistency)
+        return self._process_in_chunks(bronze_df, chunk_days=3)
 
     _numeric_columns = {
         "pm2_5": (0.0, 500.0),
@@ -67,19 +69,47 @@ class SilverHourlyAirQualityLoader(BaseSilverLoader):
         if missing:
             raise ValueError(f"Missing expected columns in bronze air-quality source: {sorted(missing)}")
 
-        # Keep hourly granularity - no aggregation
-        prepared = (
+        # Get network_id and network_region from facilities for timezone conversion
+        facilities = self.spark.sql("""
+            SELECT DISTINCT facility_code, network_id, network_region
+            FROM lh.bronze.raw_facilities
+        """)
+        
+        prepared_base = (
             bronze_df.select(
                 "facility_code",
                 "facility_name",
                 F.col("air_timestamp").cast("timestamp").alias("timestamp"),
-                F.date_trunc("hour", F.col("air_timestamp")).alias("date_hour"),
-                F.to_date(F.col("air_timestamp")).alias("date"),
                 *[F.col(column) for column in self._numeric_columns.keys() if column in bronze_df.columns],
             )
             .where(F.col("facility_code").isNotNull())
             .where(F.col("air_timestamp").isNotNull())
         )
+        
+        # Timezone mapping for each facility (cached - no JOIN needed!)
+        # Eliminates expensive shuffle operation
+        timezone_map = {
+            "NYNGAN": "Australia/Brisbane",      # NEM NSW1
+            "COLEASF": "Australia/Brisbane",    # NEM NSW1
+            "CLARESF": "Australia/Brisbane",    # NEM QLD1
+            "GANNSF": "Australia/Brisbane",     # NEM VIC1
+            "BNGSF1": "Australia/Adelaide",     # NEM SA1
+        }
+        
+        prepared = prepared_base.withColumn(
+            "tz_string",
+            F.create_map([F.lit(x) for pair in timezone_map.items() for x in pair])[F.col("facility_code")]
+        )
+        
+        # Convert UTC → local time based on timezone mapping (no JOIN shuffle!)
+        prepared = prepared.withColumn(
+            "timestamp",
+            F.from_utc_timestamp(F.col("timestamp"), F.col("tz_string"))
+        )
+        # Extract both date_hour and date in ONE operation (avoid multiple withColumn calls)
+        prepared = prepared.withColumn("date_hour", F.date_trunc("hour", F.col("timestamp"))) \
+                           .withColumn("date", F.to_date(F.col("timestamp"))) \
+                           .drop("tz_string")
 
         # Apply numeric column rounding and add missing columns
         result = prepared
