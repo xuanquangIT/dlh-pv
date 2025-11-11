@@ -3,12 +3,11 @@
 from __future__ import annotations
 
 from typing import Optional
-from functools import reduce
 
 from pyspark.sql import DataFrame
 from pyspark.sql import functions as F
 
-from .base import BaseSilverLoader
+from .base import BaseSilverLoader, LoadOptions
 
 
 class SilverHourlyWeatherLoader(BaseSilverLoader):
@@ -17,31 +16,19 @@ class SilverHourlyWeatherLoader(BaseSilverLoader):
     timestamp_column = "weather_timestamp"
     partition_cols = ("date_hour",)
 
-    def __init__(self, options=None):
-        from .base import LoadOptions
+    def __init__(self, options: Optional[LoadOptions] = None) -> None:
         if options is None:
-            options = LoadOptions(
-                target_file_size_mb=self.DEFAULT_TARGET_FILE_SIZE_MB,
-                max_records_per_file=self.DEFAULT_MAX_RECORDS_PER_FILE,
-            )
+            options = LoadOptions()
         else:
             options.target_file_size_mb = min(options.target_file_size_mb, self.DEFAULT_TARGET_FILE_SIZE_MB)
             options.max_records_per_file = min(options.max_records_per_file, self.DEFAULT_MAX_RECORDS_PER_FILE)
         super().__init__(options)
 
     def run(self) -> int:
-        """
-        Process bronze weather data in 3-day chunks.
-        
-        3-day chunks limit concurrent partition writers to 72 (3 days × 24 hours),
-        preventing OOM from Iceberg FanoutDataWriter which keeps all partition writers open.
-        Reduces memory usage and improves performance compared to 7-day chunks.
-        """
+        """Process bronze weather data in 3-day chunks to limit memory usage."""
         bronze_df = self._read_bronze()
         if bronze_df is None or not bronze_df.columns:
             return 0
-
-        # Process in 3-day chunks (same as energy loader for consistency)
         return self._process_in_chunks(bronze_df, chunk_days=3)
 
     _numeric_columns = {
@@ -78,41 +65,21 @@ class SilverHourlyWeatherLoader(BaseSilverLoader):
         if missing:
             raise ValueError(f"Missing expected columns in bronze weather source: {sorted(missing)}")
 
-        # Timezone mapping for each facility (cached - no JOIN needed!)
-        # Eliminates expensive shuffle operation
-        timezone_map = {
-            "NYNGAN": "Australia/Brisbane",      # NEM NSW1
-            "COLEASF": "Australia/Brisbane",    # NEM NSW1
-            "CLARESF": "Australia/Brisbane",    # NEM QLD1
-            "GANNSF": "Australia/Brisbane",     # NEM VIC1
-            "BNGSF1": "Australia/Adelaide",     # NEM SA1
-        }
-        
+        # Bronze timestamps are already in facility's local timezone
         prepared_base = (
             bronze_df.select(
                 "facility_code",
                 "facility_name",
-                F.col("weather_timestamp").cast("timestamp").alias("timestamp_utc"),
+                F.col("weather_timestamp").cast("timestamp").alias("timestamp_local"),
                 *[F.col(column) for column in self._numeric_columns.keys() if column in bronze_df.columns],
             )
             .where(F.col("facility_code").isNotNull())
             .where(F.col("weather_timestamp").isNotNull())
         )
         
-        prepared = prepared_base.withColumn(
-            "tz_string",
-            F.create_map([F.lit(x) for pair in timezone_map.items() for x in pair])[F.col("facility_code")]
-        )
-        
-        # Convert to local time for analysis
-        prepared = prepared.withColumn(
-            "timestamp_local",
-            F.from_utc_timestamp(F.col("timestamp_utc"), F.col("tz_string"))
-        )
-        # Extract date_hour from UTC timestamps to avoid data loss
-        prepared = prepared.withColumn("date_hour", F.date_trunc("hour", F.col("timestamp_utc"))) \
-                           .withColumn("date", F.to_date(F.col("timestamp_utc"))) \
-                           .drop("tz_string")
+        # No conversion needed - aggregate by local time
+        prepared = prepared_base.withColumn("date_hour", F.date_trunc("hour", F.col("timestamp_local"))) \
+                                 .withColumn("date", F.to_date(F.col("timestamp_local")))
 
         # Apply numeric column rounding and add missing columns
         result = prepared
@@ -122,17 +89,12 @@ class SilverHourlyWeatherLoader(BaseSilverLoader):
             else:
                 result = result.withColumn(column, F.round(F.col(column), 4))
 
-        # Validation rules for each hourly record
-        validity_conditions = [
-            (F.col(column).isNull())
-            | ((F.col(column) >= F.lit(min_value)) & (F.col(column) <= F.lit(max_value)))
-            for column, (min_value, max_value) in self._numeric_columns.items()
-        ]
-        
-        if validity_conditions:
-            is_valid_expr = reduce(lambda acc, expr: acc & expr, validity_conditions)
-        else:
-            is_valid_expr = F.lit(True)
+        # Validation: each column must be NULL or within expected range
+        is_valid_expr = F.lit(True)
+        for column, (min_val, max_val) in self._numeric_columns.items():
+            is_valid_expr = is_valid_expr & (
+                F.col(column).isNull() | ((F.col(column) >= min_val) & (F.col(column) <= max_val))
+            )
 
         result = result.withColumn("is_valid", is_valid_expr)
         result = result.withColumn(
@@ -140,32 +102,19 @@ class SilverHourlyWeatherLoader(BaseSilverLoader):
             F.when(F.col("is_valid"), F.lit("GOOD")).otherwise(F.lit("OUT_OF_RANGE")),
         )
 
-        # Coalesce to 1 partition to minimize concurrent Iceberg partition writers
-        # With hourly partitioning, FanoutDataWriter keeps ALL partition writers open
-        result = result.coalesce(1)
-
-        # Add metadata timestamps
-        current_ts = F.current_timestamp()
-        result = result.withColumn("created_at", current_ts).withColumn("updated_at", current_ts)
-
-        # Select and order columns (rename timestamp_utc back to timestamp for backward compatibility)
-        ordered_columns = [
-            "facility_code",
-            "facility_name",
-            "timestamp_utc",
-            "date_hour",
-            "date",
-            *self._numeric_columns.keys(),
-            "is_valid",
-            "quality_flag",
-            "created_at",
-            "updated_at",
-        ]
-        result = result.select(
-            F.col("timestamp_utc").alias("timestamp"),
-            *[F.col(c) for c in ordered_columns if c != "timestamp_utc"]
+        # Add metadata and finalize
+        result = (
+            result
+            .withColumn("created_at", F.current_timestamp())
+            .withColumn("updated_at", F.current_timestamp())
         )
-        return result.select(*["facility_code", "facility_name", "timestamp", "date_hour", "date", *self._numeric_columns.keys(), "is_valid", "quality_flag", "created_at", "updated_at"])
+
+        # Select output columns (rename timestamp_local to timestamp for schema)
+        return result.select(
+            "facility_code", "facility_name", F.col("timestamp_local").alias("timestamp"),
+            "date_hour", "date", *self._numeric_columns.keys(),
+            "is_valid", "quality_flag", "created_at", "updated_at"
+        )
 
 
 __all__ = ["SilverHourlyWeatherLoader"]

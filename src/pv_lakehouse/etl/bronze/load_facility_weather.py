@@ -12,6 +12,7 @@ import pandas as pd
 from pyspark.sql import functions as F
 
 from pv_lakehouse.etl.bronze import openmeteo_common
+from pv_lakehouse.etl.bronze.facility_timezones import get_facility_timezone
 from pv_lakehouse.etl.clients import openmeteo
 from pv_lakehouse.etl.clients.openmeteo import FacilityLocation, RateLimiter
 from pv_lakehouse.etl.utils.spark_utils import create_spark_session
@@ -37,6 +38,7 @@ def collect_weather_data(facilities: List[FacilityLocation], args: argparse.Name
 
     def fetch_for_facility(facility: FacilityLocation) -> pd.DataFrame:
         print(f"Fetching weather: {facility.code} ({facility.name})")
+        facility_tz = get_facility_timezone(facility.code)
         return openmeteo.fetch_weather_dataframe(
             facility,
             start=args.start,
@@ -44,7 +46,7 @@ def collect_weather_data(facilities: List[FacilityLocation], args: argparse.Name
             chunk_days=30,  # 30 days per chunk for archive API
             hourly_variables=openmeteo.DEFAULT_WEATHER_VARS,
             endpoint_preference="auto",
-            timezone="UTC",
+            timezone=facility_tz,  # Request in facility's local timezone
             limiter=limiter,
             max_retries=openmeteo.DEFAULT_MAX_RETRIES,
             retry_backoff=openmeteo.DEFAULT_RETRY_BACKOFF,
@@ -122,9 +124,7 @@ def main() -> None:
         .withColumn("ingest_timestamp", ingest_ts)
         .withColumn("weather_timestamp", F.to_timestamp("date"))
         .withColumn("weather_date", F.to_date("weather_timestamp"))
-    )
-    weather_spark_df = weather_spark_df.filter(
-        F.col("weather_timestamp").isNotNull() & (F.col("weather_timestamp") <= ingest_ts)
+        .filter(F.col("weather_timestamp").isNotNull() & (F.col("weather_timestamp") <= ingest_ts))
     )
 
     openmeteo_common.write_dataset(

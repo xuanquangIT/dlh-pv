@@ -40,30 +40,6 @@ def resolve_facility_codes(args: argparse.Namespace) -> List[str]:
     return openelectricity.load_default_facility_codes()
 
 
-def adjust_utc_to_brisbane(utc_datetime_str: Optional[str]) -> Optional[str]:
-    """
-    Convert UTC datetime string to Brisbane local time (UTC+10) for OpenElectricity API.
-    
-    OpenElectricity API interprets datetime parameters in network local time.
-    For NEM (Brisbane), we need to add 10 hours to UTC time.
-    
-    Example:
-        Input:  "2025-10-01T00:00:00" (intended as UTC)
-        Output: "2025-10-01T10:00:00" (Brisbane time, equals 2025-10-01 00:00 UTC)
-    """
-    if not utc_datetime_str:
-        return None
-    
-    # Parse the UTC datetime
-    utc_dt = dt.datetime.fromisoformat(utc_datetime_str)
-    
-    # Add 10 hours offset for Brisbane (UTC+10)
-    brisbane_dt = utc_dt + dt.timedelta(hours=10)
-    
-    # Return in the same format
-    return brisbane_dt.strftime("%Y-%m-%dT%H:%M:%S")
-
-
 def main() -> None:
     args = parse_args()
 
@@ -87,21 +63,17 @@ def main() -> None:
         finally:
             spark.stop()
 
-    # Convert UTC datetime to Brisbane timezone for OpenElectricity API
-    # API interprets datetime as network local time (Brisbane = UTC+10)
-    adjusted_start = adjust_utc_to_brisbane(args.date_start)
-    adjusted_end = adjust_utc_to_brisbane(args.date_end)
-    
-    if adjusted_start and adjusted_end:
-        print(f"UTC request: {args.date_start} → {args.date_end}")
-        print(f"Brisbane time (API): {adjusted_start} → {adjusted_end}")
+    # Note: OpenElectricity API handles timezone conversion internally
+    # Just pass datetime strings as-is
+    if args.date_start and args.date_end:
+        print(f"Loading timeseries: {args.date_start} → {args.date_end}")
 
     dataframe = openelectricity.fetch_facility_timeseries_dataframe(
         facility_codes=facility_codes,
         metrics=["energy"],  
         interval="1h", 
-        date_start=adjusted_start,
-        date_end=adjusted_end,
+        date_start=args.date_start,
+        date_end=args.date_end,
         api_key=args.api_key,
         target_window_days=7,
         max_lookback_windows=52,
@@ -117,10 +89,16 @@ def main() -> None:
     spark_df = (
         spark_df.withColumn("ingest_mode", F.lit(args.mode))
         .withColumn("ingest_timestamp", F.current_timestamp())
-        .withColumn("interval_ts", F.to_timestamp("interval_start"))
-        .withColumn("interval_date", F.to_date("interval_ts"))
     )
-
+    
+    # API returns timezone-aware ISO strings (e.g., "2025-08-01T10:00:00+10:00")
+    # Extract local time part (first 19 chars: "2025-08-01T10:00:00") and store directly
+    spark_df = spark_df.withColumn(
+        "interval_ts",
+        F.to_timestamp(F.substring(F.col("interval_start"), 1, 19))
+    )
+    spark_df = spark_df.withColumn("interval_date", F.to_date("interval_ts"))
+    
     if args.mode == "backfill":
         # Backfill: overwrite entire table
         write_iceberg_table(spark_df, ICEBERG_TABLE, mode="overwrite")
@@ -128,43 +106,30 @@ def main() -> None:
         print(f"Wrote {row_count} rows to {ICEBERG_TABLE} (mode=overwrite)")
         
     else:  # incremental - use MERGE INTO for upsert
-        # Create temp view for MERGE INTO
         temp_view = "temp_timeseries_data"
         spark_df.createOrReplaceTempView(temp_view)
         
-        # Get all column names
-        columns = spark_df.columns
-        update_set = ", ".join([f"target.{col} = source.{col}" for col in columns])
-        insert_cols = ", ".join(columns)
-        insert_vals = ", ".join([f"source.{col}" for col in columns])
+        # Build MERGE statement with all columns
+        cols_str = ", ".join(f"source.{col}" for col in spark_df.columns)
+        update_expr = ", ".join(f"target.{col} = source.{col}" for col in spark_df.columns)
+        
+        merge_sql = f"""
+        MERGE INTO {ICEBERG_TABLE} AS target
+        USING {temp_view} AS source
+        ON target.facility_code = source.facility_code 
+            AND target.interval_ts = source.interval_ts 
+            AND target.metric = source.metric
+        WHEN MATCHED THEN UPDATE SET {update_expr}
+        WHEN NOT MATCHED THEN INSERT ({', '.join(spark_df.columns)}) VALUES ({cols_str})
+        """
         
         try:
-            # Iceberg MERGE INTO: upsert based on (facility_code, interval_ts, metric)
-            merge_sql = f"""
-            MERGE INTO {ICEBERG_TABLE} AS target
-            USING {temp_view} AS source
-            ON target.facility_code = source.facility_code 
-                AND target.interval_ts = source.interval_ts 
-                AND target.metric = source.metric
-            WHEN MATCHED THEN
-                UPDATE SET {update_set}
-            WHEN NOT MATCHED THEN
-                INSERT ({insert_cols})
-                VALUES ({insert_vals})
-            """
-            
-            print("Executing MERGE INTO for timeseries...")
             spark.sql(merge_sql)
-            
-            row_count = spark_df.count()
-            print(f"Merged {row_count} rows into {ICEBERG_TABLE} (upsert mode)")
-            
+            print(f"Merged {spark_df.count()} rows into {ICEBERG_TABLE}")
         except Exception as e:
-            print(f"MERGE INTO failed (table may not exist): {e}")
-            print("Falling back to append mode for first load...")
+            print(f"MERGE failed: {e}. Falling back to append...")
             write_iceberg_table(spark_df, ICEBERG_TABLE, mode="append")
-            row_count = spark_df.count()
-            print(f"Appended {row_count} rows to {ICEBERG_TABLE}")
+            print(f"Appended {spark_df.count()} rows to {ICEBERG_TABLE}")
 
     spark.stop()
 
