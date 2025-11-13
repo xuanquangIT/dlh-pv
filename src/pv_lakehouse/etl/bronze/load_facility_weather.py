@@ -115,24 +115,64 @@ def main() -> None:
         print("No Open-Meteo weather data retrieved; nothing to write.")
         return
 
+    # Avoid an expensive full-DataFrame pandas NaN->NULL conversion on the driver.
+    # Create the Spark DataFrame first and replace NaNs using Spark (distributed),
+    # which scales better for large datasets and reduces driver memory/CPU pressure.
+    # Only target water_vapour column (known NaN source) to minimize overhead.
     spark = create_spark_session(args.app_name)
     ingest_ts = F.current_timestamp()
 
     weather_spark_df = spark.createDataFrame(weather_df)
+    # Replace NaN in total_column_integrated_water_vapour with NULL using Spark (distributed).
+    # This is the primary column that returns NaN from Open-Meteo API.
+    if "total_column_integrated_water_vapour" in weather_spark_df.columns:
+        weather_spark_df = weather_spark_df.withColumn(
+            "total_column_integrated_water_vapour",
+            F.when(F.isnan(F.col("total_column_integrated_water_vapour")), F.lit(None))
+             .otherwise(F.col("total_column_integrated_water_vapour"))
+        )
+    # Create facility_tz column for timezone conversion
     weather_spark_df = (
         weather_spark_df.withColumn("ingest_mode", F.lit(args.mode))
         .withColumn("ingest_timestamp", ingest_ts)
-        .withColumn("weather_timestamp", F.to_timestamp("date"))
+        # API returns date in facility LOCAL timezone - store as-is (no conversion needed)
+        # This keeps data consistent with original API timestamps
+        .withColumn(
+            "weather_timestamp",
+            F.to_timestamp(F.col("date"))
+        )
         .withColumn("weather_date", F.to_date("weather_timestamp"))
         .filter(F.col("weather_timestamp").isNotNull() & (F.col("weather_timestamp") <= ingest_ts))
     )
 
-    openmeteo_common.write_dataset(
-        weather_spark_df,
-        iceberg_table=ICEBERG_WEATHER_TABLE,
-        mode=args.mode,
-        label="weather",
-    )
+    # Use Iceberg MERGE for both insert and deduplication (keep latest record only)
+    weather_spark_df.createOrReplaceTempView("weather_source")
+    
+    merge_sql = f"""
+    MERGE INTO {ICEBERG_WEATHER_TABLE} AS target
+    USING (
+        SELECT * FROM (
+            SELECT *,
+            ROW_NUMBER() OVER (PARTITION BY facility_code, weather_timestamp ORDER BY ingest_timestamp DESC) as rn
+            FROM weather_source
+        ) WHERE rn = 1
+    ) AS source
+    ON target.facility_code = source.facility_code AND target.weather_timestamp = source.weather_timestamp
+    WHEN MATCHED THEN UPDATE SET *
+    WHEN NOT MATCHED THEN INSERT *
+    """
+    
+    try:
+        spark.sql(merge_sql)
+        print(f"MERGE completed for {ICEBERG_WEATHER_TABLE}")
+    except Exception as e:
+        print(f"MERGE failed: {e}. Falling back to append...")
+        openmeteo_common.write_dataset(
+            weather_spark_df,
+            iceberg_table=ICEBERG_WEATHER_TABLE,
+            mode="append",
+            label="weather",
+        )
 
     spark.stop()
 

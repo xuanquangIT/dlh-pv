@@ -100,32 +100,49 @@ def main() -> None:
     spark_df = spark_df.withColumn("interval_date", F.to_date("interval_ts"))
     
     if args.mode == "backfill":
-        # Backfill: overwrite entire table
-        write_iceberg_table(spark_df, ICEBERG_TABLE, mode="overwrite")
-        row_count = spark_df.count()
-        print(f"Wrote {row_count} rows to {ICEBERG_TABLE} (mode=overwrite)")
+        # Backfill: overwrite entire table with deduplication (keep latest per key)
+        spark_df.createOrReplaceTempView("timeseries_source")
         
-    else:  # incremental - use MERGE INTO for upsert
-        temp_view = "temp_timeseries_data"
-        spark_df.createOrReplaceTempView(temp_view)
+        # Deduplicate: keep latest record per (facility_code, interval_ts, metric)
+        dedup_sql = f"""
+        INSERT OVERWRITE TABLE {ICEBERG_TABLE}
+        SELECT * FROM (
+            SELECT *,
+            ROW_NUMBER() OVER (PARTITION BY facility_code, interval_ts, metric ORDER BY ingest_timestamp DESC) as rn
+            FROM timeseries_source
+        ) WHERE rn = 1
+        """
         
-        # Build MERGE statement with all columns
-        cols_str = ", ".join(f"source.{col}" for col in spark_df.columns)
-        update_expr = ", ".join(f"target.{col} = source.{col}" for col in spark_df.columns)
+        try:
+            spark.sql(dedup_sql)
+            print(f"Wrote deduplicated records to {ICEBERG_TABLE} (mode=overwrite)")
+        except Exception as e:
+            print(f"INSERT OVERWRITE with dedup failed: {e}. Falling back to simple overwrite...")
+            write_iceberg_table(spark_df, ICEBERG_TABLE, mode="overwrite")
         
+    else:  # incremental - use MERGE INTO for upsert with deduplication
+        spark_df.createOrReplaceTempView("timeseries_source")
+        
+        # MERGE with deduplication: keep latest record per (facility_code, interval_ts, metric)
         merge_sql = f"""
         MERGE INTO {ICEBERG_TABLE} AS target
-        USING {temp_view} AS source
+        USING (
+            SELECT * FROM (
+                SELECT *,
+                ROW_NUMBER() OVER (PARTITION BY facility_code, interval_ts, metric ORDER BY ingest_timestamp DESC) as rn
+                FROM timeseries_source
+            ) WHERE rn = 1
+        ) AS source
         ON target.facility_code = source.facility_code 
             AND target.interval_ts = source.interval_ts 
             AND target.metric = source.metric
-        WHEN MATCHED THEN UPDATE SET {update_expr}
-        WHEN NOT MATCHED THEN INSERT ({', '.join(spark_df.columns)}) VALUES ({cols_str})
+        WHEN MATCHED THEN UPDATE SET *
+        WHEN NOT MATCHED THEN INSERT *
         """
         
         try:
             spark.sql(merge_sql)
-            print(f"Merged {spark_df.count()} rows into {ICEBERG_TABLE}")
+            print(f"Merged deduplicated records into {ICEBERG_TABLE}")
         except Exception as e:
             print(f"MERGE failed: {e}. Falling back to append...")
             write_iceberg_table(spark_df, ICEBERG_TABLE, mode="append")

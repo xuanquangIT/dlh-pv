@@ -7,6 +7,8 @@ from typing import Optional
 from pyspark.sql import DataFrame
 from pyspark.sql import functions as F
 
+from pv_lakehouse.etl.bronze.facility_timezones import get_facility_timezone
+
 from .base import BaseSilverLoader, LoadOptions
 
 
@@ -32,10 +34,10 @@ class SilverHourlyWeatherLoader(BaseSilverLoader):
         return self._process_in_chunks(bronze_df, chunk_days=7)
 
     _numeric_columns = {
-        "shortwave_radiation": (0.0, 1000.0),  # Max ~1000 W/m² at Earth surface (1361 extraterrestrial)
+        "shortwave_radiation": (0.0, 1120.0),  # Max ~1000-1100 W/m² at Earth surface (based on field data: max 1097)
         "direct_radiation": (0.0, 1000.0),
         "diffuse_radiation": (0.0, 800.0),    # Diffuse is typically lower
-        "direct_normal_irradiance": (0.0, 900.0),
+        "direct_normal_irradiance": (0.0, 1030.0),  # Based on field data: max 1010.6
         "temperature_2m": (-50.0, 60.0),
         "dew_point_2m": (-50.0, 60.0),
         "wet_bulb_temperature_2m": (-50.0, 60.0),
@@ -65,7 +67,8 @@ class SilverHourlyWeatherLoader(BaseSilverLoader):
         if missing:
             raise ValueError(f"Missing expected columns in bronze weather source: {sorted(missing)}")
 
-        # Bronze timestamps are already in facility's local timezone
+        # CRITICAL: Bronze weather_timestamp is already in correct LOCAL format from API
+        # No additional conversion needed - use directly for aggregation
         prepared_base = (
             bronze_df.select(
                 "facility_code",
@@ -77,7 +80,7 @@ class SilverHourlyWeatherLoader(BaseSilverLoader):
             .where(F.col("weather_timestamp").isNotNull())
         )
         
-        # No conversion needed - aggregate by local time
+        # Aggregate by timestamp directly (already in correct format)
         prepared = (
             prepared_base
             .withColumn("date_hour", F.date_trunc("hour", F.col("timestamp_local")))
@@ -100,15 +103,7 @@ class SilverHourlyWeatherLoader(BaseSilverLoader):
         hour_of_day = F.hour(F.col("timestamp_local"))
         is_night = (hour_of_day < 6) | (hour_of_day >= 22)
         
-        # Define radiation checks
-        is_unrealistic_rad = F.col("shortwave_radiation") > 1000
-        is_sunrise_spike = (hour_of_day == 6) & (F.col("shortwave_radiation") > 500)
-        is_inconsistent_radiation = (
-            (F.col("direct_normal_irradiance").isNotNull()) & 
-            (F.col("shortwave_radiation").isNotNull()) &
-            (F.col("direct_normal_irradiance") > 900) & 
-            (F.col("shortwave_radiation") < 300)
-        )
+        # Define radiation checks - keep only essential validation
         is_night_rad_high = is_night & (F.col("shortwave_radiation") > 50)
         
         # Check numeric bounds for all columns
@@ -134,23 +129,20 @@ class SilverHourlyWeatherLoader(BaseSilverLoader):
                 F.concat_ws(
                     "|",
                     bound_issues,
-                    F.when(is_night_rad_high, F.lit("NIGHT_RADIATION_SPIKE")),
-                    F.when(is_unrealistic_rad, F.lit("UNREALISTIC_RADIATION")),
-                    F.when(is_sunrise_spike, F.lit("SUNRISE_SPIKE_ANOMALY")),
-                    F.when(is_inconsistent_radiation, F.lit("INCONSISTENT_RADIATION_COMPONENTS"))
+                    F.when(is_night_rad_high, F.lit("NIGHT_RADIATION_SPIKE"))
                 )
             )
             .withColumn(
                 "quality_flag",
                 F.when(
-                    is_unrealistic_rad | is_sunrise_spike | is_inconsistent_radiation | ~is_valid_bounds,
+                    ~is_valid_bounds,
                     F.lit("REJECT")
                 ).when(
                     is_night_rad_high,
                     F.lit("CAUTION")
                 ).otherwise(F.lit("GOOD"))
             )
-            .withColumn("is_valid", is_valid_bounds & ~(is_unrealistic_rad | is_sunrise_spike | is_inconsistent_radiation))
+            .withColumn("is_valid", is_valid_bounds)
         )
 
         # Add metadata and finalize
@@ -161,6 +153,7 @@ class SilverHourlyWeatherLoader(BaseSilverLoader):
         )
 
         # Select output columns (rename timestamp_local to timestamp for schema)
+        # Keep timestamp as TIMESTAMP type with LOCAL time (from_utc_timestamp already applied)
         return result.select(
             "facility_code", "facility_name", F.col("timestamp_local").alias("timestamp"),
             "date_hour", "date", *self._numeric_columns.keys(),

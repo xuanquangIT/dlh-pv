@@ -7,7 +7,6 @@ from typing import Optional
 
 from pyspark.sql import DataFrame
 from pyspark.sql import functions as F
-from pyspark.sql.window import Window
 
 from .base import BaseSilverLoader, LoadOptions
 

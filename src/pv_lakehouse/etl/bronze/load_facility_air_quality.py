@@ -121,17 +121,44 @@ def main() -> None:
     air_spark_df = (
         air_spark_df.withColumn("ingest_mode", F.lit(args.mode))
         .withColumn("ingest_timestamp", ingest_ts)
-        .withColumn("air_timestamp", F.to_timestamp("date"))
+        # API returns date in facility LOCAL timezone - store as-is (no conversion needed)
+        # This keeps data consistent with original API timestamps
+        .withColumn(
+            "air_timestamp",
+            F.to_timestamp(F.col("date"))
+        )
         .withColumn("air_date", F.to_date("air_timestamp"))
         .filter(F.col("air_timestamp").isNotNull() & (F.col("air_timestamp") <= ingest_ts))
     )
 
-    openmeteo_common.write_dataset(
-        air_spark_df,
-        iceberg_table=ICEBERG_AIR_TABLE,
-        mode=args.mode,
-        label="air-quality",
-    )
+    # Use Iceberg MERGE for both insert and deduplication (keep latest record only)
+    air_spark_df.createOrReplaceTempView("air_source")
+    
+    merge_sql = f"""
+    MERGE INTO {ICEBERG_AIR_TABLE} AS target
+    USING (
+        SELECT * FROM (
+            SELECT *,
+            ROW_NUMBER() OVER (PARTITION BY facility_code, air_timestamp ORDER BY ingest_timestamp DESC) as rn
+            FROM air_source
+        ) WHERE rn = 1
+    ) AS source
+    ON target.facility_code = source.facility_code AND target.air_timestamp = source.air_timestamp
+    WHEN MATCHED THEN UPDATE SET *
+    WHEN NOT MATCHED THEN INSERT *
+    """
+    
+    try:
+        spark.sql(merge_sql)
+        print(f"MERGE completed for {ICEBERG_AIR_TABLE}")
+    except Exception as e:
+        print(f"MERGE failed: {e}. Falling back to append...")
+        openmeteo_common.write_dataset(
+            air_spark_df,
+            iceberg_table=ICEBERG_AIR_TABLE,
+            mode="append",
+            label="air-quality",
+        )
 
     spark.stop()
 

@@ -7,6 +7,8 @@ from typing import Optional
 from pyspark.sql import DataFrame
 from pyspark.sql import functions as F
 
+from pv_lakehouse.etl.bronze.facility_timezones import get_facility_timezone
+
 from .base import BaseSilverLoader, LoadOptions
 
 
@@ -56,7 +58,8 @@ class SilverHourlyAirQualityLoader(BaseSilverLoader):
         if missing:
             raise ValueError(f"Missing expected columns in bronze air-quality source: {sorted(missing)}")
 
-        # Bronze timestamps are already in facility's local timezone
+        # CRITICAL: Bronze air_timestamp is already in correct LOCAL format from API
+        # No additional conversion needed - use directly for aggregation
         prepared_base = (
             bronze_df.select(
                 "facility_code",
@@ -68,7 +71,7 @@ class SilverHourlyAirQualityLoader(BaseSilverLoader):
             .where(F.col("air_timestamp").isNotNull())
         )
         
-        # No conversion needed - aggregate by local time
+        # Aggregate by timestamp directly (already in correct format)
         prepared = (
             prepared_base
             .withColumn("date_hour", F.date_trunc("hour", F.col("timestamp_local")))
@@ -139,6 +142,7 @@ class SilverHourlyAirQualityLoader(BaseSilverLoader):
             .withColumn("updated_at", F.current_timestamp())
         )
 
+        # Keep timestamp as TIMESTAMP type with LOCAL time (from_utc_timestamp already applied)
         return result.select(
             "facility_code", "facility_name", F.col("timestamp_local").alias("timestamp"),
             "date_hour", "date",
