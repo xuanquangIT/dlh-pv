@@ -25,10 +25,10 @@ PHYSICAL_BOUNDS: Dict[str, Tuple[float, Optional[float]]] = {
     "power_mw": (0.0, None),
     
     # Weather - Radiation (W/m²)
-    "shortwave_radiation": (0.0, 1000.0),  # Max ~1000 W/m² at Earth surface
-    "direct_radiation": (0.0, 1000.0),    # Max ~1000 W/m² at Earth surface
-    "diffuse_radiation": (0.0, 800.0),    # Diffuse typically lower than direct
-    "direct_normal_irradiance": (0.0, 950.0),  # Max ~950 W/m² in clear-sky conditions
+    "shortwave_radiation": (0.0, 1500.0),
+    "direct_radiation": (0.0, 1500.0),
+    "diffuse_radiation": (0.0, 1500.0),
+    "direct_normal_irradiance": (0.0, 1500.0),
     "terrestrial_radiation": (0.0, 100.0),
     
     # Weather - Temperature (°C)
