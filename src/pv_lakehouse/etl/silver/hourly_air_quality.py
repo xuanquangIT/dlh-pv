@@ -31,16 +31,23 @@ class SilverHourlyAirQualityLoader(BaseSilverLoader):
             return 0
         return self._process_in_chunks(bronze_df, chunk_days=7)
 
+    # Physical bounds for air quality variables (μg/m³ or ppb equivalent)
+    # Based on WHO standards and typical air pollution levels
     _numeric_columns = {
-        "pm2_5": (0.0, 500.0),
-        "pm10": (0.0, 500.0),
-        "dust": (0.0, 500.0),
-        "nitrogen_dioxide": (0.0, 500.0),
-        "ozone": (0.0, 500.0),
-        "sulphur_dioxide": (0.0, 500.0),
-        "carbon_monoxide": (0.0, 500.0),
-        "uv_index": (0.0, 15.0),
-        "uv_index_clear_sky": (0.0, 15.0),
+        # Particulate Matter (PM) - μg/m³
+        "pm2_5": (0.0, 500.0),              # PM 2.5: WHO extreme = 250+, practical max = 500
+        "pm10": (0.0, 500.0),               # PM 10: WHO extreme = 1,200, practical cap = 500
+        "dust": (0.0, 500.0),               # Total dust/TSP: practical max = 500
+        
+        # Gaseous Pollutants - ppb (parts per billion) or μg/m³
+        "nitrogen_dioxide": (0.0, 500.0),   # NO₂: WHO 1-hr = 200 μg/m³ (~100 ppb), cap = 500
+        "ozone": (0.0, 500.0),              # O₃: WHO 8-hr = 100 μg/m³ (~50 ppb), cap = 500
+        "sulphur_dioxide": (0.0, 500.0),    # SO₂: EPA 1-hr = 196 ppb (~500 μg/m³), cap = 500
+        "carbon_monoxide": (0.0, 1000.0),   # CO: ppb units, typical clean air = 100-500, dust storms = 500-1000
+        
+        # UV Index - dimensionless (0-15 is typical)
+        "uv_index": (0.0, 15.0),            # 0-11 typical (outdoor), extreme = 15+
+        "uv_index_clear_sky": (0.0, 15.0),  # Clear-sky theoretical maximum
     }
 
     def transform(self, bronze_df: DataFrame) -> Optional[DataFrame]:
@@ -75,7 +82,7 @@ class SilverHourlyAirQualityLoader(BaseSilverLoader):
             .withColumn("date", F.to_date(F.col("timestamp_local")))
         )
 
-        # Round numeric columns - use select to apply in one pass
+        # Round numeric columns - build all columns in single SELECT (no intermediate withColumn!)
         select_exprs = [
             "facility_code", "facility_name", "timestamp_local", "date_hour", "date"
         ]
@@ -85,58 +92,47 @@ class SilverHourlyAirQualityLoader(BaseSilverLoader):
             else:
                 select_exprs.append(F.lit(None).alias(column))
         
-        result = prepared.select(select_exprs)
-
-        # Calculate AQI from PM2.5 for each hourly record
+        # Pre-compute AQI value
         aqi_value = self._aqi_from_pm25(F.col("pm2_5"))
-        result = result.withColumn("aqi_value", F.round(aqi_value).cast("int"))
-        result = result.withColumn(
-            "aqi_category",
-            F.when(F.col("aqi_value").isNull(), F.lit(None))
-            .when(F.col("aqi_value") <= 50, F.lit("Good"))
-            .when(F.col("aqi_value") <= 100, F.lit("Moderate"))
-            .when(F.col("aqi_value") <= 200, F.lit("Unhealthy"))
-            .otherwise(F.lit("Hazardous")),
-        )
-
-        # Validation: Check numeric columns within bounds and AQI validity in single pass
+        aqi_value_rounded = F.round(aqi_value).cast("int")
+        
+        # Pre-compute all validation checks
         is_valid_bounds = F.lit(True)
-        bound_issues = F.lit("")
+        bound_issues_list = []
         
         for column, (min_val, max_val) in self._numeric_columns.items():
             col_expr = F.col(column)
             col_valid = col_expr.isNull() | ((col_expr >= min_val) & (col_expr <= max_val))
             is_valid_bounds = is_valid_bounds & col_valid
             
-            # Append issue if out of bounds
-            bound_issues = F.concat_ws(
-                "|",
-                bound_issues,
+            bound_issues_list.append(
                 F.when((col_expr.isNotNull()) & ~col_valid, F.concat(F.lit(column), F.lit("_OUT_OF_BOUNDS")))
             )
         
-        aqi_valid = (F.col("aqi_value").isNull() | ((F.col("aqi_value") >= 0) & (F.col("aqi_value") <= 500)))
+        # AQI validity check
+        aqi_valid = (aqi_value_rounded.isNull() | ((aqi_value_rounded >= 0) & (aqi_value_rounded <= 500)))
         is_valid_overall = is_valid_bounds & aqi_valid
         
-        quality_issues = F.concat_ws(
-            "|",
-            bound_issues,
-            F.when((F.col("aqi_value").isNotNull()) & ~aqi_valid, F.lit("AQI_OUT_OF_RANGE"))
-        )
-
-        result = (
-            result
-            .withColumn("is_valid", is_valid_overall)
-            .withColumn(
-                "quality_issues",
-                F.when(is_valid_overall, F.lit("")).otherwise(quality_issues)
-            )
-            .withColumn(
-                "quality_flag",
-                F.when(is_valid_overall, F.lit("GOOD")).otherwise(F.lit("CAUTION"))
-            )
-            .withColumn("created_at", F.current_timestamp())
-            .withColumn("updated_at", F.current_timestamp())
+        # Single SELECT with all columns - NO intermediate withColumn operations!
+        result = prepared.select(
+            select_exprs + [
+                aqi_value_rounded.alias("aqi_value"),
+                F.when(aqi_value_rounded.isNull(), F.lit(None))
+                    .when(aqi_value_rounded <= 50, "Good")
+                    .when(aqi_value_rounded <= 100, "Moderate")
+                    .when(aqi_value_rounded <= 200, "Unhealthy")
+                    .otherwise("Hazardous")
+                    .alias("aqi_category"),
+                is_valid_overall.alias("is_valid"),
+                F.when(is_valid_overall, "GOOD").otherwise("CAUTION") \
+                    .alias("quality_flag"),
+                F.trim(F.concat_ws("|",
+                    *bound_issues_list,
+                    F.when((aqi_value_rounded.isNotNull()) & ~aqi_valid, "AQI_OUT_OF_RANGE"),
+                )).alias("quality_issues"),
+                F.current_timestamp().alias("created_at"),
+                F.current_timestamp().alias("updated_at"),
+            ]
         )
 
         return result.select(

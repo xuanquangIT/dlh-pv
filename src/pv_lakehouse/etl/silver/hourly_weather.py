@@ -32,25 +32,45 @@ class SilverHourlyWeatherLoader(BaseSilverLoader):
         return self._process_in_chunks(bronze_df, chunk_days=7)
 
     _numeric_columns = {
+        # Radiation bounds (W/m²)
         "shortwave_radiation": (0.0, 1000.0),  # Max ~1000 W/m² at Earth surface (1361 extraterrestrial)
         "direct_radiation": (0.0, 1000.0),
         "diffuse_radiation": (0.0, 800.0),    # Diffuse is typically lower
-        "direct_normal_irradiance": (0.0, 900.0),
-        "temperature_2m": (-50.0, 60.0),
-        "dew_point_2m": (-50.0, 60.0),
-        "wet_bulb_temperature_2m": (-50.0, 60.0),
-        "cloud_cover": (0.0, 100.0),
-        "cloud_cover_low": (0.0, 100.0),
-        "cloud_cover_mid": (0.0, 100.0),
-        "cloud_cover_high": (0.0, 100.0),
-        "precipitation": (0.0, 1000.0),
-        "sunshine_duration": (0.0, 3600.0),
-        "total_column_integrated_water_vapour": (0.0, 100.0),
-        "wind_speed_10m": (0.0, 60.0),
-        "wind_direction_10m": (0.0, 360.0),
-        "wind_gusts_10m": (0.0, 120.0),
-        "pressure_msl": (800.0, 1100.0),
+        "direct_normal_irradiance": (0.0, 950.0),  # Updated: 900→950 W/m² 
+        
+        # Temperature bounds (°C) - Earth's atmospheric limits
+        "temperature_2m": (-50.0, 60.0),       # Min: -50°C (Siberia record), Max: 60°C (Death Valley)
+        "dew_point_2m": (-50.0, 60.0),         # Physical limit: <= ambient temperature
+        "wet_bulb_temperature_2m": (-50.0, 60.0),  # Always <= ambient temperature
+        
+        # Cloud cover (%)
+        "cloud_cover": (0.0, 100.0),           # Percentage
+        "cloud_cover_low": (0.0, 100.0),       # Low level clouds (< 2km)
+        "cloud_cover_mid": (0.0, 100.0),       # Mid level clouds (2-6km)
+        "cloud_cover_high": (0.0, 100.0),      # High level clouds (> 6km)
+        
+        # Precipitation (mm/hour)
+        "precipitation": (0.0, 1000.0),        # Heavy rain: ~400mm/hr extreme
+        "sunshine_duration": (0.0, 3600.0),    # Seconds in hour (0-3600)
+        "total_column_integrated_water_vapour": (0.0, 80.0),  # Total column water vapor (mm)
+        
+        # Wind bounds (m/s) - Based on Beaufort scale
+        "wind_speed_10m": (0.0, 60.0),         # Max: ~60 m/s (hurricane force, category 5)
+        "wind_direction_10m": (0.0, 360.0),    # Compass direction (0-360°)
+        "wind_gusts_10m": (0.0, 120.0),        # Peak gust (up to ~120 m/s in extreme tornados)
+        
+        # Pressure (hPa) - Atmospheric pressure
+        "pressure_msl": (800.0, 1100.0),       # Sea level: 800-1100 hPa (typhoon to high pressure)
     }
+    
+    # Phase 2-3: Enhanced radiation anomaly detection constants ✅
+    # Clear sky detection and radiation component ratio validation
+    CLEAR_SKY_DNI_THRESHOLD = 500.0           # W/m² - threshold for "clear sky" conditions
+    NIGHT_RADIATION_THRESHOLD = 50.0          # W/m² - max allowed shortwave at night
+    MIN_SHORTWAVE_RATIO = 0.25                # Min ratio of shortwave/DNI (conservative)
+    MAX_SHORTWAVE_RATIO = 0.55                # Max ratio of shortwave/DNI (with diffuse)
+    REALISTIC_SHORTWAVE_MIN = 200.0           # W/m² - unrealistic if < this on clear days
+    UNREALISTIC_RADIATION_MAX = 1000.0        # W/m² - never exceeds this on Earth surface
 
     def transform(self, bronze_df: DataFrame) -> Optional[DataFrame]:
         if bronze_df is None or not bronze_df.columns:
@@ -84,88 +104,105 @@ class SilverHourlyWeatherLoader(BaseSilverLoader):
             .withColumn("date", F.to_date(F.col("timestamp_local")))
         )
 
-        # Round numeric columns - use select to apply in one pass
-        select_exprs = [
-            "facility_code", "facility_name", "timestamp_local", "date_hour", "date"
-        ]
-        for column in self._numeric_columns.keys():
-            if column in prepared.columns:
-                select_exprs.append(F.round(F.col(column), 4).alias(column))
-            else:
-                select_exprs.append(F.lit(None).alias(column))
-        
-        result = prepared.select(select_exprs)
-
-        # Validation: Check numeric columns within bounds and build quality_issues in single pass
-        hour_of_day = F.hour(F.col("timestamp_local"))
-        is_night = (hour_of_day < 6) | (hour_of_day >= 22)
-        
-        # Define radiation checks
-        is_unrealistic_rad = F.col("shortwave_radiation") > 1000
-        is_sunrise_spike = (hour_of_day == 6) & (F.col("shortwave_radiation") > 500)
-        is_inconsistent_radiation = (
-            (F.col("direct_normal_irradiance").isNotNull()) & 
-            (F.col("shortwave_radiation").isNotNull()) &
-            (F.col("direct_normal_irradiance") > 900) & 
-            (F.col("shortwave_radiation") < 300)
-        )
-        is_night_rad_high = is_night & (F.col("shortwave_radiation") > 50)
-        
-        # Check numeric bounds for all columns
+        # Quality Validation: Check numeric columns within bounds
+        # Pre-compute all bounds checks in single pass (NO intermediate withColumn)
         is_valid_bounds = F.lit(True)
-        bound_issues = F.lit("")
+        bound_issues_list = []
         
         for column, (min_val, max_val) in self._numeric_columns.items():
             col_expr = F.col(column)
             col_valid = col_expr.isNull() | ((col_expr >= min_val) & (col_expr <= max_val))
             is_valid_bounds = is_valid_bounds & col_valid
             
-            bound_issues = F.concat_ws(
-                "|",
-                bound_issues,
+            # Collect issues only for columns that are OUT_OF_BOUNDS
+            bound_issues_list.append(
                 F.when((col_expr.isNotNull()) & ~col_valid, F.concat(F.lit(column), F.lit("_OUT_OF_BOUNDS")))
             )
         
-        # Build quality_issues in single statement
-        result = (
-            result
-            .withColumn(
-                "quality_issues",
-                F.concat_ws(
-                    "|",
-                    bound_issues,
-                    F.when(is_night_rad_high, F.lit("NIGHT_RADIATION_SPIKE")),
-                    F.when(is_unrealistic_rad, F.lit("UNREALISTIC_RADIATION")),
-                    F.when(is_sunrise_spike, F.lit("SUNRISE_SPIKE_ANOMALY")),
-                    F.when(is_inconsistent_radiation, F.lit("INCONSISTENT_RADIATION_COMPONENTS"))
-                )
+        # Pre-compute hour_of_day for radiation checks
+        hour_of_day = F.hour(F.col("timestamp_local"))
+        
+        # Efficient radiation checks - all computed in one pass
+        is_night = (hour_of_day < 6) | (hour_of_day >= 22)
+        
+        # Radiation component consistency
+        is_unrealistic_rad = F.col("shortwave_radiation") > self.UNREALISTIC_RADIATION_MAX
+        is_sunrise_spike = (hour_of_day == 6) & (F.col("shortwave_radiation") > 500)
+        
+        is_inconsistent_radiation = (
+            (F.col("direct_normal_irradiance").isNotNull()) & 
+            (F.col("shortwave_radiation").isNotNull()) &
+            (F.col("direct_normal_irradiance") > 900) &
+            (F.col("shortwave_radiation") < 200)
+        )
+        
+        # Night radiation check
+        is_night_rad_high = is_night & (F.col("shortwave_radiation") > self.NIGHT_RADIATION_THRESHOLD)
+        
+        # Bidirectional radiation checks (both directions in one pass)
+        is_high_dni_low_shortwave = (
+            (F.col("direct_normal_irradiance") > self.CLEAR_SKY_DNI_THRESHOLD) &
+            (F.col("shortwave_radiation").isNotNull()) &
+            (
+                (F.col("shortwave_radiation") < F.col("direct_normal_irradiance") * self.MIN_SHORTWAVE_RATIO) |
+                (F.col("shortwave_radiation") < self.REALISTIC_SHORTWAVE_MIN)
             )
-            .withColumn(
-                "quality_flag",
-                F.when(
-                    is_unrealistic_rad | is_sunrise_spike | is_inconsistent_radiation | ~is_valid_bounds,
-                    F.lit("REJECT")
-                ).when(
-                    is_night_rad_high,
-                    F.lit("CAUTION")
-                ).otherwise(F.lit("GOOD"))
-            )
-            .withColumn("is_valid", is_valid_bounds & ~(is_unrealistic_rad | is_sunrise_spike | is_inconsistent_radiation))
         )
-
-        # Add metadata and finalize
-        result = (
-            result
-            .withColumn("created_at", F.current_timestamp())
-            .withColumn("updated_at", F.current_timestamp())
+        
+        is_high_shortwave_low_dni = (
+            (F.col("shortwave_radiation") > 700) &
+            (F.col("direct_normal_irradiance").isNotNull()) &
+            (F.col("direct_normal_irradiance") < 300)
         )
-
-        # Select output columns (rename timestamp_local to timestamp for schema)
-        return result.select(
-            "facility_code", "facility_name", F.col("timestamp_local").alias("timestamp"),
-            "date_hour", "date", *self._numeric_columns.keys(),
-            "is_valid", "quality_flag", "quality_issues", "created_at", "updated_at"
-        )
+        
+        # Build quality expressions
+        quality_issues_expr = F.trim(F.concat_ws("|",
+            *bound_issues_list,
+            F.when(is_night_rad_high, "NIGHT_RADIATION_SPIKE"),
+            F.when(is_unrealistic_rad, "UNREALISTIC_RADIATION"),
+            F.when(is_high_dni_low_shortwave, "RADIATION_COMPONENT_MISMATCH_LOW_SW"),
+            F.when(is_high_shortwave_low_dni, "RADIATION_COMPONENT_MISMATCH_LOW_DNI"),
+            F.when(is_sunrise_spike, "SUNRISE_SPIKE_ANOMALY"),
+            F.when(is_inconsistent_radiation, "INCONSISTENT_RADIATION_COMPONENTS"),
+        ))
+        
+        quality_flag_expr = F.when(
+            is_unrealistic_rad | is_sunrise_spike | is_inconsistent_radiation | ~is_valid_bounds,
+            "REJECT"
+        ).when(
+            is_night_rad_high | is_high_shortwave_low_dni,
+            "CAUTION"
+        ).otherwise("GOOD")
+        
+        is_valid_expr = is_valid_bounds & ~(is_unrealistic_rad | is_sunrise_spike | is_inconsistent_radiation)
+        
+        # Build select expressions - must include ALL numeric columns to match silver schema!
+        select_exprs = [
+            "facility_code",
+            "facility_name",
+            F.col("timestamp_local").alias("timestamp"),
+            "date_hour",
+            "date"
+        ]
+        
+        # Add ALL numeric columns (required by silver table schema)
+        for column in self._numeric_columns.keys():
+            if column in prepared.columns:
+                select_exprs.append(F.round(F.col(column), 4).alias(column))
+            else:
+                # If column doesn't exist, add NULL with proper type
+                select_exprs.append(F.lit(None).cast("double").alias(column))
+        
+        # Add quality columns
+        select_exprs.extend([
+            is_valid_expr.alias("is_valid"),
+            quality_flag_expr.alias("quality_flag"),
+            quality_issues_expr.alias("quality_issues"),
+            F.current_timestamp().alias("created_at"),
+            F.current_timestamp().alias("updated_at"),
+        ])
+        
+        return prepared.select(*select_exprs)
 
 
 __all__ = ["SilverHourlyWeatherLoader"]

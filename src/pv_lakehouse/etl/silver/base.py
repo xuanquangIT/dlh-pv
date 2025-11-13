@@ -120,9 +120,6 @@ class BaseSilverLoader:
                 chunk_df = bronze_df.filter(
                     (F.col(timestamp_col) >= F.lit(chunk_start)) & (F.col(timestamp_col) <= F.lit(chunk_end))
                 )
-
-                # Persist to avoid recomputation
-                chunk_df.persist()
                 
                 try:
                     transformed_df = self.transform(chunk_df)
@@ -144,8 +141,7 @@ class BaseSilverLoader:
 
                     print(f"Finished {chunk_days}-day chunk: wrote {row_count} rows to {self.silver_table}")
                 finally:
-                    # Release memory immediately after processing each chunk
-                    chunk_df.unpersist()
+                    pass
 
                 chunk_start = chunk_end + dt.timedelta(microseconds=1)
         finally:
