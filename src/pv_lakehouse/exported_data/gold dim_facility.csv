@@ -1,6 +1,0 @@
-facility_key,facility_code,facility_name,network_id,network_region,location_lat,location_lng,total_capacity_mw,total_capacity_registered_mw,total_capacity_maximum_mw,unit_fueltech_summary,unit_status_summary
-4,GANNSF,Gannawarra,NEM,VIC1,-35.730000,143.771100,55.0000,55.0000,50.0000,solar_utility:1,operating:1
-2,CLARESF,Clare,NEM,QLD1,-19.839770,147.210550,110.2600,110.2600,100.0000,solar_utility:1,operating:1
-1,BNGSF1,Bungala One,NEM,SA1,-32.423316,137.841798,135.0000,135.0000,110.0000,solar_utility:1,operating:1
-3,COLEASF,Coleambally,NEM,NSW1,-34.759494,145.929840,180.0000,180.0000,150.0000,solar_utility:1,operating:1
-5,NYNGAN,Nyngan,NEM,NSW1,-31.563191,147.074195,102.1400,102.1400,102.0000,solar_utility:1,operating:1
