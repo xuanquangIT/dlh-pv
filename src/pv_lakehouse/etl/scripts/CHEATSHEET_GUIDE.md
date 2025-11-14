@@ -131,7 +131,6 @@ docker compose -f docker/docker-compose.yml exec trino trino --execute \
 
 ### Delete Bronze layer:
 ```bash
-docker compose -f docker/docker-compose.yml exec trino trino --catalog iceberg --schema lh --execute "DELETE FROM bronze.raw_facilities;"
 docker compose -f docker/docker-compose.yml exec trino trino --catalog iceberg --schema lh --execute "DELETE FROM bronze.raw_facility_timeseries;"
 docker compose -f docker/docker-compose.yml exec trino trino --catalog iceberg --schema lh --execute "DELETE FROM bronze.raw_facility_weather;"
 docker compose -f docker/docker-compose.yml exec trino trino --catalog iceberg --schema lh --execute "DELETE FROM bronze.raw_facility_air_quality;"
@@ -139,8 +138,6 @@ docker compose -f docker/docker-compose.yml exec trino trino --catalog iceberg -
 
 ### Delete Silver layer:
 ```bash
-
-docker compose -f docker/docker-compose.yml exec trino trino --catalog iceberg --schema lh --execute "DELETE FROM silver.clean_facility_master;"
 docker compose -f docker/docker-compose.yml exec trino trino --catalog iceberg --schema lh --execute "DELETE FROM silver.clean_hourly_energy;"
 docker compose -f docker/docker-compose.yml exec trino trino --catalog iceberg --schema lh --execute "DELETE FROM silver.clean_hourly_weather;"
 docker compose -f docker/docker-compose.yml exec trino trino --catalog iceberg --schema lh --execute "DELETE FROM silver.clean_hourly_air_quality;"
