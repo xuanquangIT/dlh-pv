@@ -7,8 +7,6 @@ from typing import Optional
 from pyspark.sql import DataFrame
 from pyspark.sql import functions as F
 
-from pv_lakehouse.etl.bronze.facility_timezones import get_facility_timezone
-
 from .base import BaseSilverLoader, LoadOptions
 
 
@@ -111,7 +109,6 @@ class SilverHourlyAirQualityLoader(BaseSilverLoader):
             col_valid = col_expr.isNull() | ((col_expr >= min_val) & (col_expr <= max_val))
             is_valid_bounds = is_valid_bounds & col_valid
             
-            # Append issue if out of bounds
             bound_issues = F.concat_ws(
                 "|",
                 bound_issues,
@@ -142,7 +139,6 @@ class SilverHourlyAirQualityLoader(BaseSilverLoader):
             .withColumn("updated_at", F.current_timestamp())
         )
 
-        # Keep timestamp as TIMESTAMP type with LOCAL time (from_utc_timestamp already applied)
         return result.select(
             "facility_code", "facility_name", F.col("timestamp_local").alias("timestamp"),
             "date_hour", "date",

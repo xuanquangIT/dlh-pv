@@ -123,14 +123,16 @@ def main() -> None:
     ingest_ts = F.current_timestamp()
 
     weather_spark_df = spark.createDataFrame(weather_df)
-    # Replace NaN in total_column_integrated_water_vapour with NULL using Spark (distributed).
-    # This is the primary column that returns NaN from Open-Meteo API.
-    if "total_column_integrated_water_vapour" in weather_spark_df.columns:
-        weather_spark_df = weather_spark_df.withColumn(
-            "total_column_integrated_water_vapour",
-            F.when(F.isnan(F.col("total_column_integrated_water_vapour")), F.lit(None))
-             .otherwise(F.col("total_column_integrated_water_vapour"))
-        )
+    # Replace NaN in water vapour and boundary layer columns with NULL using Spark (distributed).
+    # These columns commonly return NaN values from Open-Meteo API.
+    nan_columns = ["total_column_integrated_water_vapour", "boundary_layer_height"]
+    for col_name in nan_columns:
+        if col_name in weather_spark_df.columns:
+            weather_spark_df = weather_spark_df.withColumn(
+                col_name,
+                F.when(F.isnan(F.col(col_name)), F.lit(None))
+                 .otherwise(F.col(col_name))
+            )
     # Create facility_tz column for timezone conversion
     weather_spark_df = (
         weather_spark_df.withColumn("ingest_mode", F.lit(args.mode))
