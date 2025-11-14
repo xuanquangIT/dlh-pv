@@ -12,6 +12,7 @@ import pandas as pd
 from pyspark.sql import functions as F
 
 from pv_lakehouse.etl.bronze import openmeteo_common
+from pv_lakehouse.etl.bronze.facility_timezones import get_facility_timezone
 from pv_lakehouse.etl.clients import openmeteo
 from pv_lakehouse.etl.clients.openmeteo import FacilityLocation, RateLimiter
 from pv_lakehouse.etl.utils.spark_utils import create_spark_session
@@ -37,13 +38,14 @@ def collect_air_quality_data(facilities: List[FacilityLocation], args: argparse.
 
     def fetch_for_facility(facility: FacilityLocation) -> pd.DataFrame:
         print(f"Fetching air quality: {facility.code} ({facility.name})")
+        facility_tz = get_facility_timezone(facility.code)
         return openmeteo.fetch_air_quality_dataframe(
             facility,
             start=args.start,
             end=args.end,
             chunk_days=openmeteo.AIR_QUALITY_MAX_DAYS,  # 14 days max
             hourly_variables=openmeteo.DEFAULT_AIR_VARS,
-            timezone="UTC",
+            timezone=facility_tz,  # Request in facility's local timezone
             limiter=limiter,
             max_retries=openmeteo.DEFAULT_MAX_RETRIES,
             retry_backoff=openmeteo.DEFAULT_RETRY_BACKOFF,
@@ -119,17 +121,44 @@ def main() -> None:
     air_spark_df = (
         air_spark_df.withColumn("ingest_mode", F.lit(args.mode))
         .withColumn("ingest_timestamp", ingest_ts)
-        .withColumn("air_timestamp", F.to_timestamp("date"))
+        # API returns date in facility LOCAL timezone - store as-is (no conversion needed)
+        # This keeps data consistent with original API timestamps
+        .withColumn(
+            "air_timestamp",
+            F.to_timestamp(F.col("date"))
+        )
         .withColumn("air_date", F.to_date("air_timestamp"))
+        .filter(F.col("air_timestamp").isNotNull() & (F.col("air_timestamp") <= ingest_ts))
     )
-    air_spark_df = air_spark_df.filter(F.col("air_timestamp").isNotNull() & (F.col("air_timestamp") <= ingest_ts))
 
-    openmeteo_common.write_dataset(
-        air_spark_df,
-        iceberg_table=ICEBERG_AIR_TABLE,
-        mode=args.mode,
-        label="air-quality",
-    )
+    # Use Iceberg MERGE for both insert and deduplication (keep latest record only)
+    air_spark_df.createOrReplaceTempView("air_source")
+    
+    merge_sql = f"""
+    MERGE INTO {ICEBERG_AIR_TABLE} AS target
+    USING (
+        SELECT * FROM (
+            SELECT *,
+            ROW_NUMBER() OVER (PARTITION BY facility_code, air_timestamp ORDER BY ingest_timestamp DESC) as rn
+            FROM air_source
+        ) WHERE rn = 1
+    ) AS source
+    ON target.facility_code = source.facility_code AND target.air_timestamp = source.air_timestamp
+    WHEN MATCHED THEN UPDATE SET *
+    WHEN NOT MATCHED THEN INSERT *
+    """
+    
+    try:
+        spark.sql(merge_sql)
+        print(f"MERGE completed for {ICEBERG_AIR_TABLE}")
+    except Exception as e:
+        print(f"MERGE failed: {e}. Falling back to append...")
+        openmeteo_common.write_dataset(
+            air_spark_df,
+            iceberg_table=ICEBERG_AIR_TABLE,
+            mode="append",
+            label="air-quality",
+        )
 
     spark.stop()
 

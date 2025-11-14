@@ -2,13 +2,12 @@
 
 from __future__ import annotations
 
-from functools import reduce
 from typing import Optional
 
 from pyspark.sql import DataFrame
 from pyspark.sql import functions as F
 
-from .base import BaseSilverLoader
+from .base import BaseSilverLoader, LoadOptions
 
 
 class SilverHourlyAirQualityLoader(BaseSilverLoader):
@@ -17,29 +16,19 @@ class SilverHourlyAirQualityLoader(BaseSilverLoader):
     timestamp_column = "air_timestamp"
     partition_cols = ("date_hour",)
 
-    def __init__(self, options=None):
-        from .base import LoadOptions
+    def __init__(self, options: Optional[LoadOptions] = None) -> None:
         if options is None:
-            options = LoadOptions(
-                target_file_size_mb=self.DEFAULT_TARGET_FILE_SIZE_MB,
-                max_records_per_file=self.DEFAULT_MAX_RECORDS_PER_FILE,
-            )
+            options = LoadOptions()
         else:
             options.target_file_size_mb = min(options.target_file_size_mb, self.DEFAULT_TARGET_FILE_SIZE_MB)
             options.max_records_per_file = min(options.max_records_per_file, self.DEFAULT_MAX_RECORDS_PER_FILE)
         super().__init__(options)
 
     def run(self) -> int:
-        """
-        Process bronze air quality data in 7-day chunks.
-        
-        Weekly chunks balance memory usage with processing efficiency for moderately wide tables (9 columns).
-        """
+        """Process bronze air quality data in 7-day chunks to limit memory usage."""
         bronze_df = self._read_bronze()
         if bronze_df is None or not bronze_df.columns:
             return 0
-
-        # Process in 7-day chunks (moderate table: 9 columns)
         return self._process_in_chunks(bronze_df, chunk_days=7)
 
     _numeric_columns = {
@@ -67,27 +56,37 @@ class SilverHourlyAirQualityLoader(BaseSilverLoader):
         if missing:
             raise ValueError(f"Missing expected columns in bronze air-quality source: {sorted(missing)}")
 
-        # Keep hourly granularity - no aggregation
-        prepared = (
+        # CRITICAL: Bronze air_timestamp is already in correct LOCAL format from API
+        # No additional conversion needed - use directly for aggregation
+        prepared_base = (
             bronze_df.select(
                 "facility_code",
                 "facility_name",
-                F.col("air_timestamp").cast("timestamp").alias("timestamp"),
-                F.date_trunc("hour", F.col("air_timestamp")).alias("date_hour"),
-                F.to_date(F.col("air_timestamp")).alias("date"),
+                F.col("air_timestamp").cast("timestamp").alias("timestamp_local"),
                 *[F.col(column) for column in self._numeric_columns.keys() if column in bronze_df.columns],
             )
             .where(F.col("facility_code").isNotNull())
             .where(F.col("air_timestamp").isNotNull())
         )
+        
+        # Aggregate by timestamp directly (already in correct format)
+        prepared = (
+            prepared_base
+            .withColumn("date_hour", F.date_trunc("hour", F.col("timestamp_local")))
+            .withColumn("date", F.to_date(F.col("timestamp_local")))
+        )
 
-        # Apply numeric column rounding and add missing columns
-        result = prepared
-        for column, (min_value, max_value) in self._numeric_columns.items():
-            if column not in result.columns:
-                result = result.withColumn(column, F.lit(None))
+        # Round numeric columns - use select to apply in one pass
+        select_exprs = [
+            "facility_code", "facility_name", "timestamp_local", "date_hour", "date"
+        ]
+        for column in self._numeric_columns.keys():
+            if column in prepared.columns:
+                select_exprs.append(F.round(F.col(column), 4).alias(column))
             else:
-                result = result.withColumn(column, F.round(F.col(column), 4))
+                select_exprs.append(F.lit(None).alias(column))
+        
+        result = prepared.select(select_exprs)
 
         # Calculate AQI from PM2.5 for each hourly record
         aqi_value = self._aqi_from_pm25(F.col("pm2_5"))
@@ -101,60 +100,52 @@ class SilverHourlyAirQualityLoader(BaseSilverLoader):
             .otherwise(F.lit("Hazardous")),
         )
 
-        # Validation rules for each hourly record
-        validity_conditions = [
-            (F.col(column).isNull())
-            | ((F.col(column) >= F.lit(min_value)) & (F.col(column) <= F.lit(max_value)))
-            for column, (min_value, max_value) in self._numeric_columns.items()
-        ]
-        validity_conditions.append(
-            (F.col("aqi_value").isNull())
-            | ((F.col("aqi_value") >= F.lit(0)) & (F.col("aqi_value") <= F.lit(500)))
-        )
+        # Validation: Check numeric columns within bounds and AQI validity in single pass
+        is_valid_bounds = F.lit(True)
+        bound_issues = F.lit("")
         
-        if validity_conditions:
-            is_valid_expr = reduce(lambda acc, expr: acc & expr, validity_conditions)
-        else:
-            is_valid_expr = F.lit(True)
-
-        result = result.withColumn("is_valid", is_valid_expr)
-        result = result.withColumn(
-            "quality_flag",
-            F.when(F.col("is_valid"), F.lit("GOOD")).otherwise(F.lit("OUT_OF_RANGE")),
+        for column, (min_val, max_val) in self._numeric_columns.items():
+            col_expr = F.col(column)
+            col_valid = col_expr.isNull() | ((col_expr >= min_val) & (col_expr <= max_val))
+            is_valid_bounds = is_valid_bounds & col_valid
+            
+            bound_issues = F.concat_ws(
+                "|",
+                bound_issues,
+                F.when((col_expr.isNotNull()) & ~col_valid, F.concat(F.lit(column), F.lit("_OUT_OF_BOUNDS")))
+            )
+        
+        aqi_valid = (F.col("aqi_value").isNull() | ((F.col("aqi_value") >= 0) & (F.col("aqi_value") <= 500)))
+        is_valid_overall = is_valid_bounds & aqi_valid
+        
+        quality_issues = F.concat_ws(
+            "|",
+            bound_issues,
+            F.when((F.col("aqi_value").isNotNull()) & ~aqi_valid, F.lit("AQI_OUT_OF_RANGE"))
         )
 
-        # Coalesce to 1 partition to minimize concurrent Iceberg partition writers
-        # With hourly partitioning, FanoutDataWriter keeps ALL partition writers open
-        result = result.coalesce(1)
+        result = (
+            result
+            .withColumn("is_valid", is_valid_overall)
+            .withColumn(
+                "quality_issues",
+                F.when(is_valid_overall, F.lit("")).otherwise(quality_issues)
+            )
+            .withColumn(
+                "quality_flag",
+                F.when(is_valid_overall, F.lit("GOOD")).otherwise(F.lit("CAUTION"))
+            )
+            .withColumn("created_at", F.current_timestamp())
+            .withColumn("updated_at", F.current_timestamp())
+        )
 
-        # Add metadata timestamps
-        current_ts = F.current_timestamp()
-        result = result.withColumn("created_at", current_ts).withColumn("updated_at", current_ts)
-
-        # Select and order columns
-        ordered_columns = [
-            "facility_code",
-            "facility_name",
-            "timestamp",
-            "date_hour",
-            "date",
-            "pm2_5",
-            "pm10",
-            "dust",
-            "nitrogen_dioxide",
-            "ozone",
-            "sulphur_dioxide",
-            "carbon_monoxide",
-            "uv_index",
-            "uv_index_clear_sky",
-            "aqi_category",
-            "aqi_value",
-            "is_valid",
-            "quality_flag",
-            "created_at",
-            "updated_at",
-        ]
-        return result.select(*ordered_columns)
+        return result.select(
+            "facility_code", "facility_name", F.col("timestamp_local").alias("timestamp"),
+            "date_hour", "date",
+            "pm2_5", "pm10", "dust", "nitrogen_dioxide", "ozone", "sulphur_dioxide", "carbon_monoxide",
+            "uv_index", "uv_index_clear_sky", "aqi_category", "aqi_value",
+            "is_valid", "quality_flag", "quality_issues", "created_at", "updated_at"
+        )
 
     def _aqi_from_pm25(self, column: F.Column) -> F.Column:
         """Calculate AQI (Air Quality Index) from PM2.5 concentration using EPA breakpoints."""
