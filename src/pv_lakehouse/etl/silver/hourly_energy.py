@@ -9,6 +9,7 @@ from pyspark.sql import DataFrame
 from pyspark.sql import functions as F
 
 from .base import BaseSilverLoader, LoadOptions
+from pv_lakehouse.etl.bronze.facility_timezones import FACILITY_TIMEZONES, DEFAULT_TIMEZONE
 
 
 class SilverHourlyEnergyLoader(BaseSilverLoader):
@@ -66,9 +67,21 @@ class SilverHourlyEnergyLoader(BaseSilverLoader):
         )
         
         # Aggregate energy by hour (local time)
+        # Convert `interval_ts` (assumed UTC) to facility local timestamp before truncating to hour.
+        # Use the facility timezone map to perform a per-facility conversion. Default to DEFAULT_TIMEZONE.
+        # Build nested when/otherwise expression to avoid broadcasting a Python dict into Spark rows.
+        default_local = F.from_utc_timestamp(F.col("interval_ts"), DEFAULT_TIMEZONE)
+        tz_expr = default_local
+        # Wrap mapping entries as conditional expressions: when(facility_code==code, from_utc_timestamp(...)).otherwise(prev)
+        for code, tz in FACILITY_TIMEZONES.items():
+            tz_expr = F.when(F.col("facility_code") == code, F.from_utc_timestamp(F.col("interval_ts"), tz)).otherwise(tz_expr)
+
         hourly = (
             filtered
-            .withColumn("date_hour", F.date_trunc("hour", F.col("interval_ts")))
+            .withColumn("timestamp_local", tz_expr)
+            # Shift interval_start (which represents the start of the hour) by +1 hour
+            # so the energy measured over [t, t+1) is labelled at the hour-end (t+1).
+            .withColumn("date_hour", F.date_trunc("hour", F.expr("timestamp_local + INTERVAL 1 HOUR")))
             .groupBy("facility_code", "facility_name", "network_code", "network_region", "date_hour")
             .agg(
                 F.sum(F.when(F.col("metric") == "energy", F.col("metric_value"))).alias("energy_mwh"),

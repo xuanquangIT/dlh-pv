@@ -93,9 +93,13 @@ def main() -> None:
     
     # API returns timezone-aware ISO strings (e.g., "2025-08-01T10:00:00+10:00")
     # Extract local time part (first 19 chars: "2025-08-01T10:00:00") and store directly
+    # Parse the full ISO timestamp from the API (preserve timezone offset)
+    # Previous implementation truncated the string which removed the offset
+    # and led to loss of timezone information. Use full column to keep
+    # offset so downstream loaders can convert/normalise explicitly.
     spark_df = spark_df.withColumn(
         "interval_ts",
-        F.to_timestamp(F.substring(F.col("interval_start"), 1, 19))
+        F.to_timestamp(F.col("interval_start"))
     )
     spark_df = spark_df.withColumn("interval_date", F.to_date("interval_ts"))
     
