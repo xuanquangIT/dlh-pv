@@ -2,14 +2,11 @@
 
 ## ⚡ Spark Memory Config (FIX for OutOfMemoryError)
 
-Nếu gặp lỗi `OutOfMemoryError: Java heap space`, chạy các lệnh này trước:
+Memory is now configured directly in docker compose exec commands with:
+- `--driver-memory 2g` - Driver memory
+- `--executor-memory 4g` - Executor memory
 
-```bash
-export SPARK_EXECUTOR_MEMORY=4g
-export SPARK_DRIVER_MEMORY=2g
-export SPARK_SHUFFLE_PARTITIONS=8
-export SPARK_BROADCAST_THRESHOLD=10485760
-```
+No need to set environment variables anymore.
 
 ---
 
@@ -17,22 +14,45 @@ export SPARK_BROADCAST_THRESHOLD=10485760
 
 ### 1. Load Facilities (metadata)
 ```bash
-bash src/pv_lakehouse/etl/scripts/spark-submit.sh src/pv_lakehouse/etl/bronze/load_facilities.py --mode backfill
+docker compose -f docker/docker-compose.yml exec spark-master spark-submit \
+  --master spark://spark-master:7077 \
+  --deploy-mode client \
+  --driver-memory 2g \
+  --executor-memory 4g \
+  /opt/workdir/src/pv_lakehouse/etl/bronze/load_facilities.py --mode backfill
 ```
 
 ### 2. Load Timeseries (Energy data: 2024-01-01 → 2025-11-08)
 ```bash
-bash src/pv_lakehouse/etl/scripts/spark-submit.sh src/pv_lakehouse/etl/bronze/load_facility_timeseries.py --mode backfill --date-start 2024-01-01T00:00:00 --date-end 2025-11-08T23:59:59
+docker compose -f docker/docker-compose.yml exec spark-master spark-submit \
+  --master spark://spark-master:7077 \
+  --deploy-mode client \
+  --driver-memory 2g \
+  --executor-memory 4g \
+  /opt/workdir/src/pv_lakehouse/etl/bronze/load_facility_timeseries.py \
+  --mode backfill --date-start 2024-01-01T00:00:00 --date-end 2025-11-08T23:59:59
 ```
 
 ### 3. Load Weather data (2024-01-01 → 2025-11-08)
 ```bash
-bash src/pv_lakehouse/etl/scripts/spark-submit.sh src/pv_lakehouse/etl/bronze/load_facility_weather.py --mode backfill --start 2024-01-01 --end 2025-11-08
+docker compose -f docker/docker-compose.yml exec spark-master spark-submit \
+  --master spark://spark-master:7077 \
+  --deploy-mode client \
+  --driver-memory 2g \
+  --executor-memory 4g \
+  /opt/workdir/src/pv_lakehouse/etl/bronze/load_facility_weather.py \
+  --mode backfill --start 2024-01-01 --end 2025-11-08
 ```
 
 ### 4. Load Air Quality data (2024-01-01 → 2025-11-08)
 ```bash
-bash src/pv_lakehouse/etl/scripts/spark-submit.sh src/pv_lakehouse/etl/bronze/load_facility_air_quality.py --mode backfill --start 2024-01-01 --end 2025-11-08
+docker compose -f docker/docker-compose.yml exec spark-master spark-submit \
+  --master spark://spark-master:7077 \
+  --deploy-mode client \
+  --driver-memory 2g \
+  --executor-memory 4g \
+  /opt/workdir/src/pv_lakehouse/etl/bronze/load_facility_air_quality.py \
+  --mode backfill --start 2024-01-01 --end 2025-11-08
 ```
 
 ---
@@ -43,16 +63,36 @@ Run these commands in order (each processes all Bronze data in full mode):
 
 ```bash
 # 1. Process facility metadata
-bash src/pv_lakehouse/etl/scripts/spark-submit.sh src/pv_lakehouse/etl/silver/cli.py facility_master --mode full
+docker compose -f docker/docker-compose.yml exec spark-master spark-submit \
+  --master spark://spark-master:7077 \
+  --deploy-mode client \
+  --driver-memory 2g \
+  --executor-memory 4g \
+  /opt/workdir/src/pv_lakehouse/etl/silver/cli.py facility_master --mode full
 
 # 2. Transform energy data
-bash src/pv_lakehouse/etl/scripts/spark-submit.sh src/pv_lakehouse/etl/silver/cli.py hourly_energy --mode full
+docker compose -f docker/docker-compose.yml exec spark-master spark-submit \
+  --master spark://spark-master:7077 \
+  --deploy-mode client \
+  --driver-memory 2g \
+  --executor-memory 4g \
+  /opt/workdir/src/pv_lakehouse/etl/silver/cli.py hourly_energy --mode full
 
 # 3. Transform weather data
-bash src/pv_lakehouse/etl/scripts/spark-submit.sh src/pv_lakehouse/etl/silver/cli.py hourly_weather --mode full
+docker compose -f docker/docker-compose.yml exec spark-master spark-submit \
+  --master spark://spark-master:7077 \
+  --deploy-mode client \
+  --driver-memory 2g \
+  --executor-memory 4g \
+  /opt/workdir/src/pv_lakehouse/etl/silver/cli.py hourly_weather --mode full
 
 # 4. Transform air quality data
-bash src/pv_lakehouse/etl/scripts/spark-submit.sh src/pv_lakehouse/etl/silver/cli.py hourly_air_quality --mode full
+docker compose -f docker/docker-compose.yml exec spark-master spark-submit \
+  --master spark://spark-master:7077 \
+  --deploy-mode client \
+  --driver-memory 2g \
+  --executor-memory 4g \
+  /opt/workdir/src/pv_lakehouse/etl/silver/cli.py hourly_air_quality --mode full
 ```
 
 ---
@@ -62,33 +102,84 @@ bash src/pv_lakehouse/etl/scripts/spark-submit.sh src/pv_lakehouse/etl/silver/cl
 ### Load Dimensions (in this order):
 
 ```bash
+# ⚠️ IMPORTANT: Load dimensions BEFORE fact tables!
+
 # 1. Load facility dimension
-bash src/pv_lakehouse/etl/scripts/spark-submit.sh src/pv_lakehouse/etl/gold/cli.py dim_facility --mode full
+docker compose -f docker/docker-compose.yml exec spark-master spark-submit \
+  --master spark://spark-master:7077 \
+  --deploy-mode client \
+  --driver-memory 2g \
+  --executor-memory 4g \
+  /opt/workdir/src/pv_lakehouse/etl/gold/cli.py dim_facility --mode full
 
 # 2. Load date dimension
-bash src/pv_lakehouse/etl/scripts/spark-submit.sh src/pv_lakehouse/etl/gold/cli.py dim_date --mode full
+docker compose -f docker/docker-compose.yml exec spark-master spark-submit \
+  --master spark://spark-master:7077 \
+  --deploy-mode client \
+  --driver-memory 2g \
+  --executor-memory 4g \
+  /opt/workdir/src/pv_lakehouse/etl/gold/cli.py dim_date --mode full
 
 # 3. Load time dimension
-bash src/pv_lakehouse/etl/scripts/spark-submit.sh src/pv_lakehouse/etl/gold/cli.py dim_time --mode full
+docker compose -f docker/docker-compose.yml exec spark-master spark-submit \
+  --master spark://spark-master:7077 \
+  --deploy-mode client \
+  --driver-memory 2g \
+  --executor-memory 4g \
+  /opt/workdir/src/pv_lakehouse/etl/gold/cli.py dim_time --mode full
 
 # 4. Load AQI category dimension
-bash src/pv_lakehouse/etl/scripts/spark-submit.sh src/pv_lakehouse/etl/gold/cli.py dim_aqi_category --mode full
+docker compose -f docker/docker-compose.yml exec spark-master spark-submit \
+  --master spark://spark-master:7077 \
+  --deploy-mode client \
+  --driver-memory 2g \
+  --executor-memory 4g \
+  /opt/workdir/src/pv_lakehouse/etl/gold/cli.py dim_aqi_category --mode full
 ```
 
-### Load Fact Table (after dimensions):
+### Load Fact Tables (after dimensions):
 
 ```bash
-# ⚠️ Set memory BEFORE running this:
-export SPARK_EXECUTOR_MEMORY=4g
-export SPARK_DRIVER_MEMORY=2g
-export SPARK_SHUFFLE_PARTITIONS=8
+# fact_solar_environmental - Full load (all data):
+docker compose -f docker/docker-compose.yml exec spark-master spark-submit \
+  --master spark://spark-master:7077 \
+  --deploy-mode client \
+  --driver-memory 2g \
+  --executor-memory 4g \
+  /opt/workdir/src/pv_lakehouse/etl/gold/cli.py fact_solar_environmental --mode full
 
-# Then load the fact table with date range:
-# For backfill specific period: 2024-01-01 → 2024-06-30
-bash src/pv_lakehouse/etl/scripts/spark-submit.sh src/pv_lakehouse/etl/gold/cli.py fact_solar_environmental --mode full --start 2024-01-01T00:00:00 --end 2024-06-30T23:59:59
+# OR fact_solar_environmental - Backfill specific period (2024-01-01 → 2024-06-30):
+docker compose -f docker/docker-compose.yml exec spark-master spark-submit \
+  --master spark://spark-master:7077 \
+  --deploy-mode client \
+  --driver-memory 2g \
+  --executor-memory 4g \
+  /opt/workdir/src/pv_lakehouse/etl/gold/cli.py fact_solar_environmental --mode full \
+  --start 2024-01-01T00:00:00 --end 2024-06-30T23:59:59
+```
 
-# For full load (all data):
-bash src/pv_lakehouse/etl/scripts/spark-submit.sh src/pv_lakehouse/etl/gold/cli.py fact_solar_environmental --mode full
+### Drop Gold Layer Tables
+
+#### Drop All Gold Tables:
+```bash
+docker compose -f docker/docker-compose.yml exec trino trino --execute \
+  "DROP TABLE IF EXISTS iceberg.gold.dim_facility;
+   DROP TABLE IF EXISTS iceberg.gold.dim_date;
+   DROP TABLE IF EXISTS iceberg.gold.dim_time;
+   DROP TABLE IF EXISTS iceberg.gold.dim_aqi_category;
+   DROP TABLE IF EXISTS iceberg.gold.fact_solar_environmental;"
+```
+
+#### Drop Individual Gold Tables:
+```bash
+# Drop dimensions
+docker compose -f docker/docker-compose.yml exec trino trino --execute "DROP TABLE IF EXISTS iceberg.gold.dim_facility;"
+docker compose -f docker/docker-compose.yml exec trino trino --execute "DROP TABLE IF EXISTS iceberg.gold.dim_date;"
+docker compose -f docker/docker-compose.yml exec trino trino --execute "DROP TABLE IF EXISTS iceberg.gold.dim_time;"
+docker compose -f docker/docker-compose.yml exec trino trino --execute "DROP TABLE IF EXISTS iceberg.gold.dim_aqi_category;"
+
+# Drop fact tables
+docker compose -f docker/docker-compose.yml exec trino trino --execute "DROP TABLE IF EXISTS iceberg.gold.fact_solar_environmental;"
 ```
 
 ---
@@ -156,31 +247,67 @@ docker compose -f docker/docker-compose.yml exec trino trino --catalog iceberg -
 
 ## 📝 Complete Backfill Workflow
 
-Run these steps in order (copy-paste từng cái):
+Run these steps in order (each command runs inside Docker container):
 
 ```bash
 # Step 1: Bronze Layer
-bash src/pv_lakehouse/etl/scripts/spark-submit.sh src/pv_lakehouse/etl/bronze/load_facilities.py --mode backfill
-bash src/pv_lakehouse/etl/scripts/spark-submit.sh src/pv_lakehouse/etl/bronze/load_facility_timeseries.py --mode backfill --date-start 2024-01-01T00:00:00 --date-end 2025-11-08T23:59:59
-bash src/pv_lakehouse/etl/scripts/spark-submit.sh src/pv_lakehouse/etl/bronze/load_facility_weather.py --mode backfill --start 2024-01-01 --end 2025-11-08
-bash src/pv_lakehouse/etl/scripts/spark-submit.sh src/pv_lakehouse/etl/bronze/load_facility_air_quality.py --mode backfill --start 2024-01-01 --end 2025-11-08
+docker compose -f docker/docker-compose.yml exec spark-master spark-submit \
+  --master spark://spark-master:7077 --deploy-mode client --driver-memory 2g --executor-memory 4g \
+  /opt/workdir/src/pv_lakehouse/etl/bronze/load_facilities.py --mode backfill
+
+docker compose -f docker/docker-compose.yml exec spark-master spark-submit \
+  --master spark://spark-master:7077 --deploy-mode client --driver-memory 2g --executor-memory 4g \
+  /opt/workdir/src/pv_lakehouse/etl/bronze/load_facility_timeseries.py \
+  --mode backfill --date-start 2024-01-01T00:00:00 --date-end 2025-11-08T23:59:59
+
+docker compose -f docker/docker-compose.yml exec spark-master spark-submit \
+  --master spark://spark-master:7077 --deploy-mode client --driver-memory 2g --executor-memory 4g \
+  /opt/workdir/src/pv_lakehouse/etl/bronze/load_facility_weather.py \
+  --mode backfill --start 2024-01-01 --end 2025-11-08
+
+docker compose -f docker/docker-compose.yml exec spark-master spark-submit \
+  --master spark://spark-master:7077 --deploy-mode client --driver-memory 2g --executor-memory 4g \
+  /opt/workdir/src/pv_lakehouse/etl/bronze/load_facility_air_quality.py \
+  --mode backfill --start 2024-01-01 --end 2025-11-08
 
 # Step 2: Silver Layer
-bash src/pv_lakehouse/etl/scripts/spark-submit.sh src/pv_lakehouse/etl/silver/cli.py facility_master --mode full
-bash src/pv_lakehouse/etl/scripts/spark-submit.sh src/pv_lakehouse/etl/silver/cli.py hourly_energy --mode full
-bash src/pv_lakehouse/etl/scripts/spark-submit.sh src/pv_lakehouse/etl/silver/cli.py hourly_weather --mode full
-bash src/pv_lakehouse/etl/scripts/spark-submit.sh src/pv_lakehouse/etl/silver/cli.py hourly_air_quality --mode full
+docker compose -f docker/docker-compose.yml exec spark-master spark-submit \
+  --master spark://spark-master:7077 --deploy-mode client --driver-memory 2g --executor-memory 4g \
+  /opt/workdir/src/pv_lakehouse/etl/silver/cli.py facility_master --mode full
+
+docker compose -f docker/docker-compose.yml exec spark-master spark-submit \
+  --master spark://spark-master:7077 --deploy-mode client --driver-memory 2g --executor-memory 4g \
+  /opt/workdir/src/pv_lakehouse/etl/silver/cli.py hourly_energy --mode full
+
+docker compose -f docker/docker-compose.yml exec spark-master spark-submit \
+  --master spark://spark-master:7077 --deploy-mode client --driver-memory 2g --executor-memory 4g \
+  /opt/workdir/src/pv_lakehouse/etl/silver/cli.py hourly_weather --mode full
+
+docker compose -f docker/docker-compose.yml exec spark-master spark-submit \
+  --master spark://spark-master:7077 --deploy-mode client --driver-memory 2g --executor-memory 4g \
+  /opt/workdir/src/pv_lakehouse/etl/silver/cli.py hourly_air_quality --mode full
 
 # Step 3: Gold Dimensions
-bash src/pv_lakehouse/etl/scripts/spark-submit.sh src/pv_lakehouse/etl/gold/cli.py dim_facility --mode full
-bash src/pv_lakehouse/etl/scripts/spark-submit.sh src/pv_lakehouse/etl/gold/cli.py dim_date --mode full
-bash src/pv_lakehouse/etl/scripts/spark-submit.sh src/pv_lakehouse/etl/gold/cli.py dim_time --mode full
-bash src/pv_lakehouse/etl/scripts/spark-submit.sh src/pv_lakehouse/etl/gold/cli.py dim_aqi_category --mode full
+docker compose -f docker/docker-compose.yml exec spark-master spark-submit \
+  --master spark://spark-master:7077 --deploy-mode client --driver-memory 2g --executor-memory 4g \
+  /opt/workdir/src/pv_lakehouse/etl/gold/cli.py dim_facility --mode full
 
-# Step 4: Gold Fact (Set memory first!)
-export SPARK_EXECUTOR_MEMORY=4g && export SPARK_DRIVER_MEMORY=2g && export SPARK_SHUFFLE_PARTITIONS=8
-# Backfill for specific date range (2024-01-01 → 2024-06-30)
-bash src/pv_lakehouse/etl/scripts/spark-submit.sh src/pv_lakehouse/etl/gold/cli.py fact_solar_environmental --mode full
+docker compose -f docker/docker-compose.yml exec spark-master spark-submit \
+  --master spark://spark-master:7077 --deploy-mode client --driver-memory 2g --executor-memory 4g \
+  /opt/workdir/src/pv_lakehouse/etl/gold/cli.py dim_date --mode full
+
+docker compose -f docker/docker-compose.yml exec spark-master spark-submit \
+  --master spark://spark-master:7077 --deploy-mode client --driver-memory 2g --executor-memory 4g \
+  /opt/workdir/src/pv_lakehouse/etl/gold/cli.py dim_time --mode full
+
+docker compose -f docker/docker-compose.yml exec spark-master spark-submit \
+  --master spark://spark-master:7077 --deploy-mode client --driver-memory 2g --executor-memory 4g \
+  /opt/workdir/src/pv_lakehouse/etl/gold/cli.py dim_aqi_category --mode full
+
+# Step 4: Gold Fact
+docker compose -f docker/docker-compose.yml exec spark-master spark-submit \
+  --master spark://spark-master:7077 --deploy-mode client --driver-memory 2g --executor-memory 4g \
+  /opt/workdir/src/pv_lakehouse/etl/gold/cli.py fact_solar_environmental --mode full
 ```
 
 ---
@@ -188,12 +315,10 @@ bash src/pv_lakehouse/etl/scripts/spark-submit.sh src/pv_lakehouse/etl/gold/cli.
 ## ⚠️ Troubleshooting
 
 ### OutOfMemoryError: Java heap space
-**Solution:** Set Spark memory before running:
-```bash
-export SPARK_EXECUTOR_MEMORY=4g
-export SPARK_DRIVER_MEMORY=2g
-export SPARK_SHUFFLE_PARTITIONS=8
-```
+**Solution:** Memory is already configured in docker compose commands. If issues persist, increase `--executor-memory` and `--driver-memory` values.
+
+### Cannot connect to Spark master
+**Solution:** Ensure Docker containers are running: `docker compose -f docker/docker-compose.yml ps`
 
 ### API Errors (403 Forbidden)
 **Solution:** Check API credentials and network connectivity. Some APIs may be rate-limited.
@@ -201,6 +326,76 @@ export SPARK_SHUFFLE_PARTITIONS=8
 ### Duplicates in Silver/Gold tables
 **Verify:** Run duplicate check queries from section "Verify Data Quality"
 Expected: `max_dup=1.0`, `avg_dup=1.0`
+
+---
+
+## 🧹 Drop All Tables (Full Reset)
+
+### Drop All Tables in One Command
+
+```bash
+# Drop ALL tables across all layers at once
+docker compose -f docker/docker-compose.yml exec trino trino --execute \
+  "DROP TABLE IF EXISTS iceberg.bronze.raw_facility_timeseries;
+   DROP TABLE IF EXISTS iceberg.bronze.raw_facility_weather;
+   DROP TABLE IF EXISTS iceberg.bronze.raw_facility_air_quality;
+   DROP TABLE IF EXISTS iceberg.bronze.raw_facility_metadata;
+   DROP TABLE IF EXISTS iceberg.silver.clean_hourly_energy;
+   DROP TABLE IF EXISTS iceberg.silver.clean_hourly_weather;
+   DROP TABLE IF EXISTS iceberg.silver.clean_hourly_air_quality;
+   DROP TABLE IF EXISTS iceberg.silver.clean_facility_master;
+   DROP TABLE IF EXISTS iceberg.gold.dim_facility;
+   DROP TABLE IF EXISTS iceberg.gold.dim_date;
+   DROP TABLE IF EXISTS iceberg.gold.dim_time;
+   DROP TABLE IF EXISTS iceberg.gold.dim_aqi_category;
+   DROP TABLE IF EXISTS iceberg.gold.fact_solar_environmental;"
+
+### Drop by Layer
+
+#### Drop Bronze Layer Only:
+```bash
+docker compose -f docker/docker-compose.yml exec trino trino --execute \
+  "DROP TABLE IF EXISTS iceberg.bronze.raw_facility_timeseries;
+   DROP TABLE IF EXISTS iceberg.bronze.raw_facility_weather;
+   DROP TABLE IF EXISTS iceberg.bronze.raw_facility_air_quality;
+   DROP TABLE IF EXISTS iceberg.bronze.raw_facility_metadata;"
+```
+
+#### Drop Silver Layer Only:
+```bash
+docker compose -f docker/docker-compose.yml exec trino trino --execute \
+  "DROP TABLE IF EXISTS iceberg.silver.clean_hourly_energy;
+   DROP TABLE IF EXISTS iceberg.silver.clean_hourly_weather;
+   DROP TABLE IF EXISTS iceberg.silver.clean_hourly_air_quality;
+   DROP TABLE IF EXISTS iceberg.silver.clean_facility_master;"
+```
+
+#### Drop Gold Layer Only:
+```bash
+docker compose -f docker/docker-compose.yml exec trino trino --execute \
+  "DROP TABLE IF EXISTS iceberg.gold.dim_facility;
+   DROP TABLE IF EXISTS iceberg.gold.dim_date;
+   DROP TABLE IF EXISTS iceberg.gold.dim_time;
+   DROP TABLE IF EXISTS iceberg.gold.dim_aqi_category;
+   DROP TABLE IF EXISTS iceberg.gold.fact_solar_environmental;"
+```
+
+### Drop Individual Tables
+
+```bash
+# Bronze
+docker compose -f docker/docker-compose.yml exec trino trino --execute "DROP TABLE IF EXISTS iceberg.bronze.raw_facility_timeseries;"
+docker compose -f docker/docker-compose.yml exec trino trino --execute "DROP TABLE IF EXISTS iceberg.bronze.raw_facility_weather;"
+docker compose -f docker/docker-compose.yml exec trino trino --execute "DROP TABLE IF EXISTS iceberg.bronze.raw_facility_air_quality;"
+
+# Silver
+docker compose -f docker/docker-compose.yml exec trino trino --execute "DROP TABLE IF EXISTS iceberg.silver.clean_hourly_energy;"
+docker compose -f docker/docker-compose.yml exec trino trino --execute "DROP TABLE IF EXISTS iceberg.silver.clean_hourly_weather;"
+docker compose -f docker/docker-compose.yml exec trino trino --execute "DROP TABLE IF EXISTS iceberg.silver.clean_hourly_air_quality;"
+
+# Gold
+docker compose -f docker/docker-compose.yml exec trino trino --execute "DROP TABLE IF EXISTS iceberg.gold.fact_solar_environmental;"
+```
 
 ---
 

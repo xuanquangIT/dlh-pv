@@ -115,12 +115,41 @@ class BaseGoldLoader:
     # ------------------------------------------------------------------
     def _auto_detect_start_time(self) -> None:
         """
-        Auto-detect start time from Silver source tables' updated_at timestamps.
-        Uses the MINIMUM of MAX(updated_at) across Silver sources to ensure consistency.
+        Auto-detect start time from Gold table's last date_key (if exists),
+        or from Silver source tables' updated_at timestamps.
+        
+        Priority:
+        1. If Gold table exists: Use MAX(date_key) from Gold + 1 day (ensures we don't reload)
+        2. Else: Use MIN of MAX(timestamp_column) from Silver sources
         """
         if self.options.mode != "incremental" or self.options.start is not None:
             return  # Only auto-detect for incremental mode without explicit start
         
+        # First, try to get last date from Gold table (if it exists)
+        if hasattr(self, "gold_tables") and self.gold_tables:
+            for gold_table_name, gold_config in self.gold_tables.items():
+                try:
+                    max_date_row = self.spark.sql(f"""
+                        SELECT MAX(date_key) as max_date_key
+                        FROM {gold_config.iceberg_table}
+                    """).collect()
+                    
+                    if max_date_row and max_date_row[0]["max_date_key"] is not None:
+                        max_date_key = max_date_row[0]["max_date_key"]
+                        # Convert YYYYMMDD to datetime
+                        try:
+                            max_date = dt.datetime.strptime(str(max_date_key), "%Y%m%d")
+                            self.options.start = max_date + dt.timedelta(days=1)
+                            print(f"[GOLD INCREMENTAL] Gold table {gold_config.iceberg_table} last date: {max_date_key}", flush=True)
+                            print(f"[GOLD INCREMENTAL]   Will load from: {self.options.start}", flush=True)
+                            return  # Found Gold data, use it
+                        except ValueError:
+                            pass
+                except Exception:
+                    # Table doesn't exist or query failed - continue to Silver check
+                    pass
+        
+        # Fallback: If Gold table is empty or doesn't exist, check Silver sources
         if not hasattr(self, "source_tables") or not self.source_tables:
             return  # No source tables defined
         
@@ -156,6 +185,7 @@ class BaseGoldLoader:
                 # If timestamp is date type, start from next day
                 self.options.start = min_of_max + dt.timedelta(days=1)
             
+            print("[GOLD INCREMENTAL] Gold table empty, using Silver sources:", flush=True)
             print("[GOLD INCREMENTAL] Auto-detected last loaded timestamps from Silver sources:", flush=True)
             for table_name, max_ts in max_timestamps:
                 print(f"[GOLD INCREMENTAL]   {table_name}: {max_ts}", flush=True)

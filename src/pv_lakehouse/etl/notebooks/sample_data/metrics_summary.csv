@@ -1,0 +1,6 @@
+Metric,Value,Unit,Description
+Total Energy,7950.9386,MWh,Tổng năng lượng sản xuất
+Performance Ratio (PR),37.167191199773306,%,Tỷ lệ hiệu suất so với lý thuyết
+Capacity Factor (Calendar),10.477201402066203,%,Hệ số công suất (theo lịch)
+Capacity Factor (Observed),10.841499086421774,%,Hệ số công suất (dữ liệu thực tế)
+Specific Energy Yield (SEY),77.95037843137256,kWh/kWp,Năng lượng riêng trên công suất

@@ -20,8 +20,6 @@ Uptime: 2 hours
 Host: localhost
 Port: 8081
 Catalog: iceberg
-Schema: gold
-User: trino (default)
 ```
 
 ### 2. Remote Connection (Different Machine)

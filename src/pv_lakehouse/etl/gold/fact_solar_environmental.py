@@ -42,10 +42,9 @@ class GoldFactSolarEnvironmentalLoader(BaseGoldLoader):
                 "network_region",
                 "date_hour",
                 "energy_mwh",
-                "power_avg_mw",
                 "intervals_count",
-                "is_valid",
                 "quality_flag",
+                "quality_issues",
                 "completeness_pct",
             ],
         ),
@@ -159,21 +158,14 @@ class GoldFactSolarEnvironmentalLoader(BaseGoldLoader):
         hourly_weather = sources.get("hourly_weather")
 
         # Join with dimension tables to get surrogate keys
-        # CRITICAL: All joins on (facility_code, date_hour_ts_utc) to maintain hourly grain
+        # CRITICAL: All joins use date_hour from Silver layer (already normalized and partitioned)
+        fact = base
         
-        # 0) Chuẩn hóa timestamp (UTC → local nếu cần)
-        # date_hour is already timestamp(6) with time zone from Silver, just alias it
-        fact = base.withColumn("date_hour_ts_utc", F.col("date_hour"))
-        # Nếu toàn bộ phân tích dùng UTC, dùng date_hour_ts_utc luôn
-        # Nếu muốn local (ví dụ Asia/Ho_Chi_Minh), bật dòng sau:
-        # fact = fact.withColumn("date_hour_ts_local", F.from_utc_timestamp("date_hour_ts_utc", F.lit("Asia/Ho_Chi_Minh")))
-        # rồi thay mọi join/time-extract dùng date_hour_ts_local
-        
-        # 1. Join with facility dimension (broadcast join - small dimension)
+        # Step 1: Join with facility dimension (broadcast join for efficiency - small dimension)
         fact = fact.join(dim_facility, on="facility_code", how="left")
 
-        # 2) Join dim_date bằng ngày local/UTC nhất quán
-        # Rename dim_date columns to avoid ambiguity with base table
+        # Step 2: Join date dimension using date extracted from date_hour
+        # Rename dim_date columns to avoid ambiguity with base table columns
         dim_date_selected = dim_date.select(
             F.col("full_date").alias("dim_full_date"),
             F.col("date_key").alias("dim_date_key"),
@@ -189,15 +181,15 @@ class GoldFactSolarEnvironmentalLoader(BaseGoldLoader):
         
         fact = fact.join(
             dim_date_selected,
-            F.to_date(F.col("date_hour_ts_utc")) == F.col("dim_full_date"),  # hoặc ts_local nếu dùng local
+            F.to_date(F.col("date_hour")) == F.col("dim_full_date"),
             how="left"
         )
         
-        # Replace date_key with the one from dimension (more authoritative)
+        # Replace date_key with the authoritative one from dimension table
         fact = fact.drop("date_key").withColumn("date_key", F.col("dim_date_key"))
 
-        # 3. Join with time dimension (broadcast join - 24 rows)
-        # Rename time_key from dim_time to avoid collision
+        # Step 3: Join with time dimension using hour extracted from date_hour
+        # Rename dim_time columns to avoid naming conflicts
         dim_time_selected = dim_time.select(
             F.col("time_key").alias("dim_time_key"),
             F.col("hour"),
@@ -208,28 +200,23 @@ class GoldFactSolarEnvironmentalLoader(BaseGoldLoader):
         
         fact = fact.join(
             dim_time_selected,
-            F.hour(F.col("date_hour_ts_utc")) == F.col("hour"),
+            F.hour(F.col("date_hour")) == F.col("hour"),
             how="left"
         )
         
-        # Replace time_key with the one from dimension
+        # Replace time_key with the authoritative one from dimension table
         fact = fact.drop("time_key").withColumn("time_key", F.col("dim_time_key"))
 
-        # 4. Join with weather data (left join to preserve all energy records)
+        # Step 4: Join with weather data (left join preserves all energy records)
         if not is_empty(hourly_weather):
-            # 3) WEATHER: tính RH và chuyển đổi đơn vị đúng
-            # Prepare weather data with consistent timestamp
-            # date_hour is already timestamp(6) with time zone, just alias it
-            weather = hourly_weather.withColumn(
-                "date_hour_ts_utc", 
-                F.col("date_hour")
-            )
+            # Weather data transformation: calculate relative humidity and normalize units
+            # Join directly using date_hour from Silver layer without additional timestamp transformation
             
-            # Calculate relative humidity from dew point and temperature
-            # Formula: RH = 100 * (exp((17.625*TD)/(243.04+TD))/exp((17.625*T)/(243.04+T)))
-            # where TD is dew point and T is temperature in Celsius
-            # Clamp to [0, 100]
-            weather = weather.withColumn(
+            # Calculate relative humidity from dew point and temperature using Magnus formula
+            # Formula: RH = 100 * (exp((17.625*Td)/(243.04+Td))/exp((17.625*T)/(243.04+T)))
+            # where Td = dew point (°C) and T = air temperature (°C)
+            # Result is clamped to valid range [0.0, 100.0]
+            weather = hourly_weather.withColumn(
                 "humidity_2m_raw",
                 F.when(
                     F.col("dew_point_2m").isNotNull() & F.col("temperature_2m").isNotNull(),
@@ -241,11 +228,11 @@ class GoldFactSolarEnvironmentalLoader(BaseGoldLoader):
                 F.when(F.col("humidity_2m_raw") < 0, 0.0).when(F.col("humidity_2m_raw") > 100, 100.0).otherwise(F.col("humidity_2m_raw"))
             ).drop("humidity_2m_raw")
             
-            # >>> JOIN
+            # Perform left join to preserve all energy records
             fact = fact.join(
                 weather.select(
                     "facility_code",
-                    "date_hour_ts_utc",
+                    "date_hour",
                     "shortwave_radiation",
                     "direct_radiation",
                     "diffuse_radiation",
@@ -264,23 +251,23 @@ class GoldFactSolarEnvironmentalLoader(BaseGoldLoader):
                     "wind_gusts_10m",
                     "pressure_msl",
                 ),
-                on=["facility_code", "date_hour_ts_utc"],
+                on=["facility_code", "date_hour"],
                 how="left"
             )
 
-        # 5. Join with AQI lookup (left join to preserve all energy records)
+        # Step 5: Join with AQI lookup (left join preserves all energy records)
         if not is_empty(aqi_lookup):
-            # 4) AQI lookup giữ nguyên join theo UTC
+            # AQI lookup: join directly using date_hour from Silver layer
             aqi = aqi_lookup.select(
-                "facility_code", F.col("date_hour").cast("timestamp").alias("date_hour_ts_utc"),
+                "facility_code",
+                "date_hour",
                 "aqi_category_key","pm2_5","pm10","dust","nitrogen_dioxide","ozone",
                 "sulphur_dioxide","carbon_monoxide","uv_index","uv_index_clear_sky","aqi_value"
             )
-            fact = fact.join(aqi, on=["facility_code","date_hour_ts_utc"], how="left")
+            fact = fact.join(aqi, on=["facility_code","date_hour"], how="left")
 
-        # Calculate data quality metrics
-        # Completeness based on presence of energy, weather, and air quality data
-        # 5) Completeness / Validity giữ nguyên logic của bạn
+        # Step 6: Calculate data quality indicators
+        # Completeness is based on presence of energy, weather, and air quality data sources
         fact = fact.withColumn(
             "has_energy",
             F.col("energy_mwh").isNotNull()
@@ -308,8 +295,7 @@ class GoldFactSolarEnvironmentalLoader(BaseGoldLoader):
         fact = fact.withColumn(
             "is_valid",
             F.col("has_energy") & 
-            (F.col("energy_mwh") >= F.lit(0.0)) &
-            (F.col("power_avg_mw").isNull() | (F.col("power_avg_mw") >= F.lit(0.0)))
+            (F.col("energy_mwh") >= F.lit(0.0))
         )
 
         # Quality flag based on completeness and validity
@@ -321,15 +307,16 @@ class GoldFactSolarEnvironmentalLoader(BaseGoldLoader):
             .otherwise(F.lit("BAD"))
         )
 
-        # 6) >>> SỬA QUAN TRỌNG: chuyển W/m² (mean 1h) → kWh/m²·h
+        # Step 7: Convert irradiance units from W/m² (hourly mean) to kWh/m²·h
         fact = fact.withColumn(
             "irr_kwh_m2_hour",
             F.when(F.col("shortwave_radiation").isNotNull(), F.col("shortwave_radiation") / F.lit(1000.0))
              .otherwise(F.lit(None))
         )
 
-        # 7) Thêm trợ giúp BI: giờ nắng (h) và mẫu số PR đã cân công suất
-        # cần cột total_capacity_mw từ dim_facility đã join trước đó
+        # Step 8: Calculate derived metrics for BI consumption
+        # Calculate sunshine hours and capacity-weighted irradiance for Performance Ratio calculations
+        # Requires total_capacity_mw from dim_facility (joined in Step 1)
         fact = fact.withColumn("sunshine_hours",
             F.when(F.col("sunshine_duration").isNotNull(), F.col("sunshine_duration")/F.lit(3600.0))
              .otherwise(F.lit(None))
@@ -340,11 +327,12 @@ class GoldFactSolarEnvironmentalLoader(BaseGoldLoader):
              .otherwise(F.lit(None))
         )
 
-        # Add audit timestamps
+        # Step 9: Add audit timestamps
         fact = fact.withColumn("created_at", F.current_timestamp())
         fact = fact.withColumn("updated_at", F.current_timestamp())
 
-        # 8) Select cuối cùng: thêm sunshine_hours & yr_weighted_kwh
+        # Step 10: Final projection with all required columns for Gold layer
+        # Includes sunshine_hours and capacity-weighted irradiance for BI analytics
         result = fact.select(
             # Keys
             "facility_key",
@@ -354,7 +342,6 @@ class GoldFactSolarEnvironmentalLoader(BaseGoldLoader):
             
             # Energy metrics
             F.col("energy_mwh").cast(dec(12, 6)).alias("energy_mwh"),
-            F.col("power_avg_mw").cast(dec(12, 6)).alias("power_avg_mw"),
             "intervals_count",
             
             # Weather metrics

@@ -7,6 +7,7 @@ boto3==1.26.149
 
 # Databases / drivers
 psycopg2-binary==2.9.7
+trino==0.344.0
 
 # HTTP
 requests==2.31.0
