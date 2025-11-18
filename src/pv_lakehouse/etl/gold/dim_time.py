@@ -25,25 +25,19 @@ class GoldDimTimeLoader(BaseGoldLoader):
     }
 
     def transform(self, sources: Dict[str, DataFrame]) -> Optional[Dict[str, DataFrame]]:
-        # Generate all 24 hours (0-23) with minute=0
-        hours_data = [{"hour": h, "minute": 0} for h in range(24)]
+        # Generate all 24 hours (0-23)
+        hours_data = [{"hour": h} for h in range(24)]
         
         schema = T.StructType([
             T.StructField("hour", T.IntegerType(), False),
-            T.StructField("minute", T.IntegerType(), False),
         ])
         
         base = self.spark.createDataFrame(hours_data, schema=schema)
 
         result = base.select(
-            (F.col("hour") * F.lit(100) + F.col("minute")).cast("int").alias("time_key"),
+            F.col("hour").cast("int").alias("time_key"),
             F.col("hour"),
-            F.col("minute"),
             time_of_day_expr(F.col("hour")).alias("time_of_day"),
-            ((F.col("hour") >= F.lit(10)) & (F.col("hour") < F.lit(16))).alias("is_peak_hour"),
-            F.when((F.col("hour") >= F.lit(6)) & (F.col("hour") < F.lit(18)), F.lit("Daylight"))
-            .otherwise(F.lit("Night"))
-            .alias("daylight_period"),
         )
 
         return {"dim_time": result}

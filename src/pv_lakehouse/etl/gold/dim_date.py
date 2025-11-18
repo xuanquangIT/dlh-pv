@@ -70,9 +70,6 @@ class GoldDimDateLoader(BaseGoldLoader):
             F.dayofmonth("full_date").alias("day_of_month"),
             monday_based_day.cast("int").alias("day_of_week"),
             F.date_format("full_date", "EEEE").alias("day_name"),
-            (monday_based_day >= F.lit(6)).alias("is_weekend"),
-            F.lit(False).alias("is_holiday"),
-            season_expr(F.month("full_date")).alias("season"),
         )
 
         return {"dim_date": result}

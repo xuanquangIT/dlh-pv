@@ -21,15 +21,11 @@ class GoldDimFacilityLoader(BaseGoldLoader):
             required_columns=[
                 "facility_code",
                 "facility_name",
-                "network_id",
-                "network_region",
                 "location_lat",
                 "location_lng",
                 "total_capacity_mw",
                 "total_capacity_registered_mw",
                 "total_capacity_maximum_mw",
-                "unit_fueltech_summary",
-                "unit_status_summary",
                 "effective_from",
                 "effective_to",
                 "is_current",
@@ -41,7 +37,7 @@ class GoldDimFacilityLoader(BaseGoldLoader):
         "dim_facility": GoldTableConfig(
             iceberg_table="lh.gold.dim_facility",
             s3_base_path="s3a://lakehouse/gold/dim_facility",
-            partition_cols=("network_region",),
+            partition_cols=(),
         )
     }
 
@@ -65,15 +61,11 @@ class GoldDimFacilityLoader(BaseGoldLoader):
                 "facility_key",
                 "facility_code",
                 "facility_name",
-                "network_id",
-                "network_region",
                 F.col("location_lat").cast(dec(10, 6)).alias("location_lat"),
                 F.col("location_lng").cast(dec(10, 6)).alias("location_lng"),
                 F.col("total_capacity_mw").cast(dec(10, 4)).alias("total_capacity_mw"),
                 F.col("total_capacity_registered_mw").cast(dec(10, 4)).alias("total_capacity_registered_mw"),
                 F.col("total_capacity_maximum_mw").cast(dec(10, 4)).alias("total_capacity_maximum_mw"),
-                "unit_fueltech_summary",
-                "unit_status_summary",
             )
         )
 

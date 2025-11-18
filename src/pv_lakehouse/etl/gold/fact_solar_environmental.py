@@ -92,7 +92,7 @@ class GoldFactSolarEnvironmentalLoader(BaseGoldLoader):
         ),
         "dim_facility": SourceTableConfig(
             table_name="lh.gold.dim_facility",
-            required_columns=["facility_key", "facility_code"],
+            required_columns=["facility_key", "facility_code", "total_capacity_mw"],
         ),
         "dim_date": SourceTableConfig(
             table_name="lh.gold.dim_date",
@@ -170,13 +170,13 @@ class GoldFactSolarEnvironmentalLoader(BaseGoldLoader):
             F.col("full_date").alias("dim_full_date"),
             F.col("date_key").alias("dim_date_key"),
             F.col("year"),
+            F.col("quarter"),
             F.col("month"),
+            F.col("month_name"),
+            F.col("week"),
             F.col("day_of_month"),
             F.col("day_of_week"),
-            F.col("week"),
-            F.col("quarter"),
-            F.col("is_weekend"),
-            F.col("season"),
+            F.col("day_name"),
         )
         
         fact = fact.join(
@@ -193,8 +193,6 @@ class GoldFactSolarEnvironmentalLoader(BaseGoldLoader):
         dim_time_selected = dim_time.select(
             F.col("time_key").alias("dim_time_key"),
             F.col("hour"),
-            F.col("minute"),
-            F.col("is_peak_hour"),
             F.col("time_of_day"),
         )
         

@@ -184,6 +184,11 @@ services:
     volumes:
       - ../:/opt/workdir:ro
       - ./spark/core-site.xml:/opt/spark/conf/core-site.xml:ro
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8081 >/dev/null || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 12
     deploy:
       resources:
         limits:
