@@ -258,17 +258,17 @@ docker compose -f docker/docker-compose.yml exec spark-master spark-submit \
 docker compose -f docker/docker-compose.yml exec spark-master spark-submit \
   --master spark://spark-master:7077 --deploy-mode client --driver-memory 2g --executor-memory 4g \
   /opt/workdir/src/pv_lakehouse/etl/bronze/load_facility_timeseries.py \
-  --mode backfill --date-start 2024-01-01T00:00:00 --date-end 2025-11-08T23:59:59
+  --mode backfill --date-start 2025-01-01T00:00:00 --date-end 2025-11-01T23:59:59
 
 docker compose -f docker/docker-compose.yml exec spark-master spark-submit \
   --master spark://spark-master:7077 --deploy-mode client --driver-memory 2g --executor-memory 4g \
   /opt/workdir/src/pv_lakehouse/etl/bronze/load_facility_weather.py \
-  --mode backfill --start 2024-01-01 --end 2025-11-08
+  --mode backfill --start 2025-01-01 --end 2025-11-01
 
 docker compose -f docker/docker-compose.yml exec spark-master spark-submit \
   --master spark://spark-master:7077 --deploy-mode client --driver-memory 2g --executor-memory 4g \
   /opt/workdir/src/pv_lakehouse/etl/bronze/load_facility_air_quality.py \
-  --mode backfill --start 2024-01-01 --end 2025-11-08
+  --mode backfill --start 2025-01-01 --end 2025-11-01
 
 # Step 2: Silver Layer
 docker compose -f docker/docker-compose.yml exec spark-master spark-submit \
@@ -339,7 +339,7 @@ docker compose -f docker/docker-compose.yml exec trino trino --execute \
   "DROP TABLE IF EXISTS iceberg.bronze.raw_facility_timeseries;
    DROP TABLE IF EXISTS iceberg.bronze.raw_facility_weather;
    DROP TABLE IF EXISTS iceberg.bronze.raw_facility_air_quality;
-   DROP TABLE IF EXISTS iceberg.bronze.raw_facility_metadata;
+   DROP TABLE IF EXISTS iceberg.bronze.raw_facilities;
    DROP TABLE IF EXISTS iceberg.silver.clean_hourly_energy;
    DROP TABLE IF EXISTS iceberg.silver.clean_hourly_weather;
    DROP TABLE IF EXISTS iceberg.silver.clean_hourly_air_quality;
@@ -358,7 +358,7 @@ docker compose -f docker/docker-compose.yml exec trino trino --execute \
   "DROP TABLE IF EXISTS iceberg.bronze.raw_facility_timeseries;
    DROP TABLE IF EXISTS iceberg.bronze.raw_facility_weather;
    DROP TABLE IF EXISTS iceberg.bronze.raw_facility_air_quality;
-   DROP TABLE IF EXISTS iceberg.bronze.raw_facility_metadata;"
+   DROP TABLE IF EXISTS iceberg.bronze.raw_facilities;"
 ```
 
 #### Drop Silver Layer Only:
