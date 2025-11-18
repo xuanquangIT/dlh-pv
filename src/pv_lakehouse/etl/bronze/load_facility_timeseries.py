@@ -68,19 +68,62 @@ def main() -> None:
     if args.date_start and args.date_end:
         print(f"Loading timeseries: {args.date_start} → {args.date_end}")
 
-    dataframe = openelectricity.fetch_facility_timeseries_dataframe(
-        facility_codes=facility_codes,
-        metrics=["energy"],  
-        interval="1h", 
-        date_start=args.date_start,
-        date_end=args.date_end,
-        api_key=args.api_key,
-        target_window_days=7,
-        max_lookback_windows=52,
-    )
+    # Try to fetch data from API, skip facility if data unavailable or no permissions
+    dataframe = None
+    last_error = None
+    skipped_facilities = []
+    
+    for facility_code in facility_codes:
+        try:
+            print(f"Fetching data for facility: {facility_code}")
+            facility_df = openelectricity.fetch_facility_timeseries_dataframe(
+                facility_codes=[facility_code],
+                metrics=["energy"],  
+                interval="1h", 
+                date_start=args.date_start,
+                date_end=args.date_end,
+                api_key=args.api_key,
+                target_window_days=7,
+                max_lookback_windows=52,
+            )
+            
+            if not facility_df.empty:
+                if dataframe is None:
+                    dataframe = facility_df
+                else:
+                    dataframe = __import__('pandas').concat([dataframe, facility_df], ignore_index=True)
+                print(f"Loaded {len(facility_df)} records for {facility_code}")
+            else:
+                print(f"No data returned for {facility_code}")
+                
+        except Exception as e:
+            error_msg = str(e)
+            # Skip facility if API returns 403 (Forbidden/No permissions) or 416 (no data available)
+            if "403" in error_msg or "Forbidden" in error_msg:
+                print(f"No access to {facility_code} (403 Forbidden). Skipping...")
+                skipped_facilities.append((facility_code, "403 Forbidden"))
+                last_error = e
+            elif "416" in error_msg or "Range Not Satisfiable" in error_msg:
+                print(f"No data available for {facility_code} in this date range (416). Skipping...")
+                skipped_facilities.append((facility_code, "416 No data"))
+                last_error = e
+            else:
+                print(f"Error fetching {facility_code}: {error_msg}")
+                last_error = e
+                # Re-raise other errors as they might indicate real problems (network, API down, etc.)
+                raise
+    
+    # Print summary of skipped facilities
+    if skipped_facilities:
+        print(f"\nSkipped {len(skipped_facilities)} facilities:")
+        for code, reason in skipped_facilities:
+            print(f"  - {code}: {reason}")
 
-    if dataframe.empty:
-        print("No timeseries records returned; skipping writes.")
+    if dataframe is None or dataframe.empty:
+
+        print("No timeseries records returned for any facility; skipping writes.")
+        if last_error:
+            print(f"Last error: {last_error}")
         return
 
     spark = create_spark_session(args.app_name)
