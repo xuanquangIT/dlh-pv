@@ -4,9 +4,9 @@
 
 set -e  # Exit on any error
 
-LIMIT=${1:-5000}
+LIMIT=${1:-161030}
 if [[ "$1" == "--limit" ]]; then
-    LIMIT=${2:-5000}
+    LIMIT=${2:-161030}
 fi
 
 COMPOSE_FILE="docker/docker-compose.yml"
