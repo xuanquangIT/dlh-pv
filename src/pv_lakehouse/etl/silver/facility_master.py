@@ -86,7 +86,7 @@ class SilverFacilityMasterLoader(BaseSilverLoader):
             return None
 
         bronze_clean = (
-            bronze_filtered.withColumn("source", F.lit("bronze"))
+            bronze_filtered
             .withColumn(
                 "total_capacity_mw",
                 F.col("total_capacity_mw").cast(T.DecimalType(10, 4)),
@@ -101,6 +101,7 @@ class SilverFacilityMasterLoader(BaseSilverLoader):
             )
             .withColumn("location_lat", F.col("location_lat").cast(T.DecimalType(10, 6)))
             .withColumn("location_lng", F.col("location_lng").cast(T.DecimalType(10, 6)))
+            .withColumn("source", F.lit("bronze"))
         )
 
         existing = self._safe_read_silver()

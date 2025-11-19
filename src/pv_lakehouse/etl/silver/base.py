@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import datetime as dt
 from dataclasses import dataclass
-from typing import Iterable, Optional, Sequence
+from typing import Optional, Sequence
 
 from pyspark.sql import DataFrame, SparkSession
 from pyspark.sql import functions as F
 from pyspark.sql.utils import AnalysisException
+from pv_lakehouse.etl.bronze.facility_timezones import FACILITY_TIMEZONES, DEFAULT_TIMEZONE
 
 from ..utils.spark_utils import cleanup_spark_staging, create_spark_session, write_iceberg_table
 
@@ -61,6 +62,15 @@ class BaseSilverLoader:
             self._spark.stop()
             self._spark = None
             cleanup_spark_staging()
+
+    def _get_hour_offset(self) -> int:
+        """Return hour offset to apply to incremental start for loaders that shift timestamps.
+        
+        Override in subclasses that shift timestamps (e.g., energy loader shifts by +1 hour).
+        Returns:
+            Hour offset (0 = no shift, 1 = shift by 1 hour)
+        """
+        return 0
 
     def _process_in_chunks(self, bronze_df: DataFrame, chunk_days: int) -> int:
         """
@@ -199,48 +209,92 @@ class BaseSilverLoader:
                 f"Timestamp column '{self.timestamp_column}' missing from bronze table {self.bronze_table}"
             )
 
-        # Auto-detection: Query last loaded timestamp from Silver if incremental mode without start date
-        if self.options.mode == "incremental" and self.options.start is None and self.silver_timestamp_column:
+        # Helper functions to query timestamps (consolidated to avoid duplication)
+        def _get_silver_max_ts():
+            if not self.silver_timestamp_column:
+                return None
             try:
                 max_ts_row = self.spark.sql(f"""
                     SELECT MAX({self.silver_timestamp_column}) as max_ts
                     FROM {self.silver_table}
                 """).collect()
-                
                 if max_ts_row and max_ts_row[0]["max_ts"] is not None:
-                    max_ts = max_ts_row[0]["max_ts"]
-                    # Get current time for comparison
-                    now = dt.datetime.now(dt.timezone.utc).replace(tzinfo=None)
+                    return max_ts_row[0]["max_ts"]
+            except Exception:
+                pass
+            return None
+
+        def _get_bronze_min_ts():
+            try:
+                min_bronze_ts_row = self.spark.sql(f"""
+                    SELECT MIN(CAST({self.timestamp_column} AS TIMESTAMP)) as min_ts
+                    FROM {self.bronze_table}
+                """).collect()
+                if min_bronze_ts_row and min_bronze_ts_row[0]["min_ts"] is not None:
+                    return min_bronze_ts_row[0]["min_ts"]
+            except Exception:
+                pass
+            return None
+
+        # If Silver is empty and user provided explicit start, check if Bronze has earlier data
+        silver_max_ts = _get_silver_max_ts()
+        if silver_max_ts is None and self.options.start is not None:
+            bronze_min_ts = _get_bronze_min_ts()
+            if bronze_min_ts:
+                user_start = self._normalise_datetime(self.options.start)
+                if user_start:
+                    user_start_ts = dt.datetime.fromisoformat(user_start)
+                    if bronze_min_ts < user_start_ts:
+                        self.options.start = bronze_min_ts
+                        print(f"[SILVER FIRST-RUN] Detected earlier Bronze data at {bronze_min_ts}, overriding user start {user_start_ts}", flush=True)
+
+        # Auto-detection: Query last loaded timestamp from Silver if incremental mode without start date
+        if self.options.mode == "incremental" and self.options.start is None and self.silver_timestamp_column:
+            silver_max_ts = _get_silver_max_ts()
+            
+            if silver_max_ts is not None:
+                # Get current time for comparison
+                now = dt.datetime.now(dt.timezone.utc).replace(tzinfo=None)
+                
+                if isinstance(silver_max_ts, dt.datetime):
+                    last_hour = silver_max_ts.replace(minute=0, second=0, microsecond=0)
+                    current_hour = now.replace(minute=0, second=0, microsecond=0)
                     
-                    if isinstance(max_ts, dt.datetime):
-                        last_hour = max_ts.replace(minute=0, second=0, microsecond=0)
-                        current_hour = now.replace(minute=0, second=0, microsecond=0)
-                        
-                        # If last loaded is current hour or future, reload from current hour
-                        # Otherwise start from next hour after last loaded
-                        if last_hour >= current_hour:
-                            self.options.start = current_hour
-                            print(f"[SILVER INCREMENTAL] Reloading current hour {self.options.start} (last loaded: {max_ts})", flush=True)
-                        else:
-                            self.options.start = last_hour + dt.timedelta(hours=1)
-                            print(f"[SILVER INCREMENTAL] Loading from {self.options.start} (last loaded: {max_ts})", flush=True)
+                    # If last loaded is current hour or future, reload from current hour
+                    # Otherwise start from last_hour - hour_offset to capture boundary hours
+                    if last_hour >= current_hour:
+                        self.options.start = current_hour
+                        print(f"[SILVER INCREMENTAL] Reloading current hour {self.options.start} (last loaded: {silver_max_ts})", flush=True)
                     else:
-                        # If timestamp is date type, start from next day
-                        today = now.date()
-                        last_date = max_ts if isinstance(max_ts, dt.date) else max_ts.date()
-                        
-                        if last_date >= today:
-                            self.options.start = today
-                            print(f"[SILVER INCREMENTAL] Reloading today {self.options.start} (last loaded: {last_date})", flush=True)
-                        else:
-                            self.options.start = last_date + dt.timedelta(days=1)
-                            print(f"[SILVER INCREMENTAL] Loading from {self.options.start} (last loaded: {last_date})", flush=True)
+                        hour_offset = self._get_hour_offset()
+                        self.options.start = last_hour - dt.timedelta(hours=hour_offset)
+                        print(f"[SILVER INCREMENTAL] Loading from {self.options.start} (last loaded: {silver_max_ts}, offset: {hour_offset}h)", flush=True)
                 else:
-                    print("[SILVER INCREMENTAL] No existing Silver data found, will process all Bronze data", flush=True)
-            except Exception as e:
-                # Silver table doesn't exist yet or query failed - process all Bronze data
-                print(f"[SILVER INCREMENTAL] Could not query Silver table (likely first run): {e}", flush=True)
-                print("[SILVER INCREMENTAL] Will process all Bronze data", flush=True)
+                    # If timestamp is date type, start from next day
+                    today = now.date()
+                    last_date = silver_max_ts if isinstance(silver_max_ts, dt.date) else silver_max_ts.date()
+                    
+                    if last_date >= today:
+                        self.options.start = today
+                        print(f"[SILVER INCREMENTAL] Reloading today {self.options.start} (last loaded: {last_date})", flush=True)
+                    else:
+                        self.options.start = last_date + dt.timedelta(days=1)
+                        print(f"[SILVER INCREMENTAL] Loading from {self.options.start} (last loaded: {last_date})", flush=True)
+                        
+                # Check if Bronze has earlier data that wasn't loaded to Silver (backfill detection)
+                bronze_min_ts = _get_bronze_min_ts()
+                if bronze_min_ts and isinstance(silver_max_ts, dt.datetime):
+                    silver_min = silver_max_ts.replace(minute=0, second=0, microsecond=0)
+                    if bronze_min_ts < silver_min:
+                        self.options.start = bronze_min_ts
+                        print(f"[SILVER BACKFILL] Detected missing data: Bronze starts at {bronze_min_ts}, Silver at {silver_min}. Backfilling from {bronze_min_ts}", flush=True)
+            else:
+                print("[SILVER INCREMENTAL] No existing Silver data found, will process all Bronze data", flush=True)
+                # For first-run incremental, detect min Bronze timestamp to start from there
+                bronze_min_ts = _get_bronze_min_ts()
+                if bronze_min_ts:
+                    self.options.start = bronze_min_ts
+                    print(f"[SILVER INCREMENTAL FIRST-RUN] Setting start from Bronze min timestamp: {self.options.start}", flush=True)
 
         # Mode validation already done in _validate_options()
         start_literal = self._normalise_datetime(self.options.start)
@@ -291,12 +345,6 @@ class BaseSilverLoader:
             mode=iceberg_mode,
             partition_cols=self.partition_cols,
         )
-
-    def _safe_read_silver(self) -> Optional[DataFrame]:
-        try:
-            return self.spark.table(self.silver_table)
-        except AnalysisException:
-            return None
 
     def _validate_options(self) -> None:
         if self.options.mode not in {"full", "incremental"}:

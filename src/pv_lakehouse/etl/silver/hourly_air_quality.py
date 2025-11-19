@@ -129,7 +129,7 @@ class SilverHourlyAirQualityLoader(BaseSilverLoader):
             .withColumn("is_valid", is_valid_overall)
             .withColumn(
                 "quality_issues",
-                F.when(is_valid_overall, F.lit("")).otherwise(quality_issues)
+                quality_issues
             )
             .withColumn(
                 "quality_flag",
