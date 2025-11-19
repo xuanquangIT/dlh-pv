@@ -260,6 +260,71 @@ docker compose -f docker/docker-compose.yml exec trino trino --execute \
    DELETE FROM iceberg.gold.fact_solar_environmental;"
 ```
 
+### Backfill Workflow (included from local changes)
+Run the full backfill workflow (Bronze → Silver → Gold) in order:
+
+```bash
+# Step 1: Bronze Layer
+docker compose -f docker/docker-compose.yml exec spark-master spark-submit \
+  --master spark://spark-master:7077 --deploy-mode client --driver-memory 2g --executor-memory 4g \
+  /opt/workdir/src/pv_lakehouse/etl/bronze/load_facilities.py --mode backfill
+
+docker compose -f docker/docker-compose.yml exec spark-master spark-submit \
+  --master spark://spark-master:7077 --deploy-mode client --driver-memory 2g --executor-memory 4g \
+  /opt/workdir/src/pv_lakehouse/etl/bronze/load_facility_timeseries.py \
+  --mode backfill --date-start 2025-10-01T00:00:00 --date-end 2025-11-01T23:59:59
+
+docker compose -f docker/docker-compose.yml exec spark-master spark-submit \
+  --master spark://spark-master:7077 --deploy-mode client --driver-memory 2g --executor-memory 4g \
+  /opt/workdir/src/pv_lakehouse/etl/bronze/load_facility_weather.py \
+  --mode backfill --start 2025-10-01 --end 2025-11-01
+
+docker compose -f docker/docker-compose.yml exec spark-master spark-submit \
+  --master spark://spark-master:7077 --deploy-mode client --driver-memory 2g --executor-memory 4g \
+  /opt/workdir/src/pv_lakehouse/etl/bronze/load_facility_air_quality.py \
+  --mode backfill --start 2025-10-01 --end 2025-11-01
+
+# Step 2: Silver Layer
+docker compose -f docker/docker-compose.yml exec spark-master spark-submit \
+  --master spark://spark-master:7077 --deploy-mode client --driver-memory 2g --executor-memory 4g \
+  /opt/workdir/src/pv_lakehouse/etl/silver/cli.py facility_master --mode full
+
+docker compose -f docker/docker-compose.yml exec spark-master spark-submit \
+  --master spark://spark-master:7077 --deploy-mode client --driver-memory 2g --executor-memory 4g \
+  /opt/workdir/src/pv_lakehouse/etl/silver/cli.py hourly_energy --mode full
+
+docker compose -f docker/docker-compose.yml exec spark-master spark-submit \
+  --master spark://spark-master:7077 --deploy-mode client --driver-memory 2g --executor-memory 4g \
+  /opt/workdir/src/pv_lakehouse/etl/silver/cli.py hourly_weather --mode full
+
+docker compose -f docker/docker-compose.yml exec spark-master spark-submit \
+  --master spark://spark-master:7077 --deploy-mode client --driver-memory 2g --executor-memory 4g \
+  /opt/workdir/src/pv_lakehouse/etl/silver/cli.py hourly_air_quality --mode full
+
+# Step 3: Gold Dimensions
+docker compose -f docker/docker-compose.yml exec spark-master spark-submit \
+  --master spark://spark-master:7077 --deploy-mode client --driver-memory 2g --executor-memory 4g \
+  /opt/workdir/src/pv_lakehouse/etl/gold/cli.py dim_facility --mode full
+
+docker compose -f docker/docker-compose.yml exec spark-master spark-submit \
+  --master spark://spark-master:7077 --deploy-mode client --driver-memory 2g --executor-memory 4g \
+  /opt/workdir/src/pv_lakehouse/etl/gold/cli.py dim_date --mode full
+
+docker compose -f docker/docker-compose.yml exec spark-master spark-submit \
+  --master spark://spark-master:7077 --deploy-mode client --driver-memory 2g --executor-memory 4g \
+  /opt/workdir/src/pv_lakehouse/etl/gold/cli.py dim_time --mode full
+
+docker compose -f docker/docker-compose.yml exec spark-master spark-submit \
+  --master spark://spark-master:7077 --deploy-mode client --driver-memory 2g --executor-memory 4g \
+  /opt/workdir/src/pv_lakehouse/etl/gold/cli.py dim_aqi_category --mode full
+
+# Step 4: Gold Fact
+docker compose -f docker/docker-compose.yml exec spark-master spark-submit \
+  --master spark://spark-master:7077 --deploy-mode client --driver-memory 2g --executor-memory 4g \
+  /opt/workdir/src/pv_lakehouse/etl/gold/cli.py fact_solar_environmental --mode full
+```
+```
+
 ### Drop Tables (Irreversible - removes table structure)
 
 **All Tables**

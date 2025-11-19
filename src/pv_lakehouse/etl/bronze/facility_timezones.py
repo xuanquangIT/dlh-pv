@@ -7,11 +7,11 @@ from typing import Dict
 
 # Map facility codes to their local timezone
 FACILITY_TIMEZONES: Dict[str, str] = {
-    "NYNGAN": "Australia/Sydney",      # NSW - UTC+10 (or +11 during DST)
+    # "NYNGAN": "Australia/Sydney",      # NSW - UTC+10 (or +11 during DST)
     # "BNGSF1": "Australia/Adelaide",    # SA - UTC+9.5 (or +10.5 during DST)
     # "CLARESF": "Australia/Brisbane",   # QLD - UTC+10
     # "COLEASF": "Australia/Sydney",     # NSW - UTC+10 (or +11 during DST)
-    "GANNSF": "Australia/Melbourne",   # VIC - UTC+10 (or +11 during DST)
+    # "GANNSF": "Australia/Melbourne",   # VIC - UTC+10 (or +11 during DST)
 }
 
 # Default timezone if facility not found
