@@ -359,6 +359,13 @@ class BaseSilverLoader:
             if start_iso and end_iso and end_iso < start_iso:
                 raise ValueError("LoadOptions.end must not be before LoadOptions.start")
 
+    def _safe_read_silver(self) -> Optional[DataFrame]:
+        """Try to read the target silver table, return None if it doesn't exist."""
+        try:
+            return self.spark.table(self.silver_table)
+        except AnalysisException:
+            return None
+
     def _maybe_set_conf(self, key: str, value: str) -> None:
         current = self.spark.conf.get(key, None)
         if current is None:

@@ -287,7 +287,7 @@ docker compose -f docker/docker-compose.yml exec spark-master spark-submit \
 # Step 2: Silver Layer
 docker compose -f docker/docker-compose.yml exec spark-master spark-submit \
   --master spark://spark-master:7077 --deploy-mode client --driver-memory 2g --executor-memory 4g \
-  /opt/workdir/src/pv_lakehouse/etl/silver/cli.py facility_master --mode full
+  /opt/workdir/src/pv_lakehouse/etl/silver/cli.py facility_master --mode full --load-strategy overwrite
 
 docker compose -f docker/docker-compose.yml exec spark-master spark-submit \
   --master spark://spark-master:7077 --deploy-mode client --driver-memory 2g --executor-memory 4g \
