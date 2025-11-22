@@ -8,6 +8,7 @@ from .dim_date import GoldDimDateLoader
 from .dim_facility import GoldDimFacilityLoader
 from .dim_time import GoldDimTimeLoader
 from .fact_solar_environmental import GoldFactSolarEnvironmentalLoader
+from .fact_solar_forecast_regression import GoldFactSolarForecastRegressionLoader
 
 __all__ = [
     "GoldLoadOptions",
@@ -19,4 +20,5 @@ __all__ = [
     "GoldDimTimeLoader",
     "GoldDimFacilityLoader",
     "GoldFactSolarEnvironmentalLoader",
+    "GoldFactSolarForecastRegressionLoader",
 ]
