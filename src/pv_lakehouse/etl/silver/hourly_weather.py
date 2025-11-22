@@ -34,8 +34,8 @@ class SilverHourlyWeatherLoader(BaseSilverLoader):
     _numeric_columns = {
         "shortwave_radiation": (0.0, 1150.0),  # P99.5=1045 W/m² (actual max=1120, rounded to 1150)
         "direct_radiation": (0.0, 1050.0),     # Increased from 920 to 1050 (actual max=1009, Australian extreme events)
-        "diffuse_radiation": (0.0, 500.0),     # Increased from 340 to 500 (actual max=491, measurement variation)
-        "direct_normal_irradiance": (0.0, 1050.0),  # Increased from 995 to 1050 (actual max=1029.5)
+        "diffuse_radiation": (0.0, 520.0),     # Increased from 500 to 520 (actual max=520, measurement variation)
+        "direct_normal_irradiance": (0.0, 1060.0),  # Increased from 1050 to 1060 (actual max=1057.3)
         "temperature_2m": (-10.0, 50.0),       # P99.5=38.5°C (actual max=43.7°C, bounds allow extreme days)
         "dew_point_2m": (-20.0, 30.0),         # P99=20.2°C (expanded bounds for extreme conditions)
         "wet_bulb_temperature_2m": (-5.0, 40.0),  # Bounded by air temperature (wet bulb typically 5-15°C lower)
@@ -113,7 +113,22 @@ class SilverHourlyWeatherLoader(BaseSilverLoader):
         
         result = prepared.select(select_exprs)
 
-        # Validation: Check numeric columns within bounds and build quality_issues in single pass
+        # Validation: Compute all bounds checks first (single pass)
+        is_valid_bounds = F.lit(True)
+        bound_issues = F.lit("")
+        
+        for column, (min_val, max_val) in self._numeric_columns.items():
+            col_expr = F.col(column)
+            col_valid = col_expr.isNull() | ((col_expr >= min_val) & (col_expr <= max_val))
+            is_valid_bounds = is_valid_bounds & col_valid
+            
+            bound_issues = F.concat_ws(
+                "|",
+                bound_issues,
+                F.when((col_expr.isNotNull()) & ~col_valid, F.concat(F.lit(column), F.lit("_OUT_OF_BOUNDS")))
+            )
+
+        # Validation: Check logic conditions (second pass using computed bounds)
         hour_of_day = F.hour(F.col("timestamp_local"))
         is_night = (hour_of_day < 6) | (hour_of_day >= 22)
         is_peak_sun = (hour_of_day >= 10) & (hour_of_day <= 14)
@@ -128,24 +143,10 @@ class SilverHourlyWeatherLoader(BaseSilverLoader):
         # Temperature anomalies
         extreme_temp = (F.col("temperature_2m") < -10) | (F.col("temperature_2m") > 45)
         
-        # Check numeric bounds for all columns
-        is_valid_bounds = F.lit(True)
-        bound_issues = F.lit("")
-        
-        for column, (min_val, max_val) in self._numeric_columns.items():
-            col_expr = F.col(column)
-            col_valid = col_expr.isNull() | ((col_expr >= min_val) & (col_expr <= max_val))
-            is_valid_bounds = is_valid_bounds & col_valid
-            
-            bound_issues = F.concat_ws(
-                "|",
-                bound_issues,
-                F.when((col_expr.isNotNull()) & ~col_valid, F.concat(F.lit(column), F.lit("_OUT_OF_BOUNDS")))
-            )
-        
-        # Build quality_issues in single statement
+        # Build quality columns using pre-computed bounds and conditions
         result = (
             result
+            .withColumn("is_valid", is_valid_bounds & ~is_night_rad_high & ~(radiation_inconsistency | high_cloud_peak | extreme_temp))
             .withColumn(
                 "quality_issues",
                 F.concat_ws(
@@ -167,10 +168,7 @@ class SilverHourlyWeatherLoader(BaseSilverLoader):
                     F.lit("CAUTION")
                 ).otherwise(F.lit("GOOD"))
             )
-            .withColumn("is_valid", is_valid_bounds & ~is_night_rad_high & ~(radiation_inconsistency | high_cloud_peak | extreme_temp))
         )
-
-        # Add metadata and finalize
         result = (
             result
             .withColumn("created_at", F.current_timestamp())

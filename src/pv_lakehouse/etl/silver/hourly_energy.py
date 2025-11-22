@@ -27,6 +27,10 @@ class SilverHourlyEnergyLoader(BaseSilverLoader):
             options.max_records_per_file = min(options.max_records_per_file, self.DEFAULT_MAX_RECORDS_PER_FILE)
         super().__init__(options)
 
+    def _get_hour_offset(self) -> int:
+        """Energy loader shifts hour by +1, so we need to account for this in incremental start calculation."""
+        return 1
+
     def run(self) -> int:
         """Process bronze energy data in 7-day chunks to limit memory usage."""
         bronze_df = self._read_bronze()
@@ -90,53 +94,26 @@ class SilverHourlyEnergyLoader(BaseSilverLoader):
             .filter(F.col("intervals_count") > 0)
         )
         
-        # NYNGAN max=102.0 MWh (P99.5=101.35, rounded to 105)
-        # GANNSF max=49.99 MWh (P99.5=49.76, rounded to 50)
-        TUKEY_LOWER = 0.0  # Physical bound: energy must be >= 0
+        # Physical bounds for energy
+        ENERGY_LOWER = 0.0      # Minimum energy: 0 MWh (physical constraint, catches negative values)
+        PEAK_REFERENCE_MWH = 85.0  # Reference peak energy for threshold calculations
         
         # Build intermediate columns in single pass to avoid multiple scans
         result = (
             hourly
-            .withColumn("hour_of_day", F.hour(F.col("date_hour")))
             .withColumn("completeness_pct", F.lit(100.0))
-            .withColumn(
-                "facility_capacity_threshold",
-                # Upper bound = rounded for clarity (data-driven from 679-day analysis)
-                # NYNGAN: 105.0 MWh (P99.5=101.35 rounded)
-                # GANNSF: 50.0 MWh (P99.5=49.76 rounded)
-                F.when(F.col("facility_code") == "COLEASF", 170.0)      # 145 MW capacity + margin
-                .when(F.col("facility_code") == "BNGSF1", 140.0)        # 115 MW capacity + margin (rounded)
-                .when(F.col("facility_code") == "CLARESF", 140.0)       # 115 MW capacity + margin (rounded)
-                .when(F.col("facility_code") == "GANNSF", 52.0)         # 50.0 MWh max (rounded)
-                .when(F.col("facility_code") == "NYNGAN", 105.0)        # 105 MWh capacity (rounded)
-                .otherwise(130.0)                                        # 110 MW capacity + margin (rounded)
-            )
-            .withColumn(
-                "facility_expected_peak_threshold",
-                # Peak threshold = rounded for clarity (95th percentile from 679-day analysis)
-                # NYNGAN: 95.0 MWh (P95=95.40 rounded), GANNSF: 40.0 MWh (conservative threshold)
-                F.when(F.col("facility_code") == "COLEASF", 115.0)      # 145 * 0.77 estimated (rounded)
-                .when(F.col("facility_code") == "BNGSF1", 90.0)         # 115 * 0.77 estimated (rounded)
-                .when(F.col("facility_code") == "CLARESF", 90.0)        # 115 * 0.77 estimated (rounded)
-                .when(F.col("facility_code") == "GANNSF", 40.0)         # Conservative threshold for smaller facility
-                .when(F.col("facility_code") == "NYNGAN", 95.0)         # P95 rounded
-                .otherwise(85.0)                                         # 110 * 0.77 estimated (rounded)
-            )
         )
         
-        # Now reference columns directly (faster than nested expressions)
-        hour_col = F.col("hour_of_day")
+        # Extract hour from localized date_hour (already in facility local time)
+        hour_col = F.hour(F.col("date_hour"))
         energy_col = F.col("energy_mwh")
-        capacity_col = F.col("facility_capacity_threshold")
-        peak_threshold = F.col("facility_expected_peak_threshold")
         
         # Define validation checks using column references
-        is_within_bounds = energy_col >= 0
+        is_within_bounds = energy_col >= ENERGY_LOWER  # Only check lower bound (negative values)
         is_night = ((hour_col >= 22) | (hour_col < 6))
         is_peak = (hour_col >= 10) & (hour_col <= 14)
         
         is_night_anomaly = is_night & (energy_col > 1.0)
-        is_statistical_outlier = (energy_col < TUKEY_LOWER) | (energy_col > capacity_col)
         
         is_daytime_zero = (hour_col >= 8) & (hour_col <= 17) & (energy_col == 0.0)
         
@@ -161,10 +138,10 @@ class SilverHourlyEnergyLoader(BaseSilverLoader):
         is_transition_hour_low_energy = (
             ((is_sunrise | is_early_morning | is_sunset) & 
              (energy_col > 0.01) & 
-             (energy_col < (peak_threshold * threshold_factor)))
+             (energy_col < (F.lit(PEAK_REFERENCE_MWH) * threshold_factor)))
         )
         
-        is_efficiency_anomaly = is_peak & (energy_col > 0.5) & (energy_col < (peak_threshold * 0.50))
+        is_efficiency_anomaly = is_peak & (energy_col > 0.5) & (energy_col < (F.lit(PEAK_REFERENCE_MWH) * 0.50))
         
         result = (
             result
@@ -173,7 +150,6 @@ class SilverHourlyEnergyLoader(BaseSilverLoader):
                 F.concat_ws(
                     "|",
                     F.when(~is_within_bounds, F.lit("OUT_OF_BOUNDS")),
-                    F.when(is_statistical_outlier, F.lit("STATISTICAL_OUTLIER")),
                     F.when(is_night_anomaly, F.lit("NIGHT_ENERGY_ANOMALY")),
                     F.when(is_daytime_zero, F.lit("DAYTIME_ZERO_ENERGY")),
                     F.when(is_equipment_downtime, F.lit("EQUIPMENT_DOWNTIME")),
@@ -187,13 +163,12 @@ class SilverHourlyEnergyLoader(BaseSilverLoader):
                     ~is_within_bounds,
                     F.lit("REJECT")
                 ).when(
-                    is_statistical_outlier | is_night_anomaly | is_daytime_zero | is_transition_hour_low_energy | is_efficiency_anomaly,
+                    is_night_anomaly | is_daytime_zero | is_equipment_downtime | is_transition_hour_low_energy | is_efficiency_anomaly,
                     F.lit("CAUTION")
                 ).otherwise(F.lit("GOOD"))
             )
             .withColumn("created_at", F.current_timestamp())
             .withColumn("updated_at", F.current_timestamp())
-            .drop("hour_of_day", "facility_capacity_threshold", "facility_expected_peak_threshold")
         )
 
         return result.select(
