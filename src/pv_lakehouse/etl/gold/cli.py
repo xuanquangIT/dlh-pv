@@ -13,8 +13,8 @@ from pv_lakehouse.etl.gold.dim_date import GoldDimDateLoader
 from pv_lakehouse.etl.gold.dim_facility import GoldDimFacilityLoader
 from pv_lakehouse.etl.gold.dim_forecast_model_version import GoldDimForecastModelVersionLoader
 from pv_lakehouse.etl.gold.dim_time import GoldDimTimeLoader
-from pv_lakehouse.etl.gold.fact_energy_forecast import GoldFactEnergyForecastLoader
 from pv_lakehouse.etl.gold.fact_solar_environmental import GoldFactSolarEnvironmentalLoader
+from pv_lakehouse.etl.gold.fact_solar_forecast_regression import GoldFactSolarForecastRegressionLoader
 
 
 _LOADER_REGISTRY: Dict[str, Type[BaseGoldLoader]] = {
@@ -25,8 +25,8 @@ _LOADER_REGISTRY: Dict[str, Type[BaseGoldLoader]] = {
     "dim_forecast_model_version": GoldDimForecastModelVersionLoader,
     "dim_time": GoldDimTimeLoader,
     # Fact tables (load these after dimensions)
-    "fact_energy_forecast": GoldFactEnergyForecastLoader,
     "fact_solar_environmental": GoldFactSolarEnvironmentalLoader,
+    "fact_solar_forecast_regression": GoldFactSolarForecastRegressionLoader,
 }
 
 
