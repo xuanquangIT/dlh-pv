@@ -157,14 +157,18 @@ class SilverHourlyEnergyLoader(BaseSilverLoader):
                     F.when(is_efficiency_anomaly, F.lit("PEAK_HOUR_LOW_ENERGY"))
                 )
             )
+            # Align quality flag labels with Gold layer conventions:
+            # - BAD for invalid/out-of-bounds energy
+            # - WARNING for anomalous but not outright invalid records
+            # - GOOD for everything else
             .withColumn(
                 "quality_flag",
                 F.when(
                     ~is_within_bounds,
-                    F.lit("REJECT")
+                    F.lit("BAD")
                 ).when(
                     is_night_anomaly | is_daytime_zero | is_equipment_downtime | is_transition_hour_low_energy | is_efficiency_anomaly,
-                    F.lit("CAUTION")
+                    F.lit("WARNING")
                 ).otherwise(F.lit("GOOD"))
             )
             .withColumn("created_at", F.current_timestamp())

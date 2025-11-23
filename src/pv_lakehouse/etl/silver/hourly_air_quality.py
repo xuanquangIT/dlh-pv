@@ -133,7 +133,7 @@ class SilverHourlyAirQualityLoader(BaseSilverLoader):
             )
             .withColumn(
                 "quality_flag",
-                F.when(is_valid_overall, F.lit("GOOD")).otherwise(F.lit("CAUTION"))
+                F.when(is_valid_overall, F.lit("GOOD")).otherwise(F.lit("WARNING"))
             )
             .withColumn("created_at", F.current_timestamp())
             .withColumn("updated_at", F.current_timestamp())

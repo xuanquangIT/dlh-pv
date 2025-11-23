@@ -160,12 +160,16 @@ class SilverHourlyWeatherLoader(BaseSilverLoader):
             )
             .withColumn(
                 "quality_flag",
+                # Align weather quality_flag labels with Gold conventions:
+                # - BAD for invalid/out-of-bounds records
+                # - WARNING for anomalous but not outright invalid records
+                # - GOOD for everything else
                 F.when(
                     ~is_valid_bounds | is_night_rad_high,
-                    F.lit("REJECT")
+                    F.lit("BAD")
                 ).when(
                     radiation_inconsistency | high_cloud_peak | extreme_temp,
-                    F.lit("CAUTION")
+                    F.lit("WARNING")
                 ).otherwise(F.lit("GOOD"))
             )
         )
