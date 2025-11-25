@@ -15,12 +15,12 @@ That's it!
 ## What Gets Set Up Automatically
 
 - ✅ MinIO object storage with buckets: `lakehouse`, `mlflow`
-- ✅ PostgreSQL with databases: `iceberg`, `iceberg_catalog`, `mlflow`, `prefect`
+<!-- - ✅ PostgreSQL with databases: `iceberg`, `iceberg_catalog`, `mlflow`, `prefect` -->
 - ✅ **Apache Iceberg JDBC Catalog** (PostgreSQL-based, no Gravitino needed)
 - ✅ Trino SQL query engine with Iceberg catalog configured
 - ✅ Apache Spark cluster with S3A support
 - ✅ MLflow experiment tracking
-- ✅ Prefect workflow orchestration
+<!-- - ✅ Prefect workflow orchestration -->
 - ✅ Service users with least-privilege bucket policies
 - ✅ All networking and healthchecks configured
 - ✅ Trino Iceberg schemas: `lh`
@@ -32,7 +32,7 @@ That's it!
 | MinIO Console | http://localhost:9001 | pvlakehouse / pvlakehouse |
 | Trino UI | http://localhost:8081 | - |
 | MLflow UI | http://localhost:5000 | - |
-| Prefect UI | http://localhost:4200 | - |
+<!-- | Prefect UI | http://localhost:4200 | - | -->
 | Spark Master UI | http://localhost:4040 | - |
 
 ## Common Commands
