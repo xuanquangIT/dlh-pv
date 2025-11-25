@@ -20,7 +20,6 @@ That's it!
 - ✅ Trino SQL query engine with Iceberg catalog configured
 - ✅ Apache Spark cluster with S3A support
 - ✅ MLflow experiment tracking
-- ✅ Prefect workflow orchestration
 - ✅ Service users with least-privilege bucket policies
 - ✅ All networking and healthchecks configured
 - ✅ Trino Iceberg schemas: `lh`
@@ -32,7 +31,6 @@ That's it!
 | MinIO Console | http://localhost:9001 | pvlakehouse / pvlakehouse |
 | Trino UI | http://localhost:8081 | - |
 | MLflow UI | http://localhost:5000 | - |
-| Prefect UI | http://localhost:4200 | - |
 | Spark Master UI | http://localhost:4040 | - |
 
 ## Common Commands
