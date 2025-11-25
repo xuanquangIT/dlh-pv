@@ -1,5 +1,5 @@
 # Mirror of project runtime dependencies for baking into Spark image
-# prefect>=2.9.0,<3.0.0
+prefect>=2.9.0,<3.0.0
 mlflow==2.4.0
 boto3==1.26.149
 psycopg2-binary==2.9.7
