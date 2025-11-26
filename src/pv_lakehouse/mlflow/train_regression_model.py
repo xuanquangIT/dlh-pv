@@ -28,6 +28,7 @@ from pyspark.sql.utils import AnalysisException
 
 from pyspark.sql.window import Window
 from pv_lakehouse.etl.utils.spark_utils import create_spark_session, write_iceberg_table
+from pv_lakehouse.etl.gold.dim_feature_importance import get_dim_feature_importance_schema
 
 DEFAULT_SAMPLE_LIMIT = 50_000  # Balance between performance and memory
 SILVER_HOURLY_ENERGY_TABLE = "lh.silver.clean_hourly_energy"
@@ -359,12 +360,13 @@ def write_gold_predictions(gold_df: DataFrame, table_name: str, mode: str = "app
 def save_feature_importance_to_gold(spark: SparkSession, model: Pipeline, model_version_key: int) -> None:
     """Save feature importance to dim_feature_importance table in Gold layer.
     
+    Uses standardized schema from dim_feature_importance.py
+    
     Args:
         spark: SparkSession
-        model: Fitted pipeline (includes RandomForestRegressor)
+        model: Fitted pipeline (includes GBTRegressor)
         model_version_key: Model version key from dim_model_version table
     """
-    from pyspark.sql.types import StructType, StructField, LongType, StringType, DoubleType, IntegerType, BooleanType, TimestampType
     
     # Extract Random Forest model from pipeline
     rf_model = model.stages[-1]
@@ -458,9 +460,10 @@ def save_feature_importance_to_gold(spark: SparkSession, model: Pipeline, model_
     # Sort by importance (descending)
     feature_data.sort(key=lambda x: x[2], reverse=True)
     
-    # Create rows with rankings
+    # Create rows with rankings and cumulative importance
     rows = []
     category_ranks = {}  # Track rank within each category
+    cumulative = 0.0
     
     for overall_rank, (feature_name, category, importance_val, importance_pct, description) in enumerate(feature_data, start=1):
         # Track category rank
@@ -469,49 +472,51 @@ def save_feature_importance_to_gold(spark: SparkSession, model: Pipeline, model_
         category_ranks[category] += 1
         rank_in_category = category_ranks[category]
         
-        # Determine if top 15
+        # Calculate cumulative importance
+        cumulative += importance_pct
+        
+        # Determine flags
         is_top_15 = overall_rank <= 15
+        is_lag_feature = category == "LAG Features"
         
         # Create row - ensure all numeric types are Python native types
         rows.append((
-            int(overall_rank),  # feature_importance_key
+            int(overall_rank),  # feature_importance_key (surrogate)
             str(feature_name),
             str(category),
-            float(importance_val),  # Ensure Python float
-            float(importance_pct),  # Ensure Python float
+            float(importance_val),
+            float(importance_pct),
+            float(cumulative),  # cumulative_importance
             int(overall_rank),
             int(rank_in_category),
             bool(is_top_15),
-            str(description),
+            bool(is_lag_feature),  # is_lag_feature flag
             int(model_version_key),
-            datetime.now(),
-            datetime.now()
+            datetime.now()  # created_at
         ))
     
-    # Define schema
-    schema = StructType([
-        StructField("feature_importance_key", LongType(), False),
-        StructField("feature_name", StringType(), False),
-        StructField("feature_category", StringType(), False),
-        StructField("importance_value", DoubleType(), False),
-        StructField("importance_percentage", DoubleType(), False),
-        StructField("rank_overall", IntegerType(), False),
-        StructField("rank_in_category", IntegerType(), False),
-        StructField("is_top_15", BooleanType(), False),
-        StructField("feature_description", StringType(), True),
-        StructField("model_version_key", LongType(), False),
-        StructField("created_at", TimestampType(), False),
-        StructField("updated_at", TimestampType(), False),
-    ])
+    # Use standardized schema from dim_feature_importance.py
+    schema = get_dim_feature_importance_schema()
     
     # Create DataFrame
     importance_df = spark.createDataFrame(rows, schema)
     
-    # Write to Gold layer (overwrite for this model_version_key)
+    # Delete existing records for this model_version_key to avoid duplicates
+    try:
+        spark.sql(f"""
+            DELETE FROM lh.gold.dim_feature_importance
+            WHERE model_version_key = {model_version_key}
+        """)
+        print(f"  Deleted old feature importance records for model_version_key={model_version_key}")
+    except Exception as e:
+        print(f"  No existing records to delete: {e}")
+    
+    # Write to Gold layer (append mode with standard schema)
     write_iceberg_table(
         importance_df,
         "lh.gold.dim_feature_importance",
-        mode="overwrite"
+        mode="append",
+        partition_cols=["model_version_key"]  # Partition by model version
     )
     
     print(f"\n✓ Saved {len(rows)} feature importances to lh.gold.dim_feature_importance")
@@ -751,8 +756,8 @@ def main():
         ).orderBy("forecast_timestamp", ascending=False).show(10, truncate=False)
         
     spark.stop()
-    print(f"\n✓ Regression training complete!")
-    print(f"✓ Saved {gold_rows} predictions to Gold layer: {GOLD_OUTPUT_TABLE}")
+    print(f"\n Regression training complete!")
+    print(f"Saved {gold_rows} predictions to Gold layer: {GOLD_OUTPUT_TABLE}")
 
 
 if __name__ == "__main__":
