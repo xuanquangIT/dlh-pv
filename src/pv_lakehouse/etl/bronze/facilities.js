@@ -4,7 +4,6 @@ export const DEFAULT_FACILITY_CODES = [
   "BOMENSF",
   "YATSF1",
   "LIMOSF2",
-  "HUGSF",
   "FINLEYSF",
   "EMERASF",
   "DARLSF"
