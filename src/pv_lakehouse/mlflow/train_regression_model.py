@@ -18,7 +18,7 @@ from typing import Optional
 import mlflow
 import mlflow.spark
 from pyspark.ml import Pipeline
-from pyspark.ml.regression import DecisionTreeRegressor, RandomForestRegressor
+from pyspark.ml.regression import DecisionTreeRegressor, GBTRegressor
 from pyspark.ml.evaluation import RegressionEvaluator
 from pyspark.ml.feature import VectorAssembler
 from pyspark.sql import DataFrame, SparkSession
@@ -28,6 +28,7 @@ from pyspark.sql.utils import AnalysisException
 
 from pyspark.sql.window import Window
 from pv_lakehouse.etl.utils.spark_utils import create_spark_session, write_iceberg_table
+from pv_lakehouse.etl.gold.dim_feature_importance import get_dim_feature_importance_schema
 
 DEFAULT_SAMPLE_LIMIT = 50_000  # Balance between performance and memory
 SILVER_HOURLY_ENERGY_TABLE = "lh.silver.clean_hourly_energy"
@@ -65,6 +66,13 @@ FEATURE_COLUMNS = [
     "energy_lag_1h",  # Previous hour
     "energy_lag_24h",  # Same hour yesterday
     "energy_lag_168h",  # Same hour last week
+    # Production indicators
+    "is_production_hour",  # Daytime with solar radiation
+    "is_low_energy_period",  # Edge case detection
+    # Non-linear features
+    "shortwave_radiation_sq",  # Quadratic radiation effect
+    "temperature_sq",  # Quadratic temperature effect
+    "cloud_temp_interaction",  # Cloud-temperature interaction
 ]
 TARGET_COLUMN = "energy_mwh"  # Regression target
 
@@ -209,8 +217,31 @@ def load_silver_features_regression(spark: SparkSession, limit_rows: int = DEFAU
         # Data completeness impact
         .withColumn("completeness_radiation_interaction",
                    F.col("completeness_pct") * F.col("shortwave_radiation") / 10000.0)
+        # NEW: Production hour indicator (daytime = high solar radiation)
+        .withColumn("is_production_hour",
+                   F.when((F.col("hour_of_day") >= 6) & (F.col("hour_of_day") <= 18) & 
+                          (F.col("shortwave_radiation") > 50), 1.0)
+                   .otherwise(0.0))
+        # NEW: Low energy indicator (helps model learn edge cases)
+        .withColumn("is_low_energy_period",
+                   F.when(F.col("energy_lag_1h") < 5.0, 1.0).otherwise(0.0))
+        # NEW: Squared features for non-linear patterns
+        .withColumn("shortwave_radiation_sq",
+                   F.col("shortwave_radiation") * F.col("shortwave_radiation") / 100000.0)
+        .withColumn("temperature_sq",
+                   F.col("temperature_2m") * F.col("temperature_2m") / 100.0)
+        # NEW: Weather variability (cloud * temp interaction)
+        .withColumn("cloud_temp_interaction",
+                   F.col("cloud_cover") * F.col("temperature_2m") / 100.0)
     )
 
+    # FILTER: Remove very low energy hours to reduce percentage error inflation
+    # Keep only PRODUCTIVE hours: energy >= 5.0 MWh AND solar radiation > 0
+    filtered = filtered.where(
+        (F.col("energy_mwh") >= 5.0) & 
+        (F.col("shortwave_radiation") > 0)
+    )
+    
     subset = filtered.orderBy(F.col("date_hour").desc())
     if limit_rows and limit_rows > 0:  # Only limit if explicitly set and > 0
         subset = subset.limit(limit_rows)
@@ -223,6 +254,8 @@ def load_silver_features_regression(spark: SparkSession, limit_rows: int = DEFAU
     if row_count < 100:
         subset.unpersist()
         raise RuntimeError("Not enough Silver rows with weather data to train regression model.")
+    
+    print(f"[FILTER] Applied production-hour filter: energy >= 5.0 MWh AND shortwave_radiation > 0 (sunlight hours only)")
 
     print(f"[TRAIN] Loaded {row_count} samples for regression training")
     
@@ -277,7 +310,7 @@ def build_gold_fact(predictions: DataFrame, model_version_key: int) -> DataFrame
         .withColumn("model_version_key", F.lit(int(model_version_key)))
         .withColumn("weather_condition_key", F.lit(None).cast("int"))
         .withColumn("actual_energy_mwh", F.col("energy_mwh"))
-        .withColumn("predicted_energy_mwh", F.col("prediction"))  # RandomForest prediction
+        .withColumn("predicted_energy_mwh", F.col("prediction"))  # GBT prediction
         .withColumn("forecast_error_mwh", F.col("actual_energy_mwh") - F.col("predicted_energy_mwh"))
         .withColumn(
             "absolute_percentage_error",
@@ -324,6 +357,174 @@ def write_gold_predictions(gold_df: DataFrame, table_name: str, mode: str = "app
     return row_count
 
 
+def save_feature_importance_to_gold(spark: SparkSession, model: Pipeline, model_version_key: int) -> None:
+    """Save feature importance to dim_feature_importance table in Gold layer.
+    
+    Uses standardized schema from dim_feature_importance.py
+    
+    Args:
+        spark: SparkSession
+        model: Fitted pipeline (includes GBTRegressor)
+        model_version_key: Model version key from dim_model_version table
+    """
+    
+    # Extract Random Forest model from pipeline
+    rf_model = model.stages[-1]
+    
+    # Get feature importances
+    importances = rf_model.featureImportances.toArray()
+    
+    # Category mapping
+    category_map = {
+        # Energy quality features
+        "intervals_count": "Energy Quality",
+        "completeness_pct": "Energy Quality",
+        
+        # Temporal features
+        "hour_of_day": "Temporal",
+        "day_of_week": "Temporal",
+        "month": "Temporal",
+        "is_weekend": "Temporal",
+        "hour_sin": "Temporal",
+        "hour_cos": "Temporal",
+        "month_sin": "Temporal",
+        "month_cos": "Temporal",
+        
+        # Weather features
+        "temperature_2m": "Weather",
+        "cloud_cover": "Weather",
+        "shortwave_radiation": "Weather",
+        "direct_radiation": "Weather",
+        
+        # Interaction features
+        "radiation_temp_interaction": "Interaction",
+        "cloud_radiation_ratio": "Interaction",
+        "hour_radiation_interaction": "Interaction",
+        "completeness_radiation_interaction": "Interaction",
+        
+        # LAG features
+        "energy_lag_1h": "LAG Features",
+        "energy_lag_24h": "LAG Features",
+        "energy_lag_168h": "LAG Features",
+        
+        # Production indicators
+        "is_production_hour": "Production Indicators",
+        "is_low_energy_period": "Production Indicators",
+    }
+    
+    # Description mapping
+    description_map = {
+        "intervals_count": "Number of 30-min intervals with valid data",
+        "completeness_pct": "Data completeness percentage",
+        "hour_of_day": "Hour of the day (0-23)",
+        "day_of_week": "Day of week (1=Sunday, 7=Saturday)",
+        "month": "Month of year (1-12)",
+        "is_weekend": "Weekend indicator (1=weekend, 0=weekday)",
+        "hour_sin": "Hour sine encoding (cyclical)",
+        "hour_cos": "Hour cosine encoding (cyclical)",
+        "month_sin": "Month sine encoding (cyclical)",
+        "month_cos": "Month cosine encoding (cyclical)",
+        "temperature_2m": "Temperature at 2m height (°C)",
+        "cloud_cover": "Cloud cover percentage (%)",
+        "shortwave_radiation": "Shortwave radiation (W/m²)",
+        "direct_radiation": "Direct radiation (W/m²)",
+        "radiation_temp_interaction": "Solar radiation × Temperature interaction",
+        "cloud_radiation_ratio": "Cloud-adjusted radiation ratio",
+        "hour_radiation_interaction": "Hour × Radiation interaction",
+        "completeness_radiation_interaction": "Completeness × Radiation interaction",
+        "energy_lag_1h": "Energy from previous hour (lag 1h)",
+        "energy_lag_24h": "Energy from same hour yesterday (lag 24h)",
+        "energy_lag_168h": "Energy from same hour last week (lag 168h)",
+        "is_production_hour": "Production hour indicator (daytime with solar radiation)",
+        "is_low_energy_period": "Low energy period indicator (edge case detection)",
+    }
+    
+    # Create list of (feature_name, importance_value, category, description)
+    feature_data = []
+    total_importance = float(sum(importances))
+    
+    for idx, feature_name in enumerate(FEATURE_COLUMNS):
+        importance_val = float(importances[idx])
+        importance_pct = float((importance_val / total_importance * 100) if total_importance > 0 else 0.0)
+        category = category_map.get(feature_name, "Unknown")
+        description = description_map.get(feature_name, "No description available")
+        
+        feature_data.append((
+            feature_name,
+            category,
+            importance_val,
+            importance_pct,
+            description
+        ))
+    
+    # Sort by importance (descending)
+    feature_data.sort(key=lambda x: x[2], reverse=True)
+    
+    # Create rows with rankings and cumulative importance
+    rows = []
+    category_ranks = {}  # Track rank within each category
+    cumulative = 0.0
+    
+    for overall_rank, (feature_name, category, importance_val, importance_pct, description) in enumerate(feature_data, start=1):
+        # Track category rank
+        if category not in category_ranks:
+            category_ranks[category] = 0
+        category_ranks[category] += 1
+        rank_in_category = category_ranks[category]
+        
+        # Calculate cumulative importance
+        cumulative += importance_pct
+        
+        # Determine flags
+        is_top_15 = overall_rank <= 15
+        is_lag_feature = category == "LAG Features"
+        
+        # Create row - ensure all numeric types are Python native types
+        rows.append((
+            int(overall_rank),  # feature_importance_key (surrogate)
+            str(feature_name),
+            str(category),
+            float(importance_val),
+            float(importance_pct),
+            float(cumulative),  # cumulative_importance
+            int(overall_rank),
+            int(rank_in_category),
+            bool(is_top_15),
+            bool(is_lag_feature),  # is_lag_feature flag
+            int(model_version_key),
+            datetime.now()  # created_at
+        ))
+    
+    # Use standardized schema from dim_feature_importance.py
+    schema = get_dim_feature_importance_schema()
+    
+    # Create DataFrame
+    importance_df = spark.createDataFrame(rows, schema)
+    
+    # Delete existing records for this model_version_key to avoid duplicates
+    try:
+        spark.sql(f"""
+            DELETE FROM lh.gold.dim_feature_importance
+            WHERE model_version_key = {model_version_key}
+        """)
+        print(f"  Deleted old feature importance records for model_version_key={model_version_key}")
+    except Exception as e:
+        print(f"  No existing records to delete: {e}")
+    
+    # Write to Gold layer (append mode with standard schema)
+    write_iceberg_table(
+        importance_df,
+        "lh.gold.dim_feature_importance",
+        mode="append",
+        partition_cols=["model_version_key"]  # Partition by model version
+    )
+    
+    print(f"\n✓ Saved {len(rows)} feature importances to lh.gold.dim_feature_importance")
+    print(f"  Top 5 features:")
+    for i, (fname, cat, val, pct, desc) in enumerate(feature_data[:5], start=1):
+        print(f"    {i}. {fname} ({cat}): {pct:.2f}%")
+
+
 def train_regression_model(
     spark: SparkSession,
     limit_rows: int = DEFAULT_SAMPLE_LIMIT,
@@ -368,9 +569,9 @@ def train_regression_model(
             "temperature_2m", "cloud_cover", "shortwave_radiation", "direct_radiation",
             "intervals_count", "completeness_pct"
         ]
-        # Increased noise for better regularization: 20% magnitude, 60% of rows
-        train_df = add_aggressive_noise(train_df, noisy_columns, noise_magnitude=0.20, noise_ratio=0.6)
-        print(f"[TRAIN] Applied noise injection: magnitude=20%, ratio=60%")
+        # Increased noise for better regularization: 15% magnitude, 70% of rows
+        train_df = add_aggressive_noise(train_df, noisy_columns, noise_magnitude=0.15, noise_ratio=0.7)
+        print(f"[TRAIN] Applied noise injection: magnitude=15%, ratio=70%")
     
     # Feature assembly
     assembler = VectorAssembler(
@@ -379,33 +580,34 @@ def train_regression_model(
         handleInvalid="skip"
     )
     
-    # RandomForest Regressor - Optimized to reduce overfitting
-    regressor = RandomForestRegressor(
+    # GBT Regressor - Sequential boosting for better accuracy
+    regressor = GBTRegressor(
         featuresCol="features",
         labelCol=TARGET_COLUMN,
         predictionCol="prediction",
         
-        # Ensemble parameters - balanced for generalization
-        numTrees=25,  # Reduced from 30 to decrease model complexity
-        maxDepth=10,  # Reduced from 12 to prevent overfitting on training data
-        minInstancesPerNode=80,  # Increased from 50 for stronger regularization
-        maxBins=64,  # Keep for granularity
-        subsamplingRate=0.7,  # Reduced from 0.8 for more regularization
-        featureSubsetStrategy="sqrt",  # sqrt features per split (more regularization than "auto")
-        minInfoGain=0.01,  # Minimum information gain for split (prevent useless splits)
+        # Boosting parameters - optimized for best balance
+        maxIter=120,  # Slight increase for better convergence
+        maxDepth=6,  # Optimal depth for boosting
+        stepSize=0.1,  # Conservative learning rate
+        minInstancesPerNode=50,
+        maxBins=128,
+        subsamplingRate=0.8,  # Row sampling per iteration
+        minInfoGain=0.01,
         seed=42
     )
     
     pipeline = Pipeline(stages=[assembler, regressor])
     
-    print(f"[TRAIN] Training RandomForestRegressor (anti-overfitting config)...")
-    print(f"  numTrees={regressor.getNumTrees()}")
+    print(f"[TRAIN] Training GBTRegressor (gradient boosting)...")
+    print(f"  maxIter={regressor.getMaxIter()}")
     print(f"  maxDepth={regressor.getMaxDepth()}")
-    print(f"  minInstancesPerNode={regressor.getMinInstancesPerNode()}")
+    print(f"  stepSize={regressor.getStepSize()}")
     print(f"  maxBins={regressor.getMaxBins()}")
     print(f"  subsamplingRate={regressor.getSubsamplingRate()}")
     print(f"  featureSubsetStrategy={regressor.getFeatureSubsetStrategy()}")
     print(f"  minInfoGain={regressor.getMinInfoGain()}")
+    print(f"  Total features={len(FEATURE_COLUMNS)} (includes 3 non-linear features)")
     
     # Train
     model = pipeline.fit(train_df)
@@ -503,15 +705,16 @@ def main():
     with mlflow.start_run(run_name=f"regression_training_{datetime.now().strftime('%Y%m%d_%H%M%S')}"):
         # Log parameters
         mlflow.log_param("sample_limit", args.limit if args.limit else "all")
-        mlflow.log_param("model_type", "RandomForestRegressor")
+        mlflow.log_param("model_type", "GBTRegressor")
         mlflow.log_param("noise_injection", not args.no_noise)
-        mlflow.log_param("num_trees", 25)  # Updated
-        mlflow.log_param("max_depth", 10)  # Updated
-        mlflow.log_param("min_instances_per_node", 80)  # Updated
-        mlflow.log_param("max_bins", 64)
-        mlflow.log_param("subsampling_rate", 0.7)  # Updated
-        mlflow.log_param("feature_subset_strategy", "sqrt")  # Added
-        mlflow.log_param("min_info_gain", 0.01)  # Added
+        mlflow.log_param("max_iter", 120)
+        mlflow.log_param("max_depth", 6)
+        mlflow.log_param("step_size", 0.1)
+        mlflow.log_param("min_instances_per_node", 50)
+        mlflow.log_param("max_bins", 128)
+        mlflow.log_param("subsampling_rate", 0.8)
+        mlflow.log_param("min_info_gain", 0.01)
+        mlflow.log_param("low_energy_filter", "energy >= 5.0 MWh AND shortwave_radiation > 0 (sunlight only)")
         mlflow.log_param("gold_output_table", GOLD_OUTPUT_TABLE)
         mlflow.log_param("gold_write_mode", GOLD_WRITE_MODE)
         
@@ -530,6 +733,9 @@ def main():
         model_version_key = resolve_model_version_key(spark)
         gold_df = build_gold_fact(test_predictions, model_version_key)
         gold_rows = write_gold_predictions(gold_df, GOLD_OUTPUT_TABLE, mode=GOLD_WRITE_MODE)
+        
+        # Save feature importance to Gold layer
+        save_feature_importance_to_gold(spark, model, model_version_key)
         
         # Log Gold metrics
         mlflow.log_metric("gold_row_count", float(gold_rows))
@@ -550,8 +756,8 @@ def main():
         ).orderBy("forecast_timestamp", ascending=False).show(10, truncate=False)
         
     spark.stop()
-    print(f"\n✓ Regression training complete!")
-    print(f"✓ Saved {gold_rows} predictions to Gold layer: {GOLD_OUTPUT_TABLE}")
+    print(f"\n Regression training complete!")
+    print(f"Saved {gold_rows} predictions to Gold layer: {GOLD_OUTPUT_TABLE}")
 
 
 if __name__ == "__main__":
