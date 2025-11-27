@@ -2,10 +2,13 @@
 
 set -e
 
-docker cp /home/pvlakehouse/work/dlh-pv/src/pv_lakehouse/etl/gold/dim_feature_importance.py \
+# Get the directory where this script is located
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+docker cp "${SCRIPT_DIR}/src/pv_lakehouse/etl/gold/dim_feature_importance.py" \
   spark-master:/opt/spark/work-dir/dim_feature_importance.py
 
-docker cp /home/pvlakehouse/work/dlh-pv/src/pv_lakehouse/etl/utils/spark_utils.py \
+docker cp "${SCRIPT_DIR}/src/pv_lakehouse/etl/utils/spark_utils.py" \
   spark-master:/opt/spark/work-dir/spark_utils.py
 
 docker exec -it spark-master spark-submit \

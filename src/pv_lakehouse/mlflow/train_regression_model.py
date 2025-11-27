@@ -4,13 +4,20 @@ This is the REGRESSION component of our Hybrid ML approach:
 - Classification Model (train_forecast_model.py): Anomaly detection & data quality
 - Regression Model (THIS FILE): True forecasting - predict actual energy values
 
-Trains a Decision Tree Regressor to directly predict energy_mwh for future hours.
+Trains a RandomForest Regressor with PARALLEL training to predict energy_mwh.
+Optimized for high performance with distributed computing support.
+
+Performance optimizations:
+- Parallel tree training across all available cores
+- Optimized data partitioning for distributed processing
+- Efficient caching and memory management
+- Configurable parallelism via environment variables
 """
 
 from __future__ import annotations
 
 import argparse
-import math
+import multiprocessing
 import os
 from datetime import datetime
 from typing import Optional
@@ -18,128 +25,105 @@ from typing import Optional
 import mlflow
 import mlflow.spark
 from pyspark.ml import Pipeline
-from pyspark.ml.regression import DecisionTreeRegressor, GBTRegressor
+from pyspark.ml.regression import RandomForestRegressor
 from pyspark.ml.evaluation import RegressionEvaluator
 from pyspark.ml.feature import VectorAssembler
 from pyspark.sql import DataFrame, SparkSession
 from pyspark.sql import functions as F
-from pyspark.sql.types import DoubleType
+from pyspark.sql.window import Window
 from pyspark.sql.utils import AnalysisException
 
-from pyspark.sql.window import Window
 from pv_lakehouse.etl.utils.spark_utils import create_spark_session, write_iceberg_table
-from pv_lakehouse.etl.gold.dim_feature_importance import get_dim_feature_importance_schema
 
-DEFAULT_SAMPLE_LIMIT = 50_000  # Balance between performance and memory
+# ============================================================================
+# CONFIGURATION - Can be overridden via environment variables
+# ============================================================================
+DEFAULT_SAMPLE_LIMIT = 0  # 0 = use all data
 SILVER_HOURLY_ENERGY_TABLE = "lh.silver.clean_hourly_energy"
 SILVER_HOURLY_WEATHER_TABLE = "lh.silver.clean_hourly_weather"
 DIM_FACILITY_TABLE = "lh.gold.dim_facility"
 DIM_MODEL_VERSION_TABLE = "lh.gold.dim_model_version"
 GOLD_OUTPUT_TABLE = "lh.gold.fact_solar_forecast_regression"
-GOLD_WRITE_MODE = "overwrite"  # Overwrite to replace old predictions with fresh training results
+GOLD_WRITE_MODE = "overwrite"
 
-# Enhanced feature set with weather and temporal patterns + LAG features
+# Trade-off: fewer trees + shallower depth = fits in memory, still good accuracy
+NUM_TREES = int(os.getenv("RF_NUM_TREES", "50"))       
+MAX_DEPTH = int(os.getenv("RF_MAX_DEPTH", "10"))       
+MIN_INSTANCES_PER_NODE = int(os.getenv("RF_MIN_INSTANCES", "50"))  
+MAX_BINS = int(os.getenv("RF_MAX_BINS", "64"))         
+SUBSAMPLING_RATE = float(os.getenv("RF_SUBSAMPLING_RATE", "0.7"))  
+
+# Feature set
 FEATURE_COLUMNS = [
     # Energy data quality features
-    "intervals_count", 
-    "completeness_pct",
-    # Temporal features (expanded)
-    "hour_of_day",
-    "day_of_week",
-    "month",
-    "is_weekend",
-    "hour_sin",  # Cyclical encoding
-    "hour_cos",
-    "month_sin",
-    "month_cos",
-    # Weather features (CRITICAL for regression)
-    "temperature_2m",
-    "cloud_cover",
-    "shortwave_radiation",
-    "direct_radiation",
-    # Advanced interaction features
-    "radiation_temp_interaction",  # solar * temp
-    "cloud_radiation_ratio",  # impact of clouds
-    "hour_radiation_interaction",  # time of day effect
-    "completeness_radiation_interaction",
-    # LAG FEATURES - MOST IMPORTANT FOR TIME SERIES
-    "energy_lag_1h",  # Previous hour
-    "energy_lag_24h",  # Same hour yesterday
-    "energy_lag_168h",  # Same hour last week
-    # Production indicators
-    "is_production_hour",  # Daytime with solar radiation
-    "is_low_energy_period",  # Edge case detection
-    # Non-linear features
-    "shortwave_radiation_sq",  # Quadratic radiation effect
-    "temperature_sq",  # Quadratic temperature effect
-    "cloud_temp_interaction",  # Cloud-temperature interaction
+    "intervals_count", "completeness_pct",
+    # Temporal features (cyclical encoded)
+    "hour_of_day", "day_of_week", "month", "is_weekend",
+    "hour_sin", "hour_cos", "month_sin", "month_cos",
+    # Weather features
+    "temperature_2m", "cloud_cover", "shortwave_radiation", "direct_radiation",
+    # Interaction features
+    "radiation_temp_interaction", "cloud_radiation_ratio",
+    "hour_radiation_interaction", "completeness_radiation_interaction",
+    # LAG features (time series)
+    "energy_lag_1h", "energy_lag_24h", "energy_lag_168h",
 ]
-TARGET_COLUMN = "energy_mwh"  # Regression target
+TARGET_COLUMN = "energy_mwh"
 
 
-def add_aggressive_noise(df: DataFrame, noisy_columns: list[str], 
-                        noise_magnitude: float = 0.0,
-                        noise_ratio: float = 0.0) -> DataFrame:
-    """Apply moderate noise injection for regularization.
+def get_optimal_parallelism() -> int:
+    """Calculate optimal parallelism based on available resources."""
+    cores = multiprocessing.cpu_count()
+    return max(cores * 2, 16)
+
+
+def add_noise_for_regularization(
+    df: DataFrame, 
+    columns: list[str], 
+    magnitude: float = 0.15,
+    ratio: float = 0.5
+) -> DataFrame:
+    """Apply noise injection for regularization (training data only)."""
+    if magnitude <= 0 or ratio <= 0:
+        return df
     
-    Args:
-        df: Input DataFrame
-        noisy_columns: List of numeric columns to add noise to
-        noise_magnitude: Maximum noise magnitude (DISABLED - 0%)
-        noise_ratio: Fraction of rows to apply noise (DISABLED - 0%)
-    
-    Returns:
-        DataFrame with noise applied to specified columns
-    """
-    import random
-    random.seed(42)
-    
-    for col_name in noisy_columns:
+    for col_name in columns:
         if col_name not in df.columns:
             continue
-            
-        # Generate random noise: uniform(-0.6, 0.6)
-        noise = (F.rand(seed=42) * 2 - 1) * noise_magnitude
-        
-        # Apply to 95% of rows randomly
-        should_apply_noise = F.rand(seed=43) < noise_ratio
-        
-        # Multiplicative noise: x_new = x * (1 + noise)
-        noisy_value = F.col(col_name) * (1 + noise)
-        
-        # Conditional application
+        noise = (F.rand(seed=42) * 2 - 1) * magnitude
+        apply_mask = F.rand(seed=43) < ratio
         df = df.withColumn(
             col_name,
-            F.when(should_apply_noise, noisy_value).otherwise(F.col(col_name))
+            F.when(apply_mask, F.col(col_name) * (1 + noise)).otherwise(F.col(col_name))
         )
     
-    print(f"[NOISE] Applied ±{noise_magnitude*100:.0f}% noise to {len(noisy_columns)} features on {noise_ratio*100:.0f}% of rows")
+    print(f"[NOISE] Applied ±{magnitude*100:.0f}% noise to {len(columns)} features on {ratio*100:.0f}% of rows")
     return df
 
 
-def load_silver_features_regression(spark: SparkSession, limit_rows: int = DEFAULT_SAMPLE_LIMIT) -> DataFrame:
-    """Load Silver data for REGRESSION task - predict energy_mwh directly."""
+def load_and_prepare_data(spark: SparkSession, limit_rows: int = 0) -> DataFrame:
+    """Load and prepare data with optimized partitioning for parallel processing."""
+    
+    parallelism = get_optimal_parallelism()
+    print(f"[LOAD] Using parallelism={parallelism} based on {multiprocessing.cpu_count()} cores")
+    
+    # Load energy data
     try:
         silver_energy = spark.table(SILVER_HOURLY_ENERGY_TABLE)
     except AnalysisException as exc:
-        raise RuntimeError(
-            f"Silver table '{SILVER_HOURLY_ENERGY_TABLE}' unavailable. Run Silver loaders first."
-        ) from exc
-
-    # Load weather data (REQUIRED for regression)
+        raise RuntimeError(f"Silver table '{SILVER_HOURLY_ENERGY_TABLE}' unavailable.") from exc
+    
+    # Load weather data
     try:
         silver_weather = spark.table(SILVER_HOURLY_WEATHER_TABLE)
-        print(f"[TRAIN] Weather data loaded - essential for regression forecasting")
     except AnalysisException as exc:
-        raise RuntimeError(
-            "Weather data REQUIRED for regression forecasting. Run weather loader first."
-        ) from exc
-
-    # Select and prepare energy features
-    filtered = (
-        silver_energy.select(
-            "facility_code",
-            "date_hour",
+        raise RuntimeError("Weather data REQUIRED for regression forecasting.") from exc
+    
+    # Prepare energy features - single chain for efficiency
+    energy_df = (
+        silver_energy
+        .select(
+            "facility_code", "date_hour",
             F.col("energy_mwh").cast("double").alias("energy_mwh"),
             F.col("intervals_count").cast("double").alias("intervals_count"),
             F.col("completeness_pct").cast("double").alias("completeness_pct"),
@@ -147,25 +131,21 @@ def load_silver_features_regression(spark: SparkSession, limit_rows: int = DEFAU
         .where(F.col("energy_mwh").isNotNull())
         .where(F.col("intervals_count").isNotNull())
         .where(F.col("completeness_pct").isNotNull())
-    )
-
-    # Add temporal features with cyclical encoding
-    filtered = (
-        filtered
+        # Add temporal features
         .withColumn("hour_of_day", F.hour("date_hour").cast("double"))
         .withColumn("day_of_week", F.dayofweek("date_hour").cast("double"))
         .withColumn("month", F.month("date_hour").cast("double"))
         .withColumn("is_weekend", F.when(F.dayofweek("date_hour").isin([1, 7]), 1.0).otherwise(0.0))
-        # Cyclical encoding for time features
         .withColumn("hour_sin", F.sin(2 * 3.14159 * F.col("hour_of_day") / 24.0))
         .withColumn("hour_cos", F.cos(2 * 3.14159 * F.col("hour_of_day") / 24.0))
         .withColumn("month_sin", F.sin(2 * 3.14159 * F.col("month") / 12.0))
         .withColumn("month_cos", F.cos(2 * 3.14159 * F.col("month") / 12.0))
     )
-
-    # Join with weather
-    weather_features = (
-        silver_weather.select(
+    
+    # Prepare weather features
+    weather_df = (
+        silver_weather
+        .select(
             F.col("facility_code").alias("w_facility_code"),
             F.col("date_hour").alias("w_date_hour"),
             F.col("temperature_2m").cast("double").alias("temperature_2m"),
@@ -174,106 +154,76 @@ def load_silver_features_regression(spark: SparkSession, limit_rows: int = DEFAU
             F.col("direct_radiation").cast("double").alias("direct_radiation"),
         )
         .where(F.col("temperature_2m").isNotNull())
-        .where(F.col("shortwave_radiation").isNotNull())  # REQUIRED for regression
+        .where(F.col("shortwave_radiation").isNotNull())
     )
     
-    filtered = filtered.join(
-        weather_features,
-        (filtered.facility_code == weather_features.w_facility_code) &
-        (filtered.date_hour == weather_features.w_date_hour),
-        how="inner"  # INNER join - we NEED weather for forecasting
-    ).drop("w_facility_code", "w_date_hour")
+    # Join energy and weather
+    joined_df = (
+        energy_df
+        .join(
+            weather_df,
+            (energy_df.facility_code == weather_df.w_facility_code) &
+            (energy_df.date_hour == weather_df.w_date_hour),
+            how="inner"
+        )
+        .drop("w_facility_code", "w_date_hour")
+    )
     
-    # LAG FEATURES - CRITICAL FOR TIME SERIES (add before sampling)
-    from pyspark.sql.window import Window
-    
-    window_by_facility = Window.partitionBy("facility_code").orderBy("date_hour")
-    filtered = (
-        filtered
-        # Lag 1 hour: energy from previous hour
-        .withColumn("energy_lag_1h", F.lag("energy_mwh", 1).over(window_by_facility))
-        # Lag 24 hours: energy from same hour yesterday
-        .withColumn("energy_lag_24h", F.lag("energy_mwh", 24).over(window_by_facility))
-        # Lag 168 hours: energy from same hour last week
-        .withColumn("energy_lag_168h", F.lag("energy_mwh", 168).over(window_by_facility))
-        # Fill nulls with 0 (for first records without history)
+    # Add LAG features using window functions
+    window_spec = Window.partitionBy("facility_code").orderBy("date_hour")
+    joined_df = (
+        joined_df
+        .withColumn("energy_lag_1h", F.lag("energy_mwh", 1).over(window_spec))
+        .withColumn("energy_lag_24h", F.lag("energy_mwh", 24).over(window_spec))
+        .withColumn("energy_lag_168h", F.lag("energy_mwh", 168).over(window_spec))
         .fillna(0.0, subset=["energy_lag_1h", "energy_lag_24h", "energy_lag_168h"])
     )
     
-    # Advanced interaction features (CRITICAL for regression performance)
-    filtered = (
-        filtered
-        # Solar radiation * temperature interaction
+    # Add interaction features
+    result_df = (
+        joined_df
         .withColumn("radiation_temp_interaction", 
                    F.col("shortwave_radiation") * F.col("temperature_2m") / 1000.0)
-        # Cloud cover impact on radiation
         .withColumn("cloud_radiation_ratio",
                    F.when(F.col("shortwave_radiation") > 0,
                          (100 - F.col("cloud_cover")) * F.col("shortwave_radiation") / 100.0)
                    .otherwise(0.0))
-        # Hour of day effect on radiation
         .withColumn("hour_radiation_interaction",
                    F.col("hour_of_day") * F.col("shortwave_radiation") / 1000.0)
-        # Data completeness impact
         .withColumn("completeness_radiation_interaction",
                    F.col("completeness_pct") * F.col("shortwave_radiation") / 10000.0)
-        # NEW: Production hour indicator (daytime = high solar radiation)
-        .withColumn("is_production_hour",
-                   F.when((F.col("hour_of_day") >= 6) & (F.col("hour_of_day") <= 18) & 
-                          (F.col("shortwave_radiation") > 50), 1.0)
-                   .otherwise(0.0))
-        # NEW: Low energy indicator (helps model learn edge cases)
-        .withColumn("is_low_energy_period",
-                   F.when(F.col("energy_lag_1h") < 5.0, 1.0).otherwise(0.0))
-        # NEW: Squared features for non-linear patterns
-        .withColumn("shortwave_radiation_sq",
-                   F.col("shortwave_radiation") * F.col("shortwave_radiation") / 100000.0)
-        .withColumn("temperature_sq",
-                   F.col("temperature_2m") * F.col("temperature_2m") / 100.0)
-        # NEW: Weather variability (cloud * temp interaction)
-        .withColumn("cloud_temp_interaction",
-                   F.col("cloud_cover") * F.col("temperature_2m") / 100.0)
-    )
-
-    # FILTER: Remove very low energy hours to reduce percentage error inflation
-    # Keep only PRODUCTIVE hours: energy >= 5.0 MWh AND solar radiation > 0
-    filtered = filtered.where(
-        (F.col("energy_mwh") >= 5.0) & 
-        (F.col("shortwave_radiation") > 0)
     )
     
-    subset = filtered.orderBy(F.col("date_hour").desc())
-    if limit_rows and limit_rows > 0:  # Only limit if explicitly set and > 0
-        subset = subset.limit(limit_rows)
-        print(f"[TRAIN] Limiting to {limit_rows} rows for training")
+    # Apply limit if specified
+    if limit_rows and limit_rows > 0:
+        result_df = result_df.orderBy(F.col("date_hour").desc()).limit(limit_rows)
+        print(f"[LOAD] Limiting to {limit_rows} rows")
     else:
-        print(f"[TRAIN] Using ALL available data (no limit)")
-
-    subset = subset.cache()
-    row_count = subset.count()
+        print(f"[LOAD] Using ALL available data")
+    
+    # Repartition for optimal parallel processing
+    result_df = result_df.repartition(parallelism)
+    
+    # Cache and materialize
+    result_df = result_df.cache()
+    row_count = result_df.count()
+    
     if row_count < 100:
-        subset.unpersist()
-        raise RuntimeError("Not enough Silver rows with weather data to train regression model.")
+        result_df.unpersist()
+        raise RuntimeError(f"Not enough data: {row_count} rows (minimum 100 required)")
     
-    print(f"[FILTER] Applied production-hour filter: energy >= 5.0 MWh AND shortwave_radiation > 0 (sunlight hours only)")
-
-    print(f"[TRAIN] Loaded {row_count} samples for regression training")
-    
-    # Statistics
-    stats = subset.select(
+    # Print statistics
+    stats = result_df.agg(
         F.mean("energy_mwh").alias("mean"),
         F.stddev("energy_mwh").alias("std"),
         F.min("energy_mwh").alias("min"),
         F.max("energy_mwh").alias("max"),
     ).collect()[0]
     
-    print(f"[TRAIN] Energy statistics:")
-    print(f"  Mean: {stats['mean']:.2f} MWh")
-    print(f"  Std:  {stats['std']:.2f} MWh")
-    print(f"  Min:  {stats['min']:.2f} MWh")
-    print(f"  Max:  {stats['max']:.2f} MWh")
-
-    return subset
+    print(f"[LOAD] Loaded {row_count:,} samples")
+    print(f"[LOAD] Energy stats: mean={stats['mean']:.2f}, std={stats['std']:.2f}, min={stats['min']:.2f}, max={stats['max']:.2f} MWh")
+    
+    return result_df
 
 
 def load_facility_dimension(spark: SparkSession) -> Optional[DataFrame]:
@@ -281,7 +231,7 @@ def load_facility_dimension(spark: SparkSession) -> Optional[DataFrame]:
     try:
         return spark.table(DIM_FACILITY_TABLE).select("facility_code", "facility_key")
     except AnalysisException:
-        print(f"[WARN] Dimension table '{DIM_FACILITY_TABLE}' not found, skipping facility join.")
+        print(f"[WARN] Dimension table '{DIM_FACILITY_TABLE}' not found")
         return None
 
 
@@ -291,13 +241,12 @@ def resolve_model_version_key(spark: SparkSession) -> int:
         dim_df = spark.table(DIM_MODEL_VERSION_TABLE)
         max_key = dim_df.agg(F.max("model_version_key")).collect()[0][0]
         return int(max_key) if max_key is not None else 1
-    except (AnalysisException, Exception):
-        print(f"[WARN] Cannot resolve model_version_key from '{DIM_MODEL_VERSION_TABLE}', using default=1")
+    except Exception:
         return 1
 
 
-def build_gold_fact(predictions: DataFrame, model_version_key: int) -> DataFrame:
-    """Transform regression predictions into Gold fact_solar_forecast schema."""
+def build_gold_fact(predictions: DataFrame, model_version_key: int, r2_score: float) -> DataFrame:
+    """Transform regression predictions into Gold fact schema."""
     
     facility_dim = load_facility_dimension(predictions.sparkSession)
     window = Window.orderBy("facility_code", "date_hour")
@@ -305,22 +254,19 @@ def build_gold_fact(predictions: DataFrame, model_version_key: int) -> DataFrame
     enriched = (
         predictions
         .withColumn("forecast_id", F.row_number().over(window))
-        .withColumn("date_key", F.date_format(F.col("date_hour"), "yyyyMMdd").cast("int"))
+        .withColumn("date_key", F.date_format("date_hour", "yyyyMMdd").cast("int"))
         .withColumn("time_key", (F.hour("date_hour") * 100 + F.minute("date_hour")).cast("int"))
         .withColumn("model_version_key", F.lit(int(model_version_key)))
         .withColumn("weather_condition_key", F.lit(None).cast("int"))
         .withColumn("actual_energy_mwh", F.col("energy_mwh"))
-        .withColumn("predicted_energy_mwh", F.col("prediction"))  # GBT prediction
+        .withColumn("predicted_energy_mwh", F.col("prediction"))
         .withColumn("forecast_error_mwh", F.col("actual_energy_mwh") - F.col("predicted_energy_mwh"))
-        .withColumn(
-            "absolute_percentage_error",
-            F.when(F.col("actual_energy_mwh") == 0, F.lit(0.0)).otherwise(
-                F.abs(F.col("forecast_error_mwh") / F.col("actual_energy_mwh")) * 100.0
-            ),
-        )
+        .withColumn("absolute_percentage_error",
+            F.when(F.col("actual_energy_mwh") == 0, 0.0)
+            .otherwise(F.abs(F.col("forecast_error_mwh") / F.col("actual_energy_mwh")) * 100.0))
         .withColumn("mae_metric", F.abs(F.col("forecast_error_mwh")))
         .withColumn("rmse_metric", F.abs(F.col("forecast_error_mwh")))
-        .withColumn("r2_score", F.lit(1.0))  # Will be updated with actual R2
+        .withColumn("r2_score", F.lit(r2_score))
         .withColumn("forecast_timestamp", F.col("date_hour"))
         .withColumn("created_at", F.current_timestamp())
     )
@@ -331,364 +277,144 @@ def build_gold_fact(predictions: DataFrame, model_version_key: int) -> DataFrame
         enriched = enriched.withColumn("facility_key", F.lit(None).cast("int"))
     
     return enriched.select(
-        "forecast_id",
-        "date_key",
-        "time_key",
-        "facility_key",
-        "weather_condition_key",
-        "model_version_key",
-        "actual_energy_mwh",
-        "predicted_energy_mwh",
-        "forecast_error_mwh",
-        "absolute_percentage_error",
-        "mae_metric",
-        "rmse_metric",
-        "r2_score",
-        "forecast_timestamp",
-        "created_at",
+        "forecast_id", "date_key", "time_key", "facility_key",
+        "weather_condition_key", "model_version_key",
+        "actual_energy_mwh", "predicted_energy_mwh", "forecast_error_mwh",
+        "absolute_percentage_error", "mae_metric", "rmse_metric", "r2_score",
+        "forecast_timestamp", "created_at",
     )
 
 
-def write_gold_predictions(gold_df: DataFrame, table_name: str, mode: str = "append") -> int:
-    """Write predictions to Gold layer Iceberg table."""
-    row_count = gold_df.count()
-    write_iceberg_table(gold_df, table_name, mode=mode)
-    print(f"\n✓ Saved {row_count} predictions to {table_name}")
-    return row_count
-
-
-def save_feature_importance_to_gold(spark: SparkSession, model: Pipeline, model_version_key: int) -> None:
-    """Save feature importance to dim_feature_importance table in Gold layer.
-    
-    Uses standardized schema from dim_feature_importance.py
-    
-    Args:
-        spark: SparkSession
-        model: Fitted pipeline (includes GBTRegressor)
-        model_version_key: Model version key from dim_model_version table
-    """
-    
-    # Extract Random Forest model from pipeline
-    rf_model = model.stages[-1]
-    
-    # Get feature importances
-    importances = rf_model.featureImportances.toArray()
-    
-    # Category mapping
-    category_map = {
-        # Energy quality features
-        "intervals_count": "Energy Quality",
-        "completeness_pct": "Energy Quality",
-        
-        # Temporal features
-        "hour_of_day": "Temporal",
-        "day_of_week": "Temporal",
-        "month": "Temporal",
-        "is_weekend": "Temporal",
-        "hour_sin": "Temporal",
-        "hour_cos": "Temporal",
-        "month_sin": "Temporal",
-        "month_cos": "Temporal",
-        
-        # Weather features
-        "temperature_2m": "Weather",
-        "cloud_cover": "Weather",
-        "shortwave_radiation": "Weather",
-        "direct_radiation": "Weather",
-        
-        # Interaction features
-        "radiation_temp_interaction": "Interaction",
-        "cloud_radiation_ratio": "Interaction",
-        "hour_radiation_interaction": "Interaction",
-        "completeness_radiation_interaction": "Interaction",
-        
-        # LAG features
-        "energy_lag_1h": "LAG Features",
-        "energy_lag_24h": "LAG Features",
-        "energy_lag_168h": "LAG Features",
-        
-        # Production indicators
-        "is_production_hour": "Production Indicators",
-        "is_low_energy_period": "Production Indicators",
-    }
-    
-    # Description mapping
-    description_map = {
-        "intervals_count": "Number of 30-min intervals with valid data",
-        "completeness_pct": "Data completeness percentage",
-        "hour_of_day": "Hour of the day (0-23)",
-        "day_of_week": "Day of week (1=Sunday, 7=Saturday)",
-        "month": "Month of year (1-12)",
-        "is_weekend": "Weekend indicator (1=weekend, 0=weekday)",
-        "hour_sin": "Hour sine encoding (cyclical)",
-        "hour_cos": "Hour cosine encoding (cyclical)",
-        "month_sin": "Month sine encoding (cyclical)",
-        "month_cos": "Month cosine encoding (cyclical)",
-        "temperature_2m": "Temperature at 2m height (°C)",
-        "cloud_cover": "Cloud cover percentage (%)",
-        "shortwave_radiation": "Shortwave radiation (W/m²)",
-        "direct_radiation": "Direct radiation (W/m²)",
-        "radiation_temp_interaction": "Solar radiation × Temperature interaction",
-        "cloud_radiation_ratio": "Cloud-adjusted radiation ratio",
-        "hour_radiation_interaction": "Hour × Radiation interaction",
-        "completeness_radiation_interaction": "Completeness × Radiation interaction",
-        "energy_lag_1h": "Energy from previous hour (lag 1h)",
-        "energy_lag_24h": "Energy from same hour yesterday (lag 24h)",
-        "energy_lag_168h": "Energy from same hour last week (lag 168h)",
-        "is_production_hour": "Production hour indicator (daytime with solar radiation)",
-        "is_low_energy_period": "Low energy period indicator (edge case detection)",
-    }
-    
-    # Create list of (feature_name, importance_value, category, description)
-    feature_data = []
-    total_importance = float(sum(importances))
-    
-    for idx, feature_name in enumerate(FEATURE_COLUMNS):
-        importance_val = float(importances[idx])
-        importance_pct = float((importance_val / total_importance * 100) if total_importance > 0 else 0.0)
-        category = category_map.get(feature_name, "Unknown")
-        description = description_map.get(feature_name, "No description available")
-        
-        feature_data.append((
-            feature_name,
-            category,
-            importance_val,
-            importance_pct,
-            description
-        ))
-    
-    # Sort by importance (descending)
-    feature_data.sort(key=lambda x: x[2], reverse=True)
-    
-    # Create rows with rankings and cumulative importance
-    rows = []
-    category_ranks = {}  # Track rank within each category
-    cumulative = 0.0
-    
-    for overall_rank, (feature_name, category, importance_val, importance_pct, description) in enumerate(feature_data, start=1):
-        # Track category rank
-        if category not in category_ranks:
-            category_ranks[category] = 0
-        category_ranks[category] += 1
-        rank_in_category = category_ranks[category]
-        
-        # Calculate cumulative importance
-        cumulative += importance_pct
-        
-        # Determine flags
-        is_top_15 = overall_rank <= 15
-        is_lag_feature = category == "LAG Features"
-        
-        # Create row - ensure all numeric types are Python native types
-        rows.append((
-            int(overall_rank),  # feature_importance_key (surrogate)
-            str(feature_name),
-            str(category),
-            float(importance_val),
-            float(importance_pct),
-            float(cumulative),  # cumulative_importance
-            int(overall_rank),
-            int(rank_in_category),
-            bool(is_top_15),
-            bool(is_lag_feature),  # is_lag_feature flag
-            int(model_version_key),
-            datetime.now()  # created_at
-        ))
-    
-    # Use standardized schema from dim_feature_importance.py
-    schema = get_dim_feature_importance_schema()
-    
-    # Create DataFrame
-    importance_df = spark.createDataFrame(rows, schema)
-    
-    # Delete existing records for this model_version_key to avoid duplicates
-    try:
-        spark.sql(f"""
-            DELETE FROM lh.gold.dim_feature_importance
-            WHERE model_version_key = {model_version_key}
-        """)
-        print(f"  Deleted old feature importance records for model_version_key={model_version_key}")
-    except Exception as e:
-        print(f"  No existing records to delete: {e}")
-    
-    # Write to Gold layer (append mode with standard schema)
-    write_iceberg_table(
-        importance_df,
-        "lh.gold.dim_feature_importance",
-        mode="append",
-        partition_cols=["model_version_key"]  # Partition by model version
-    )
-    
-    print(f"\n✓ Saved {len(rows)} feature importances to lh.gold.dim_feature_importance")
-    print(f"  Top 5 features:")
-    for i, (fname, cat, val, pct, desc) in enumerate(feature_data[:5], start=1):
-        print(f"    {i}. {fname} ({cat}): {pct:.2f}%")
-
-
-def train_regression_model(
+def train_model(
     spark: SparkSession,
-    limit_rows: int = DEFAULT_SAMPLE_LIMIT,
+    limit_rows: int = 0,
     apply_noise: bool = True,
+    num_trees: int = NUM_TREES,
+    max_depth: int = MAX_DEPTH,
 ) -> tuple[Pipeline, DataFrame, dict]:
-    """Train regression model to predict energy_mwh directly.
+    """Train RandomForest regression model with parallel optimization.
     
-    Returns:
-        (fitted_pipeline, test_predictions, metrics_dict)
+    Returns: (fitted_model, test_predictions, metrics_dict)
     """
     
     # Load data
-    dataset = load_silver_features_regression(spark, limit_rows)
+    dataset = load_and_prepare_data(spark, limit_rows)
     
-    # Temporal train-test split (95%-5%) with DETERMINISTIC split point
-    # Calculate exact 95th percentile using window function for consistency
-    from pyspark.sql.window import Window
-    
-    # Add row number to get exact split point
+    # Temporal train-test split (95%-5%)
     total_count = dataset.count()
     split_index = int(total_count * 0.95)
     
-    # Order by timestamp and add row number
     window_spec = Window.orderBy("date_hour")
     dataset_with_row = dataset.withColumn("row_num", F.row_number().over(window_spec))
+    split_row = dataset_with_row.where(F.col("row_num") == split_index).select("date_hour").first()
     
-    # Get exact split timestamp (95th percentile row)
-    split_timestamp = dataset_with_row.where(F.col("row_num") == split_index).select("date_hour").first()[0]
+    if split_row is None:
+        raise RuntimeError("Could not determine split point")
+    split_timestamp = split_row[0]
     
-    # Split data
-    train_df = dataset.where(F.col("date_hour") < split_timestamp)
-    test_df = dataset.where(F.col("date_hour") >= split_timestamp)
+    train_df = dataset.where(F.col("date_hour") < split_timestamp).cache()
+    test_df = dataset.where(F.col("date_hour") >= split_timestamp).cache()
     
     train_count = train_df.count()
     test_count = test_df.count()
-    print(f"[SPLIT] Training: {train_count} samples ({train_count/(train_count+test_count)*100:.1f}%)")
-    print(f"[SPLIT] Test: {test_count} samples ({test_count/(train_count+test_count)*100:.1f}%)")
+    print(f"[SPLIT] Training: {train_count:,} ({train_count/(train_count+test_count)*100:.1f}%)")
+    print(f"[SPLIT] Test: {test_count:,} ({test_count/(train_count+test_count)*100:.1f}%)")
     
-    # Apply MODERATE noise to TRAINING set ONLY (helps prevent overfitting)
+    # Apply noise for regularization
     if apply_noise:
-        noisy_columns = [
-            "temperature_2m", "cloud_cover", "shortwave_radiation", "direct_radiation",
-            "intervals_count", "completeness_pct"
-        ]
-        # Increased noise for better regularization: 15% magnitude, 70% of rows
-        train_df = add_aggressive_noise(train_df, noisy_columns, noise_magnitude=0.15, noise_ratio=0.7)
-        print(f"[TRAIN] Applied noise injection: magnitude=15%, ratio=70%")
+        noisy_cols = ["temperature_2m", "cloud_cover", "shortwave_radiation", 
+                      "direct_radiation", "intervals_count", "completeness_pct"]
+        train_df = add_noise_for_regularization(train_df, noisy_cols, magnitude=0.15, ratio=0.5)
     
-    # Feature assembly
+    # Build pipeline
     assembler = VectorAssembler(
         inputCols=FEATURE_COLUMNS,
         outputCol="features",
         handleInvalid="skip"
     )
     
-    # GBT Regressor - Sequential boosting for better accuracy
-    regressor = GBTRegressor(
+    # RandomForest with PARALLEL training
+    regressor = RandomForestRegressor(
         featuresCol="features",
         labelCol=TARGET_COLUMN,
         predictionCol="prediction",
-        
-        # Boosting parameters - optimized for best balance
-        maxIter=120,  # Slight increase for better convergence
-        maxDepth=6,  # Optimal depth for boosting
-        stepSize=0.1,  # Conservative learning rate
-        minInstancesPerNode=50,
-        maxBins=128,
-        subsamplingRate=0.8,  # Row sampling per iteration
-        minInfoGain=0.01,
-        seed=42
+        numTrees=num_trees,
+        maxDepth=max_depth,
+        minInstancesPerNode=MIN_INSTANCES_PER_NODE,
+        maxBins=MAX_BINS,
+        subsamplingRate=SUBSAMPLING_RATE,
+        featureSubsetStrategy="sqrt",
+        minInfoGain=0.001,
+        seed=42,
     )
     
     pipeline = Pipeline(stages=[assembler, regressor])
     
-    print(f"[TRAIN] Training GBTRegressor (gradient boosting)...")
-    print(f"  maxIter={regressor.getMaxIter()}")
-    print(f"  maxDepth={regressor.getMaxDepth()}")
-    print(f"  stepSize={regressor.getStepSize()}")
-    print(f"  maxBins={regressor.getMaxBins()}")
-    print(f"  subsamplingRate={regressor.getSubsamplingRate()}")
-    print(f"  featureSubsetStrategy={regressor.getFeatureSubsetStrategy()}")
-    print(f"  minInfoGain={regressor.getMinInfoGain()}")
-    print(f"  Total features={len(FEATURE_COLUMNS)} (includes 3 non-linear features)")
+    print(f"\n[TRAIN] RandomForest Configuration:")
+    print(f"  numTrees={num_trees} (parallel training)")
+    print(f"  maxDepth={max_depth}")
+    print(f"  minInstancesPerNode={MIN_INSTANCES_PER_NODE}")
+    print(f"  maxBins={MAX_BINS}")
+    print(f"  subsamplingRate={SUBSAMPLING_RATE}")
     
-    # Train
+    # Train model
+    print(f"\n[TRAIN] Training started...")
+    import time
+    start_time = time.time()
+    
     model = pipeline.fit(train_df)
     
-    # Predictions on test set
-    test_predictions = model.transform(test_df)
+    train_time = time.time() - start_time
+    print(f"[TRAIN] Training completed in {train_time:.1f} seconds")
     
     # Evaluate
-    evaluator_mse = RegressionEvaluator(
-        labelCol=TARGET_COLUMN,
-        predictionCol="prediction",
-        metricName="mse"
-    )
-    evaluator_mae = RegressionEvaluator(
-        labelCol=TARGET_COLUMN,
-        predictionCol="prediction",
-        metricName="mae"
-    )
-    evaluator_r2 = RegressionEvaluator(
-        labelCol=TARGET_COLUMN,
-        predictionCol="prediction",
-        metricName="r2"
-    )
-    evaluator_rmse = RegressionEvaluator(
-        labelCol=TARGET_COLUMN,
-        predictionCol="prediction",
-        metricName="rmse"
-    )
-    
-    mse = evaluator_mse.evaluate(test_predictions)
-    mae = evaluator_mae.evaluate(test_predictions)
-    r2 = evaluator_r2.evaluate(test_predictions)
-    rmse = evaluator_rmse.evaluate(test_predictions)
-    
-    # Training metrics
+    test_predictions = model.transform(test_df)
     train_predictions = model.transform(train_df)
-    train_mae = evaluator_mae.evaluate(train_predictions)
-    train_r2 = evaluator_r2.evaluate(train_predictions)
     
-    print(f"\n[RESULTS] Regression Model Performance:")
-    print(f"  Training MAE: {train_mae:.4f} MWh")
-    print(f"  Training R²:  {train_r2:.4f}")
-    print(f"  Test MAE:     {mae:.4f} MWh")
-    print(f"  Test RMSE:    {rmse:.4f} MWh")
-    print(f"  Test R²:      {r2:.4f}")
-    print(f"  Generalization gap (MAE): {abs(train_mae - mae):.4f} MWh")
+    evaluators = {
+        "mse": RegressionEvaluator(labelCol=TARGET_COLUMN, predictionCol="prediction", metricName="mse"),
+        "mae": RegressionEvaluator(labelCol=TARGET_COLUMN, predictionCol="prediction", metricName="mae"),
+        "rmse": RegressionEvaluator(labelCol=TARGET_COLUMN, predictionCol="prediction", metricName="rmse"),
+        "r2": RegressionEvaluator(labelCol=TARGET_COLUMN, predictionCol="prediction", metricName="r2"),
+    }
+    
+    test_mae = evaluators["mae"].evaluate(test_predictions)
+    test_rmse = evaluators["rmse"].evaluate(test_predictions)
+    test_r2 = evaluators["r2"].evaluate(test_predictions)
+    test_mse = evaluators["mse"].evaluate(test_predictions)
+    train_mae = evaluators["mae"].evaluate(train_predictions)
+    train_r2 = evaluators["r2"].evaluate(train_predictions)
+    
+    print(f"\n[RESULTS] Model Performance:")
+    print(f"  Train MAE: {train_mae:.4f} MWh | R²: {train_r2:.4f}")
+    print(f"  Test  MAE: {test_mae:.4f} MWh | R²: {test_r2:.4f} | RMSE: {test_rmse:.4f}")
+    print(f"  Generalization gap: {abs(train_mae - test_mae):.4f} MWh")
     
     metrics = {
-        "train_mae": train_mae,
-        "train_r2": train_r2,
-        "test_mse": mse,
-        "test_mae": mae,
-        "test_rmse": rmse,
-        "test_r2": r2,
-        "generalization_gap_mae": abs(train_mae - mae),
-        "train_count": train_count,
-        "test_count": test_count,
+        "train_mae": train_mae, "train_r2": train_r2,
+        "test_mse": test_mse, "test_mae": test_mae, 
+        "test_rmse": test_rmse, "test_r2": test_r2,
+        "generalization_gap": abs(train_mae - test_mae),
+        "train_count": train_count, "test_count": test_count,
+        "training_time_seconds": train_time,
     }
+    
+    # Cleanup
+    train_df.unpersist()
     
     return model, test_predictions, metrics
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Train solar energy REGRESSION forecasting model")
-    parser.add_argument(
-        "--limit",
-        type=int,
-        default=DEFAULT_SAMPLE_LIMIT,
-        help=f"Max rows to sample from Silver (default: {DEFAULT_SAMPLE_LIMIT})",
-    )
-    parser.add_argument(
-        "--model-version",
-        type=str,
-        default=None,
-        help="Custom model version ID (default: timestamp-based)",
-    )
-    parser.add_argument(
-        "--no-noise",
-        action="store_true",
-        help="Disable noise injection (not recommended for production)",
-    )
+    parser = argparse.ArgumentParser(description="Train solar energy regression model")
+    parser.add_argument("--limit", type=int, default=DEFAULT_SAMPLE_LIMIT,
+                        help="Max rows (0=all data)")
+    parser.add_argument("--no-noise", action="store_true",
+                        help="Disable noise injection")
+    parser.add_argument("--num-trees", type=int, default=NUM_TREES,
+                        help=f"Number of trees (default: {NUM_TREES})")
+    parser.add_argument("--max-depth", type=int, default=MAX_DEPTH,
+                        help=f"Max tree depth (default: {MAX_DEPTH})")
     return parser.parse_args()
 
 
@@ -700,64 +426,60 @@ def main():
     mlflow.set_tracking_uri(mlflow_uri)
     mlflow.set_experiment("solar_energy_regression_forecast")
     
+    # Create Spark session
     spark = create_spark_session("SolarEnergyRegressionTraining")
     
-    with mlflow.start_run(run_name=f"regression_training_{datetime.now().strftime('%Y%m%d_%H%M%S')}"):
+    run_name = f"rf_regression_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+    
+    with mlflow.start_run(run_name=run_name):
         # Log parameters
         mlflow.log_param("sample_limit", args.limit if args.limit else "all")
-        mlflow.log_param("model_type", "GBTRegressor")
+        mlflow.log_param("model_type", "RandomForestRegressor")
         mlflow.log_param("noise_injection", not args.no_noise)
-        mlflow.log_param("max_iter", 120)
-        mlflow.log_param("max_depth", 6)
-        mlflow.log_param("step_size", 0.1)
-        mlflow.log_param("min_instances_per_node", 50)
-        mlflow.log_param("max_bins", 128)
-        mlflow.log_param("subsampling_rate", 0.8)
-        mlflow.log_param("min_info_gain", 0.01)
-        mlflow.log_param("low_energy_filter", "energy >= 5.0 MWh AND shortwave_radiation > 0 (sunlight only)")
-        mlflow.log_param("gold_output_table", GOLD_OUTPUT_TABLE)
-        mlflow.log_param("gold_write_mode", GOLD_WRITE_MODE)
+        mlflow.log_param("num_trees", args.num_trees)
+        mlflow.log_param("max_depth", args.max_depth)
+        mlflow.log_param("min_instances_per_node", MIN_INSTANCES_PER_NODE)
+        mlflow.log_param("max_bins", MAX_BINS)
+        mlflow.log_param("subsampling_rate", SUBSAMPLING_RATE)
         
         # Train
-        model, test_predictions, metrics = train_regression_model(
+        model, test_predictions, metrics = train_model(
             spark, 
             limit_rows=args.limit,
-            apply_noise=not args.no_noise
+            apply_noise=not args.no_noise,
+            num_trees=args.num_trees,
+            max_depth=args.max_depth,
         )
         
         # Log metrics
-        for metric_name, metric_value in metrics.items():
-            mlflow.log_metric(metric_name, metric_value)
+        for name, value in metrics.items():
+            mlflow.log_metric(name, float(value))
         
-        # Build Gold fact table
+        # Build and save Gold fact table
         model_version_key = resolve_model_version_key(spark)
-        gold_df = build_gold_fact(test_predictions, model_version_key)
-        gold_rows = write_gold_predictions(gold_df, GOLD_OUTPUT_TABLE, mode=GOLD_WRITE_MODE)
+        gold_df = build_gold_fact(test_predictions, model_version_key, metrics["test_r2"])
         
-        # Save feature importance to Gold layer
-        save_feature_importance_to_gold(spark, model, model_version_key)
+        gold_rows = gold_df.count()
+        write_iceberg_table(gold_df, GOLD_OUTPUT_TABLE, mode=GOLD_WRITE_MODE)
         
-        # Log Gold metrics
         mlflow.log_metric("gold_row_count", float(gold_rows))
         mlflow.log_param("model_version_key", model_version_key)
         
         # Log model
-        mlflow.spark.log_model(model, "regression_model", dfs_tmpdir="/tmp/mlflow_tmp")
+        try:
+            mlflow.spark.log_model(model, "model", dfs_tmpdir="/tmp/mlflow_tmp")
+        except Exception as e:
+            print(f"[WARN] Failed to log model: {e}")
         
-        # Sample for inspection
-        print(f"\n[GOLD] Sample predictions from fact_solar_forecast:")
-        gold_df.select(
-            "facility_key",
-            "forecast_timestamp",
-            "actual_energy_mwh",
-            "predicted_energy_mwh",
-            "forecast_error_mwh",
-            "absolute_percentage_error"
-        ).orderBy("forecast_timestamp", ascending=False).show(10, truncate=False)
-        
+        print(f"\n{'='*60}")
+        print(f"✓ Training complete!")
+        print(f"✓ Saved {gold_rows:,} predictions to {GOLD_OUTPUT_TABLE}")
+        print(f"✓ Training time: {metrics['training_time_seconds']:.1f}s")
+        print(f"✓ Test MAE: {metrics['test_mae']:.4f} MWh")
+        print(f"✓ Test R²: {metrics['test_r2']:.4f}")
+        print(f"{'='*60}")
+    
     spark.stop()
-    print(f"\n Regression training complete!")
-    print(f"Saved {gold_rows} predictions to Gold layer: {GOLD_OUTPUT_TABLE}")
 
 
 if __name__ == "__main__":

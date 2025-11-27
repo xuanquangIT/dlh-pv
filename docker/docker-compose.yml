@@ -192,7 +192,8 @@ services:
     deploy:
       resources:
         limits:
-          memory: 4g
+          memory: ${SPARK_WORKER_MEMORY_LIMIT:-4g}
+          cpus: '${SPARK_WORKER_CPU_LIMIT:-2}'
     restart: unless-stopped
     logging: *default-logging
     networks: [data-net]
