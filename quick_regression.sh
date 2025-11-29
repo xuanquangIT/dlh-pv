@@ -31,7 +31,7 @@ echo "----------------------------------------"
 echo ""
 
 # Step 2: Query Prediction Results
-echo "📊 Step 2/3: Querying prediction results from Gold table..."
+echo "📊 Step 2/4: Querying prediction results from Gold table..."
 echo "----------------------------------------"
 
 echo ""
@@ -82,11 +82,41 @@ docker compose -f docker/docker-compose.yml exec trino trino \
   "
 
 echo ""
+echo "4️⃣ Error Category Distribution (Accuracy Analysis):"
+docker compose -f docker/docker-compose.yml exec trino trino \
+  --server http://trino:8080 --catalog iceberg --schema gold \
+  --execute "
+    WITH categorized AS (
+      SELECT 
+        CASE 
+          WHEN absolute_percentage_error <= 10 THEN 'Excellent'
+          WHEN absolute_percentage_error <= 20 THEN 'Good'
+          WHEN absolute_percentage_error <= 30 THEN 'Fair'
+          ELSE 'Poor'
+        END as error_category
+      FROM fact_solar_forecast_regression
+    )
+    SELECT 
+      error_category,
+      COUNT(*) as count,
+      ROUND(COUNT(*) * 100.0 / (SELECT COUNT(*) FROM fact_solar_forecast_regression), 2) as percentage
+    FROM categorized
+    GROUP BY error_category
+    ORDER BY 
+      CASE error_category 
+        WHEN 'Excellent' THEN 1 
+        WHEN 'Good' THEN 2 
+        WHEN 'Fair' THEN 3 
+        WHEN 'Poor' THEN 4 
+      END
+  "
+
+echo ""
 echo "----------------------------------------"
 echo ""
 
 # Step 3: Query Feature Importance
-echo "📊 Step 3/3: Top 15 Most Important Features..."
+echo "📊 Step 3/4: Top 15 Most Important Features..."
 echo "----------------------------------------"
 
 echo ""
@@ -120,15 +150,32 @@ docker compose -f docker/docker-compose.yml exec trino trino \
   "
 
 echo ""
-echo "=========================================="
+echo "========================================="
 echo "✅ REGRESSION PIPELINE COMPLETED"
-echo "=========================================="
+echo "========================================="
+
+# Step 4: Model Performance Summary
+echo ""
+echo "📊 Step 4/4: Model Performance Summary..."
+echo "----------------------------------------"
+docker compose -f docker/docker-compose.yml exec trino trino \
+  --server http://trino:8080 --catalog iceberg --schema gold \
+  --execute "
+    SELECT 
+      COUNT(*) as total_predictions,
+      ROUND(MAX(r2_score) * 100, 2) as r2_percent,
+      ROUND(MAX(mae_metric), 2) as mae_mwh,
+      ROUND(MAX(rmse_metric), 2) as rmse_mwh,
+      ROUND(COUNT(*) FILTER (WHERE absolute_percentage_error <= 20) * 100.0 / COUNT(*), 2) as accuracy_rate
+    FROM fact_solar_forecast_regression
+  "
 echo ""
 echo "📋 Summary:"
 echo "  - Model: GBTRegressor (maxIter=120, depth=6, stepSize=0.1)"
-echo "  - Features: 27 (incl. LAG, Non-linear, Interaction features)"
+echo "  - Features: 26 (incl. LAG, Non-linear, Interaction features)"
 echo "  - Training Data: ALL (~61,766 rows after filters: energy >= 5 MWh, sunlight hours)"
-echo "  - Performance: Test MAE ~10.66 MWh, R² ~85%, Poor predictions ~45%"
+echo "  - Error Categories: Excellent (≤10%), Good (≤20%), Fair (≤30%), Poor (>30%)"
+echo "  - Accuracy Rate: Excellent + Good predictions"
 echo "  - Gold Table: lh.gold.fact_solar_forecast_regression"
 echo "  - MLflow UI: http://localhost:5002"
 echo ""

@@ -296,8 +296,18 @@ def resolve_model_version_key(spark: SparkSession) -> int:
         return 1
 
 
-def build_gold_fact(predictions: DataFrame, model_version_key: int) -> DataFrame:
-    """Transform regression predictions into Gold fact_solar_forecast schema."""
+def build_gold_fact(predictions: DataFrame, model_version_key: int, metrics: dict = None) -> DataFrame:
+    """Transform regression predictions into Gold fact_solar_forecast schema.
+    
+    Args:
+        predictions: DataFrame with predictions
+        model_version_key: Model version key from dim_model_version
+        metrics: Dictionary with aggregate metrics (test_mae, test_rmse, test_r2)
+    """
+    # Extract aggregate metrics from training evaluation
+    agg_mae = float(metrics.get("test_mae", 0.0)) if metrics else 0.0
+    agg_rmse = float(metrics.get("test_rmse", 0.0)) if metrics else 0.0
+    agg_r2 = float(metrics.get("test_r2", 0.0)) if metrics else 0.0
     
     facility_dim = load_facility_dimension(predictions.sparkSession)
     window = Window.orderBy("facility_code", "date_hour")
@@ -310,7 +320,8 @@ def build_gold_fact(predictions: DataFrame, model_version_key: int) -> DataFrame
         .withColumn("model_version_key", F.lit(int(model_version_key)))
         .withColumn("weather_condition_key", F.lit(None).cast("int"))
         .withColumn("actual_energy_mwh", F.col("energy_mwh"))
-        .withColumn("predicted_energy_mwh", F.col("prediction"))  # GBT prediction
+        # Clip negative predictions to 0 (energy cannot be negative)
+        .withColumn("predicted_energy_mwh", F.when(F.col("prediction") < 0, F.lit(0.0)).otherwise(F.col("prediction")))
         .withColumn("forecast_error_mwh", F.col("actual_energy_mwh") - F.col("predicted_energy_mwh"))
         .withColumn(
             "absolute_percentage_error",
@@ -318,9 +329,9 @@ def build_gold_fact(predictions: DataFrame, model_version_key: int) -> DataFrame
                 F.abs(F.col("forecast_error_mwh") / F.col("actual_energy_mwh")) * 100.0
             ),
         )
-        .withColumn("mae_metric", F.abs(F.col("forecast_error_mwh")))
-        .withColumn("rmse_metric", F.abs(F.col("forecast_error_mwh")))
-        .withColumn("r2_score", F.lit(1.0))  # Will be updated with actual R2
+        .withColumn("mae_metric", F.lit(agg_mae))  # Aggregate MAE from training
+        .withColumn("rmse_metric", F.lit(agg_rmse))  # Aggregate RMSE from training
+        .withColumn("r2_score", F.lit(agg_r2))  # Aggregate R² from training
         .withColumn("forecast_timestamp", F.col("date_hour"))
         .withColumn("created_at", F.current_timestamp())
     )
@@ -729,9 +740,9 @@ def main():
         for metric_name, metric_value in metrics.items():
             mlflow.log_metric(metric_name, metric_value)
         
-        # Build Gold fact table
+        # Build Gold fact table with aggregate metrics
         model_version_key = resolve_model_version_key(spark)
-        gold_df = build_gold_fact(test_predictions, model_version_key)
+        gold_df = build_gold_fact(test_predictions, model_version_key, metrics=metrics)
         gold_rows = write_gold_predictions(gold_df, GOLD_OUTPUT_TABLE, mode=GOLD_WRITE_MODE)
         
         # Save feature importance to Gold layer
