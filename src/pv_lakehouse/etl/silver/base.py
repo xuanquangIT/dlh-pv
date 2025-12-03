@@ -272,7 +272,13 @@ class BaseSilverLoader:
                 else:
                     # If timestamp is date type, start from next day
                     today = now.date()
-                    last_date = silver_max_ts if isinstance(silver_max_ts, dt.date) else silver_max_ts.date()
+                    # Handle both date and string types
+                    if isinstance(silver_max_ts, dt.date):
+                        last_date = silver_max_ts
+                    elif isinstance(silver_max_ts, str):
+                        last_date = dt.datetime.fromisoformat(silver_max_ts.replace('Z', '+00:00')).date()
+                    else:
+                        last_date = silver_max_ts.date()
                     
                     if last_date >= today:
                         self.options.start = today
@@ -281,13 +287,6 @@ class BaseSilverLoader:
                         self.options.start = last_date + dt.timedelta(days=1)
                         print(f"[SILVER INCREMENTAL] Loading from {self.options.start} (last loaded: {last_date})", flush=True)
                         
-                # Check if Bronze has earlier data that wasn't loaded to Silver (backfill detection)
-                bronze_min_ts = _get_bronze_min_ts()
-                if bronze_min_ts and isinstance(silver_max_ts, dt.datetime):
-                    silver_min = silver_max_ts.replace(minute=0, second=0, microsecond=0)
-                    if bronze_min_ts < silver_min:
-                        self.options.start = bronze_min_ts
-                        print(f"[SILVER BACKFILL] Detected missing data: Bronze starts at {bronze_min_ts}, Silver at {silver_min}. Backfilling from {bronze_min_ts}", flush=True)
             else:
                 print("[SILVER INCREMENTAL] No existing Silver data found, will process all Bronze data", flush=True)
                 # For first-run incremental, detect min Bronze timestamp to start from there
