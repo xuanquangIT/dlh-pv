@@ -24,6 +24,10 @@ class SilverHourlyWeatherLoader(BaseSilverLoader):
             options.max_records_per_file = min(options.max_records_per_file, self.DEFAULT_MAX_RECORDS_PER_FILE)
         super().__init__(options)
 
+    def _get_timezone_lookback_hours(self) -> int:
+        """Weather data is already in local time from API - no timezone conversion needed."""
+        return 0
+
     def run(self) -> int:
         """Process bronze weather data in 7-day chunks to limit memory usage."""
         bronze_df = self._read_bronze()
@@ -65,7 +69,6 @@ class SilverHourlyWeatherLoader(BaseSilverLoader):
         if missing:
             raise ValueError(f"Missing expected columns in bronze weather source: {sorted(missing)}")
 
-        # CRITICAL: Bronze weather_timestamp is already in correct LOCAL format from API
         # No additional conversion needed - use directly for aggregation
         prepared_base = (
             bronze_df.select(
@@ -78,7 +81,6 @@ class SilverHourlyWeatherLoader(BaseSilverLoader):
             .where(F.col("weather_timestamp").isNotNull())
         )
         
-        # Aggregate by timestamp directly (already in correct format)
         prepared = (
             prepared_base
             .withColumn("date_hour", F.date_trunc("hour", F.col("timestamp_local")))
@@ -86,7 +88,6 @@ class SilverHourlyWeatherLoader(BaseSilverLoader):
         )
 
         # Handle missing total_column_integrated_water_vapour with forward-fill within facility/date
-        # This column has 73% nulls but is not critical for energy forecasting
         if "total_column_integrated_water_vapour" in prepared.columns:
             from pyspark.sql import Window
             window = Window.partitionBy("facility_code", "date").orderBy("timestamp_local").rowsBetween(-100, 0)

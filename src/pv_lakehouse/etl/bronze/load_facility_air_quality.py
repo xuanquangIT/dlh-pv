@@ -73,22 +73,16 @@ def main() -> None:
     args = parse_args()
 
     today = dt.date.today()
+    now = dt.datetime.now(dt.timezone.utc)
     
-    # Auto-detect start date for incremental mode
+    # Auto-detect start date for incremental mode (hour-level granularity)
     if args.mode == "incremental" and args.start is None:
         spark = create_spark_session(args.app_name)
         try:
             max_ts = spark.sql(f"SELECT MAX(air_timestamp) FROM {ICEBERG_AIR_TABLE}").collect()[0][0]
             if max_ts:
-                last_date = max_ts.date()
-                # If last loaded is today or future, reload today to get latest hours
-                # Otherwise start from day after last loaded
-                if last_date >= today:
-                    args.start = today
-                    print(f"Incremental mode: Reloading today {args.start} (last loaded: {last_date})")
-                else:
-                    args.start = last_date + dt.timedelta(days=1)
-                    print(f"Incremental mode: Loading from {args.start} (last loaded: {last_date})")
+                args.start = max_ts.date()
+                print(f"Incremental mode: Reloading from {args.start} to catch new hours (last loaded: {max_ts})")
             else:
                 args.start = today - dt.timedelta(days=1)
                 print(f"Incremental mode: No existing data, loading from {args.start}")

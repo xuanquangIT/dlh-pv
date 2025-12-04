@@ -24,6 +24,10 @@ class SilverHourlyAirQualityLoader(BaseSilverLoader):
             options.max_records_per_file = min(options.max_records_per_file, self.DEFAULT_MAX_RECORDS_PER_FILE)
         super().__init__(options)
 
+    def _get_timezone_lookback_hours(self) -> int:
+        """Air quality data is already in local time from API - no timezone conversion needed."""
+        return 0
+
     def run(self) -> int:
         """Process bronze air quality data in 7-day chunks to limit memory usage."""
         bronze_df = self._read_bronze()
