@@ -1,7 +1,7 @@
 <p align="center">
   <h1 align="center">🏠 PV Lakehouse</h1>
   <p align="center">
-    <strong>A production-ready data lakehouse platform for building modern ETL pipelines</strong>
+    <strong>A production-ready data lakehouse platform for building modern ELT pipelines</strong>
   </p>
   <p align="center">
     <a href="#-quick-start">Quick Start</a> •
@@ -24,7 +24,22 @@
 - 🔌 **Open Standards** — Apache Iceberg table format for interoperability
 - 📊 **SQL-first** — Query data directly with Trino's ANSI SQL engine
 - 🤖 **ML-ready** — Integrated MLflow for experiment tracking and model management
-- 🔄 **Workflow Orchestration** — Prefect-powered ETL pipelines
+- 🔄 **ELT Pattern** — Extract-Load-Transform for data lineage & reproducibility
+
+### 🔄 Why ELT (not ETL)?
+
+This project uses **ELT (Extract-Load-Transform)** pattern:
+
+```
+Extract → Load (Bronze) → Transform (Spark) → Load (Silver/Gold)
+```
+
+| Benefit | Description |
+|---------|-------------|
+| **Raw Data Preserved** | Bronze layer keeps original data for audit & reprocessing |
+| **Reproducible** | Re-transform from Bronze without re-calling APIs |
+| **Debuggable** | Compare Bronze vs Silver to trace data issues |
+| **Schema Evolution** | Bronze maintains original schema, Silver normalizes |
 
 ---
 
