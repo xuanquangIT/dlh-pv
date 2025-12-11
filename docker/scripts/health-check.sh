@@ -56,7 +56,7 @@ for service in "${REQUIRED_SERVICES[@]}"; do
 done
 
 # Check optional services
-OPTIONAL_SERVICES=(mlflow prefect spark-worker pgadmin)
+OPTIONAL_SERVICES=(mlflow spark-worker pgadmin)
 for service in "${OPTIONAL_SERVICES[@]}"; do
     if docker ps --format '{{.Names}}' | grep -q "^${service}$"; then
         HEALTH=$(docker inspect --format='{{.State.Health.Status}}' "$service" 2>/dev/null || echo "no-healthcheck")
@@ -71,7 +71,7 @@ done
 # 2. PostgreSQL Databases
 section "2. PostgreSQL Databases"
 
-REQUIRED_DBS=(iceberg_catalog mlflow prefect)
+REQUIRED_DBS=(iceberg_catalog mlflow)
 for db in "${REQUIRED_DBS[@]}"; do
     if docker exec postgres psql -U pvlakehouse -d postgres -tAc "SELECT 1 FROM pg_database WHERE datname='$db'" 2>/dev/null | grep -q 1; then
         check_pass "Database '$db' exists"
@@ -186,7 +186,6 @@ done
 # Check optional endpoints
 OPTIONAL_ENDPOINTS=(
     "MLflow:http://localhost:5000/"
-    "Prefect:http://localhost:4200/api/health"
 )
 
 for endpoint in "${OPTIONAL_ENDPOINTS[@]}"; do

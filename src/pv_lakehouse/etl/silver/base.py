@@ -11,6 +11,9 @@ from pyspark.sql import functions as F
 from pyspark.sql.utils import AnalysisException
 from pv_lakehouse.etl.bronze.facility_timezones import FACILITY_TIMEZONES, DEFAULT_TIMEZONE
 
+# Maximum timezone offset in hours from UTC (Australia is UTC+10/11)
+MAX_TIMEZONE_OFFSET_HOURS = 12
+
 from ..utils.spark_utils import cleanup_spark_staging, create_spark_session, write_iceberg_table
 
 
@@ -71,6 +74,11 @@ class BaseSilverLoader:
             Hour offset (0 = no shift, 1 = shift by 1 hour)
         """
         return 0
+
+    def _get_timezone_lookback_hours(self) -> int:
+        # Max UTC offset for Australia timezones (AEST=UTC+10, AEDT=UTC+11)
+        # Use 12h as safe buffer to handle DST transitions and edge cases
+        return MAX_TIMEZONE_OFFSET_HOURS
 
     def _process_in_chunks(self, bronze_df: DataFrame, chunk_days: int) -> int:
         """
@@ -260,19 +268,30 @@ class BaseSilverLoader:
                     last_hour = silver_max_ts.replace(minute=0, second=0, microsecond=0)
                     current_hour = now.replace(minute=0, second=0, microsecond=0)
                     
-                    # If last loaded is current hour or future, reload from current hour
-                    # Otherwise start from last_hour - hour_offset to capture boundary hours
+                    # Calculate total lookback: hour_offset + timezone_lookback
+                    # This ensures we capture all Bronze (UTC) data that maps to Silver (local time)
+                    hour_offset = self._get_hour_offset()
+                    tz_lookback = self._get_timezone_lookback_hours()
+                    total_lookback = hour_offset + tz_lookback
+                    
+                    # If last loaded is current hour or future, reload from current hour minus lookback
+                    # Otherwise start from last_hour minus total_lookback to capture boundary hours
                     if last_hour >= current_hour:
-                        self.options.start = current_hour
-                        print(f"[SILVER INCREMENTAL] Reloading current hour {self.options.start} (last loaded: {silver_max_ts})", flush=True)
+                        self.options.start = current_hour - dt.timedelta(hours=total_lookback)
+                        print(f"[SILVER INCREMENTAL] Reloading from {self.options.start} (current hour: {current_hour}, lookback: {total_lookback}h)", flush=True)
                     else:
-                        hour_offset = self._get_hour_offset()
-                        self.options.start = last_hour - dt.timedelta(hours=hour_offset)
-                        print(f"[SILVER INCREMENTAL] Loading from {self.options.start} (last loaded: {silver_max_ts}, offset: {hour_offset}h)", flush=True)
+                        self.options.start = last_hour - dt.timedelta(hours=total_lookback)
+                        print(f"[SILVER INCREMENTAL] Loading from {self.options.start} (last loaded: {silver_max_ts}, lookback: {total_lookback}h = offset:{hour_offset}h + tz:{tz_lookback}h)", flush=True)
                 else:
                     # If timestamp is date type, start from next day
                     today = now.date()
-                    last_date = silver_max_ts if isinstance(silver_max_ts, dt.date) else silver_max_ts.date()
+                    # Handle both date and string types
+                    if isinstance(silver_max_ts, dt.date):
+                        last_date = silver_max_ts
+                    elif isinstance(silver_max_ts, str):
+                        last_date = dt.datetime.fromisoformat(silver_max_ts.replace('Z', '+00:00')).date()
+                    else:
+                        last_date = silver_max_ts.date()
                     
                     if last_date >= today:
                         self.options.start = today
@@ -281,13 +300,6 @@ class BaseSilverLoader:
                         self.options.start = last_date + dt.timedelta(days=1)
                         print(f"[SILVER INCREMENTAL] Loading from {self.options.start} (last loaded: {last_date})", flush=True)
                         
-                # Check if Bronze has earlier data that wasn't loaded to Silver (backfill detection)
-                bronze_min_ts = _get_bronze_min_ts()
-                if bronze_min_ts and isinstance(silver_max_ts, dt.datetime):
-                    silver_min = silver_max_ts.replace(minute=0, second=0, microsecond=0)
-                    if bronze_min_ts < silver_min:
-                        self.options.start = bronze_min_ts
-                        print(f"[SILVER BACKFILL] Detected missing data: Bronze starts at {bronze_min_ts}, Silver at {silver_min}. Backfilling from {bronze_min_ts}", flush=True)
             else:
                 print("[SILVER INCREMENTAL] No existing Silver data found, will process all Bronze data", flush=True)
                 # For first-run incremental, detect min Bronze timestamp to start from there

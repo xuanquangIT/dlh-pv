@@ -16,8 +16,12 @@ All commands run inside Docker containers for consistency. No need to set enviro
 ### Memory Configuration (Built-in)
 ```bash
 --driver-memory 2g       # Driver heap size
---executor-memory 4g     # Executor heap size
+--executor-memory 3g     # Executor heap size (from SPARK_WORKER_MEMORY=3G in .env)
 ```
+
+⚠️ **Important:** All commands use `--executor-memory 3g` per the `.env.example` configuration. To increase memory:
+1. Edit `docker/.env` and increase `SPARK_WORKER_MEMORY` and `SPARK_WORKER_MEMORY_LIMIT`
+2. Restart: `docker compose -f docker/docker-compose.yml restart spark-master spark-worker`
 
 ### Verify Docker Status
 ```bash
@@ -32,39 +36,24 @@ Run these steps in order. Copy-paste each command to execute:
 
 ### Step 1: Load Facilities Metadata
 ```bash
-docker compose -f docker/docker-compose.yml exec spark-master spark-submit \
-  --master spark://spark-master:7077 --deploy-mode client \
-  --driver-memory 2g --executor-memory 4g \
-  /opt/workdir/src/pv_lakehouse/etl/bronze/load_facilities.py --mode backfill
+docker compose -f docker/docker-compose.yml exec spark-master spark-submit --master spark://spark-master:7077 --deploy-mode client --driver-memory 2g --executor-memory 3g /opt/workdir/src/pv_lakehouse/etl/bronze/load_facilities.py --mode backfill
 ```
 
 ### Step 2: Load Bronze Layer (Raw Data)
 
 **Timeseries (Energy Data)** - Fetches from OpenElectricity API
 ```bash
-docker compose -f docker/docker-compose.yml exec spark-master spark-submit \
-  --master spark://spark-master:7077 --deploy-mode client \
-  --driver-memory 2g --executor-memory 4g \
-  /opt/workdir/src/pv_lakehouse/etl/bronze/load_facility_timeseries.py \
-  --mode backfill --date-start 2024-01-01T00:00:00 --date-end 2025-11-17T23:59:59
+docker compose -f docker/docker-compose.yml exec spark-master spark-submit --master spark://spark-master:7077 --deploy-mode client --driver-memory 2g --executor-memory 3g /opt/workdir/src/pv_lakehouse/etl/bronze/load_facility_timeseries.py --mode backfill --date-start 2024-01-01T00:00:00 --date-end 2025-11-17T23:59:59
 ```
 
 **Weather Data** - Fetches from OpenMeteo API
 ```bash
-docker compose -f docker/docker-compose.yml exec spark-master spark-submit \
-  --master spark://spark-master:7077 --deploy-mode client \
-  --driver-memory 2g --executor-memory 4g \
-  /opt/workdir/src/pv_lakehouse/etl/bronze/load_facility_weather.py \
-  --mode backfill --start 2024-01-01 --end 2025-11-17
+docker compose -f docker/docker-compose.yml exec spark-master spark-submit --master spark://spark-master:7077 --deploy-mode client --driver-memory 2g --executor-memory 3g /opt/workdir/src/pv_lakehouse/etl/bronze/load_facility_weather.py --mode backfill --start 2024-01-01 --end 2025-11-17
 ```
 
 **Air Quality Data** - Fetches from OpenMeteo API
 ```bash
-docker compose -f docker/docker-compose.yml exec spark-master spark-submit \
-  --master spark://spark-master:7077 --deploy-mode client \
-  --driver-memory 2g --executor-memory 4g \
-  /opt/workdir/src/pv_lakehouse/etl/bronze/load_facility_air_quality.py \
-  --mode backfill --start 2024-01-01 --end 2025-11-17
+docker compose -f docker/docker-compose.yml exec spark-master spark-submit --master spark://spark-master:7077 --deploy-mode client --driver-memory 2g --executor-memory 3g /opt/workdir/src/pv_lakehouse/etl/bronze/load_facility_air_quality.py --mode backfill --start 2024-01-01 --end 2025-11-17
 ```
 
 **Note on API Errors:**
@@ -76,87 +65,56 @@ docker compose -f docker/docker-compose.yml exec spark-master spark-submit \
 
 **Facility Master** - Process facility metadata
 ```bash
-docker compose -f docker/docker-compose.yml exec spark-master spark-submit \
-  --master spark://spark-master:7077 --deploy-mode client \
-  --driver-memory 2g --executor-memory 4g \
-  /opt/workdir/src/pv_lakehouse/etl/silver/cli.py facility_master --mode full
+docker compose -f docker/docker-compose.yml exec spark-master spark-submit --master spark://spark-master:7077 --deploy-mode client --driver-memory 2g --executor-memory 3g /opt/workdir/src/pv_lakehouse/etl/silver/cli.py facility_master --mode full
 ```
 
 **Hourly Energy** - Clean and normalize energy data
 ```bash
-docker compose -f docker/docker-compose.yml exec spark-master spark-submit \
-  --master spark://spark-master:7077 --deploy-mode client \
-  --driver-memory 2g --executor-memory 4g \
-  /opt/workdir/src/pv_lakehouse/etl/silver/cli.py hourly_energy --mode full
+docker compose -f docker/docker-compose.yml exec spark-master spark-submit --master spark://spark-master:7077 --deploy-mode client --driver-memory 2g --executor-memory 3g /opt/workdir/src/pv_lakehouse/etl/silver/cli.py hourly_energy --mode full
 ```
 
 **Hourly Weather** - Clean and normalize weather data
 ```bash
-docker compose -f docker/docker-compose.yml exec spark-master spark-submit \
-  --master spark://spark-master:7077 --deploy-mode client \
-  --driver-memory 2g --executor-memory 4g \
-  /opt/workdir/src/pv_lakehouse/etl/silver/cli.py hourly_weather --mode full
+docker compose -f docker/docker-compose.yml exec spark-master spark-submit --master spark://spark-master:7077 --deploy-mode client --driver-memory 2g --executor-memory 3g /opt/workdir/src/pv_lakehouse/etl/silver/cli.py hourly_weather --mode full
 ```
 
 **Hourly Air Quality** - Clean and normalize air quality data
 ```bash
-docker compose -f docker/docker-compose.yml exec spark-master spark-submit \
-  --master spark://spark-master:7077 --deploy-mode client \
-  --driver-memory 2g --executor-memory 4g \
-  /opt/workdir/src/pv_lakehouse/etl/silver/cli.py hourly_air_quality --mode full
+docker compose -f docker/docker-compose.yml exec spark-master spark-submit --master spark://spark-master:7077 --deploy-mode client --driver-memory 2g --executor-memory 3g /opt/workdir/src/pv_lakehouse/etl/silver/cli.py hourly_air_quality --mode full
 ```
 
 ### Step 4: Build Gold Layer Dimensions (Required before fact tables)
 
 **Facility Dimension**
 ```bash
-docker compose -f docker/docker-compose.yml exec spark-master spark-submit \
-  --master spark://spark-master:7077 --deploy-mode client \
-  --driver-memory 2g --executor-memory 4g \
-  /opt/workdir/src/pv_lakehouse/etl/gold/cli.py dim_facility --mode full
+docker compose -f docker/docker-compose.yml exec spark-master spark-submit --master spark://spark-master:7077 --deploy-mode client --driver-memory 2g --executor-memory 3g /opt/workdir/src/pv_lakehouse/etl/gold/cli.py dim_facility --mode full
 ```
 
 **Date Dimension** (Calendar table with fiscal information)
 ```bash
-docker compose -f docker/docker-compose.yml exec spark-master spark-submit \
-  --master spark://spark-master:7077 --deploy-mode client \
-  --driver-memory 2g --executor-memory 4g \
-  /opt/workdir/src/pv_lakehouse/etl/gold/cli.py dim_date --mode full
+docker compose -f docker/docker-compose.yml exec spark-master spark-submit --master spark://spark-master:7077 --deploy-mode client --driver-memory 2g --executor-memory 3g /opt/workdir/src/pv_lakehouse/etl/gold/cli.py dim_date --mode full
 ```
 
 **Time Dimension** (Hour-of-day table with peak indicators)
 ```bash
-docker compose -f docker/docker-compose.yml exec spark-master spark-submit \
-  --master spark://spark-master:7077 --deploy-mode client \
-  --driver-memory 2g --executor-memory 4g \
-  /opt/workdir/src/pv_lakehouse/etl/gold/cli.py dim_time --mode full
+docker compose -f docker/docker-compose.yml exec spark-master spark-submit --master spark://spark-master:7077 --deploy-mode client --driver-memory 2g --executor-memory 3g /opt/workdir/src/pv_lakehouse/etl/gold/cli.py dim_time --mode full
 ```
 
 **AQI Category Dimension** (Air Quality Index ranges)
 ```bash
-docker compose -f docker/docker-compose.yml exec spark-master spark-submit \
-  --master spark://spark-master:7077 --deploy-mode client \
-  --driver-memory 2g --executor-memory 4g \
-  /opt/workdir/src/pv_lakehouse/etl/gold/cli.py dim_aqi_category --mode full
+docker compose -f docker/docker-compose.yml exec spark-master spark-submit --master spark://spark-master:7077 --deploy-mode client --driver-memory 2g --executor-memory 3g /opt/workdir/src/pv_lakehouse/etl/gold/cli.py dim_aqi_category --mode full
 ```
 
 ### Step 5: Build Gold Fact Table
 
 **Fact Solar Environmental** - Combines energy, weather, and air quality by hour at facility level
 ```bash
-docker compose -f docker/docker-compose.yml exec spark-master spark-submit \
-  --master spark://spark-master:7077 --deploy-mode client \
-  --driver-memory 2g --executor-memory 4g \
-  /opt/workdir/src/pv_lakehouse/etl/gold/cli.py fact_solar_environmental --mode full
+docker compose -f docker/docker-compose.yml exec spark-master spark-submit --master spark://spark-master:7077 --deploy-mode client --driver-memory 2g --executor-memory 3g /opt/workdir/src/pv_lakehouse/etl/gold/cli.py fact_solar_environmental --mode full
 ```
 
 Optionally, backfill specific period:
 ```bash
-docker compose -f docker/docker-compose.yml exec spark-master spark-submit \
-  --master spark://spark-master:7077 --deploy-mode client \
-  --driver-memory 2g --executor-memory 4g \
-  /opt/workdir/src/pv_lakehouse/etl/gold/cli.py fact_solar_environmental --mode full \
-  --start 2024-01-01T00:00:00 --end 2024-06-30T23:59:59
+docker compose -f docker/docker-compose.yml exec spark-master spark-submit --master spark://spark-master:7077 --deploy-mode client --driver-memory 2g --executor-memory 3g /opt/workdir/src/pv_lakehouse/etl/gold/cli.py fact_solar_environmental --mode full --start 2024-01-01T00:00:00 --end 2024-06-30T23:59:59
 ```
 
 ---
@@ -266,61 +224,65 @@ Run the full backfill workflow (Bronze → Silver → Gold) in order:
 ```bash
 # Step 1: Bronze Layer
 docker compose -f docker/docker-compose.yml exec spark-master spark-submit \
-  --master spark://spark-master:7077 --deploy-mode client --driver-memory 2g --executor-memory 4g \
+  --master spark://spark-master:7077 --deploy-mode client --driver-memory 2g --executor-memory 3g \
   /opt/workdir/src/pv_lakehouse/etl/bronze/load_facilities.py --mode backfill
 
 docker compose -f docker/docker-compose.yml exec spark-master spark-submit \
-  --master spark://spark-master:7077 --deploy-mode client --driver-memory 2g --executor-memory 4g \
+  --master spark://spark-master:7077 --deploy-mode client --driver-memory 2g --executor-memory 3g \
   /opt/workdir/src/pv_lakehouse/etl/bronze/load_facility_timeseries.py \
   --mode backfill --date-start 2025-10-01T00:00:00 --date-end 2025-11-01T23:59:59
 
 docker compose -f docker/docker-compose.yml exec spark-master spark-submit \
-  --master spark://spark-master:7077 --deploy-mode client --driver-memory 2g --executor-memory 4g \
+  --master spark://spark-master:7077 --deploy-mode client --driver-memory 2g --executor-memory 3g \
   /opt/workdir/src/pv_lakehouse/etl/bronze/load_facility_weather.py \
   --mode backfill --start 2025-10-01 --end 2025-11-01
 
 docker compose -f docker/docker-compose.yml exec spark-master spark-submit \
-  --master spark://spark-master:7077 --deploy-mode client --driver-memory 2g --executor-memory 4g \
+  --master spark://spark-master:7077 --deploy-mode client --driver-memory 2g --executor-memory 3g \
   /opt/workdir/src/pv_lakehouse/etl/bronze/load_facility_air_quality.py \
   --mode backfill --start 2025-10-01 --end 2025-11-01
 
 # Step 2: Silver Layer
 docker compose -f docker/docker-compose.yml exec spark-master spark-submit \
-  --master spark://spark-master:7077 --deploy-mode client --driver-memory 2g --executor-memory 4g \
+  --master spark://spark-master:7077 --deploy-mode client --driver-memory 2g --executor-memory 3g \
   /opt/workdir/src/pv_lakehouse/etl/silver/cli.py facility_master --mode full --load-strategy overwrite
 
 docker compose -f docker/docker-compose.yml exec spark-master spark-submit \
-  --master spark://spark-master:7077 --deploy-mode client --driver-memory 2g --executor-memory 4g \
+  --master spark://spark-master:7077 --deploy-mode client --driver-memory 2g --executor-memory 3g \
   /opt/workdir/src/pv_lakehouse/etl/silver/cli.py hourly_energy --mode full
 
 docker compose -f docker/docker-compose.yml exec spark-master spark-submit \
-  --master spark://spark-master:7077 --deploy-mode client --driver-memory 2g --executor-memory 4g \
+  --master spark://spark-master:7077 --deploy-mode client --driver-memory 2g --executor-memory 3g \
   /opt/workdir/src/pv_lakehouse/etl/silver/cli.py hourly_weather --mode full
 
 docker compose -f docker/docker-compose.yml exec spark-master spark-submit \
-  --master spark://spark-master:7077 --deploy-mode client --driver-memory 2g --executor-memory 4g \
+  --master spark://spark-master:7077 --deploy-mode client --driver-memory 2g --executor-memory 3g \
   /opt/workdir/src/pv_lakehouse/etl/silver/cli.py hourly_air_quality --mode full
 
 # Step 3: Gold Dimensions
 docker compose -f docker/docker-compose.yml exec spark-master spark-submit \
-  --master spark://spark-master:7077 --deploy-mode client --driver-memory 2g --executor-memory 4g \
+  --master spark://spark-master:7077 --deploy-mode client --driver-memory 2g --executor-memory 3g \
   /opt/workdir/src/pv_lakehouse/etl/gold/cli.py dim_facility --mode full
 
 docker compose -f docker/docker-compose.yml exec spark-master spark-submit \
-  --master spark://spark-master:7077 --deploy-mode client --driver-memory 2g --executor-memory 4g \
+  --master spark://spark-master:7077 --deploy-mode client --driver-memory 2g --executor-memory 3g \
   /opt/workdir/src/pv_lakehouse/etl/gold/cli.py dim_date --mode full
 
 docker compose -f docker/docker-compose.yml exec spark-master spark-submit \
-  --master spark://spark-master:7077 --deploy-mode client --driver-memory 2g --executor-memory 4g \
+  --master spark://spark-master:7077 --deploy-mode client --driver-memory 2g --executor-memory 3g \
   /opt/workdir/src/pv_lakehouse/etl/gold/cli.py dim_time --mode full
 
 docker compose -f docker/docker-compose.yml exec spark-master spark-submit \
-  --master spark://spark-master:7077 --deploy-mode client --driver-memory 2g --executor-memory 4g \
+  --master spark://spark-master:7077 --deploy-mode client --driver-memory 2g --executor-memory 3g \
   /opt/workdir/src/pv_lakehouse/etl/gold/cli.py dim_aqi_category --mode full
 
+docker compose -f docker/docker-compose.yml exec spark-master spark-submit \
+  --master spark://spark-master:7077 --deploy-mode client --driver-memory 2g --executor-memory 3g \
+  /opt/workdir/src/pv_lakehouse/etl/gold/cli.py fact_solar_environmental --mode full
+  
 # Step 4: Gold Fact
 docker compose -f docker/docker-compose.yml exec spark-master spark-submit \
-  --master spark://spark-master:7077 --deploy-mode client --driver-memory 2g --executor-memory 4g \
+  --master spark://spark-master:7077 --deploy-mode client --driver-memory 2g --executor-memory 3g \
   /opt/workdir/src/pv_lakehouse/etl/gold/cli.py fact_solar_environmental --mode full
 ```
 ```
@@ -378,11 +340,11 @@ docker compose -f docker/docker-compose.yml exec trino trino --execute \
 ## ⚠️ Troubleshooting
 
 ### OutOfMemoryError: Java heap space
-**Cause:** Spark driver or executor out of memory
-**Solution:** Increase memory flags:
-```bash
---driver-memory 4g --executor-memory 8g  # Double the default
-```
+**Cause:** Spark executor out of memory
+**Solution:** Current `.env.example` sets `SPARK_WORKER_MEMORY=3G` and `SPARK_WORKER_MEMORY_LIMIT=6G`. To increase:
+1. Edit `docker/.env` and increase both settings (e.g., `SPARK_WORKER_MEMORY=6G`, `SPARK_WORKER_MEMORY_LIMIT=12G`)
+2. Rebuild and restart: `docker compose -f docker/docker-compose.yml down && docker compose -f docker/docker-compose.yml up -d`
+3. Update commands to use higher `--executor-memory` (e.g., `--executor-memory 4g` or `--executor-memory 6g`)
 
 ### Cannot connect to Spark master (Connection refused)
 **Cause:** Docker containers not running
@@ -470,3 +432,27 @@ docker compose -f docker/docker-compose.yml exec trino trino --execute \
 **Audit:**
 - `created_at, updated_at` - (timestamp) - Load and update times
 
+# Bronze Layer 
+docker compose -f docker/docker-compose.yml exec spark-master spark-submit --master spark://spark-master:7077 --deploy-mode client --driver-memory 2g --executor-memory 3g /opt/workdir/src/pv_lakehouse/etl/bronze/load_facilities.py --mode incremental 
+
+docker compose -f docker/docker-compose.yml exec spark-master spark-submit --master spark://spark-master:7077 --deploy-mode client --driver-memory 2g --executor-memory 3g /opt/workdir/src/pv_lakehouse/etl/bronze/load_facility_timeseries.py --mode incremental 
+
+docker compose -f docker/docker-compose.yml exec spark-master spark-submit --master spark://spark-master:7077 --deploy-mode client --driver-memory 2g --executor-memory 3g /opt/workdir/src/pv_lakehouse/etl/bronze/load_facility_weather.py --mode incremental 
+
+docker compose -f docker/docker-compose.yml exec spark-master spark-submit --master spark://spark-master:7077 --deploy-mode client --driver-memory 2g --executor-memory 3g /opt/workdir/src/pv_lakehouse/etl/bronze/load_facility_air_quality.py --mode incremental 
+
+# Silver Layer 
+docker compose -f docker/docker-compose.yml exec spark-master spark-submit --master spark://spark-master:7077 --deploy-mode client --driver-memory 2g --executor-memory 3g /opt/workdir/src/pv_lakehouse/etl/silver/cli.py facility_master --mode incremental --load-strategy merge
+
+docker compose -f docker/docker-compose.yml exec spark-master spark-submit --master spark://spark-master:7077 --deploy-mode client --driver-memory 2g --executor-memory 3g /opt/workdir/src/pv_lakehouse/etl/silver/cli.py hourly_energy --mode incremental --load-strategy merge
+
+docker compose -f docker/docker-compose.yml exec spark-master spark-submit --master spark://spark-master:7077 --deploy-mode client --driver-memory 2g --executor-memory 3g /opt/workdir/src/pv_lakehouse/etl/silver/cli.py hourly_weather --mode incremental --load-strategy merge
+
+docker compose -f docker/docker-compose.yml exec spark-master spark-submit --master spark://spark-master:7077 --deploy-mode client --driver-memory 2g --executor-memory 3g /opt/workdir/src/pv_lakehouse/etl/silver/cli.py hourly_air_quality --mode incremental --load-strategy merge
+
+
+# Gold Layer 
+docker compose -f docker/docker-compose.yml exec spark-master spark-submit --master spark://spark-master:7077 --deploy-mode client --driver-memory 2g --executor-memory 3g /opt/workdir/src/pv_lakehouse/etl/gold/cli.py dim_date --mode incremental --load-strategy merge
+
+
+docker compose -f docker/docker-compose.yml exec spark-master spark-submit --master spark://spark-master:7077 --deploy-mode client --driver-memory 2g --executor-memory 3g /opt/workdir/src/pv_lakehouse/etl/gold/cli.py fact_solar_environmental --mode incremental --load-strategy merge

@@ -14,7 +14,8 @@ Write-Host "║  Data Lakehouse Platform - Health Check               ║" -Fore
 
 Write-Host "1. Container Status:" -ForegroundColor Yellow
 
-docker ps --format "table {{.Names}}\t{{.Status}}" | Where-Object { $_ -match '(minio|postgres|iceberg|mlflow|prefect|trino|NAMES)' }$script:failureCount = 0
+docker ps --format "table {{.Names}}\t{{.Status}}" | Where-Object { $_ -match '(minio|postgres|iceberg|mlflow|trino|NAMES)' }
+$script:failureCount = 0
 
 Write-Host ""
 
@@ -30,11 +31,13 @@ $endpoints = @{Write-Host "1. Checking Container Status..." -ForegroundColor Yel
 
     'Iceberg'  = 'http://localhost:8181/v1/config'
 
-    'MLflow'   = 'http://localhost:5000/'try {
+    'MLflow'   = 'http://localhost:5000/'
+try {
 
-    'Prefect'  = 'http://localhost:4200/api/health'    $containers = docker ps --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}" | 
+    # 'Prefect'  = 'http://localhost:4200/api/health'  (disabled)
+    $containers = docker ps --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}" | 
 
-}                  Where-Object { $_ -match '(minio|postgres|iceberg|mlflow|prefect|trino|NAMES)' }
+}                  Where-Object { $_ -match '(minio|postgres|iceberg|mlflow|trino|NAMES)' }
 
     
 
@@ -86,7 +89,8 @@ try {
 
     'MLflow'            = 'http://localhost:5000/'
 
-Write-Host ""    'Prefect API'       = 'http://localhost:4200/api/health'
+Write-Host ""
+    # 'Prefect API'       = 'http://localhost:4200/api/health'  (disabled)
 
     'Trino'             = 'http://localhost:8081/v1/info'
 
@@ -94,7 +98,8 @@ Write-Host ""    'Prefect API'       = 'http://localhost:4200/api/health'
 
 Write-Host "3. PostgreSQL Databases:" -ForegroundColor Yellow
 
-docker exec postgres psql -U pvlakehouse -d postgres -c "\l" 2>$null | Select-String -Pattern '(iceberg|mlflow|prefect)'foreach ($endpoint in $endpoints.GetEnumerator()) {
+docker exec postgres psql -U pvlakehouse -d postgres -c "\l" 2>$null | Select-String -Pattern '(iceberg|mlflow)'
+foreach ($endpoint in $endpoints.GetEnumerator()) {
 
 Write-Host ""    $name = $endpoint.Key
 
@@ -152,7 +157,7 @@ Write-Host ("=" * 80) -ForegroundColor DarkGray
 
 try {
     $databases = docker exec postgres psql -U pvlakehouse -d postgres -c "\l" 2>&1 | 
-                 Select-String -Pattern '(iceberg|mlflow|prefect)'
+                 Select-String -Pattern '(iceberg|mlflow)'
     
     if ($databases) {
         Write-Host "  Found application databases:" -ForegroundColor Cyan
@@ -205,7 +210,7 @@ Write-Host ("=" * 80) -ForegroundColor DarkGray
 
 try {
     $stats = docker stats --no-stream --format "table {{.Name}}\t{{.CPUPerc}}\t{{.MemUsage}}" | 
-             Where-Object { $_ -match '(minio|postgres|iceberg|mlflow|prefect|trino|NAME)' }
+             Where-Object { $_ -match '(minio|postgres|iceberg|mlflow|trino|NAME)' }
     
     if ($stats) {
         $stats | ForEach-Object { Write-Host $_ }

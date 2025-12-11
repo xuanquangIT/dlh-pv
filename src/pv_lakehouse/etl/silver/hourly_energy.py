@@ -28,7 +28,7 @@ class SilverHourlyEnergyLoader(BaseSilverLoader):
         super().__init__(options)
 
     def _get_hour_offset(self) -> int:
-        """Energy loader shifts hour by +1, so we need to account for this in incremental start calculation."""
+        """Energy loader shifts hour by +1, need to account for this in incremental start calculation."""
         return 1
 
     def run(self) -> int:
@@ -73,7 +73,6 @@ class SilverHourlyEnergyLoader(BaseSilverLoader):
         # Aggregate energy by hour (local time)
         # Convert `interval_ts` (assumed UTC) to facility local timestamp before truncating to hour.
         # Use the facility timezone map to perform a per-facility conversion. Default to DEFAULT_TIMEZONE.
-        # Build nested when/otherwise expression to avoid broadcasting a Python dict into Spark rows.
         default_local = F.from_utc_timestamp(F.col("interval_ts"), DEFAULT_TIMEZONE)
         tz_expr = default_local
         # Wrap mapping entries as conditional expressions: when(facility_code==code, from_utc_timestamp(...)).otherwise(prev)
@@ -95,8 +94,8 @@ class SilverHourlyEnergyLoader(BaseSilverLoader):
         )
         
         # Physical bounds for energy
-        ENERGY_LOWER = 0.0      # Minimum energy: 0 MWh (physical constraint, catches negative values)
-        PEAK_REFERENCE_MWH = 85.0  # Reference peak energy for threshold calculations
+        ENERGY_LOWER = 0.0      
+        PEAK_REFERENCE_MWH = 186.0  
         
         # Build intermediate columns in single pass to avoid multiple scans
         result = (
