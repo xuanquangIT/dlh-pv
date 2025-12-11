@@ -88,6 +88,9 @@ Extract → Load (Bronze) → Transform (Spark) → Load (Silver/Gold)
 
 ```
 dlh-pv/
+├── dashboard/                   # 📊 Power BI dashboards
+│   └── pvlakehouse.pbix         # Main analytics dashboard
+│
 ├── doc/                         # 📚 Comprehensive documentation
 │   ├── bronze-silver/           # Data layer specifications
 │   ├── schema/                  # Schema definitions
