@@ -34,7 +34,7 @@ DEFAULT_SAMPLE_LIMIT = 50_000  # Balance between performance and memory
 SILVER_HOURLY_ENERGY_TABLE = "lh.silver.clean_hourly_energy"
 SILVER_HOURLY_WEATHER_TABLE = "lh.silver.clean_hourly_weather"
 DIM_FACILITY_TABLE = "lh.gold.dim_facility"
-DIM_MODEL_VERSION_TABLE = "lh.gold.dim_model_version"
+DIM_MODEL_VERSION_TABLE = "lh.gold.dim_forecast_model_version"
 GOLD_OUTPUT_TABLE = "lh.gold.fact_solar_forecast_regression"
 GOLD_WRITE_MODE = "overwrite"  # Overwrite to replace old predictions with fresh training results
 
