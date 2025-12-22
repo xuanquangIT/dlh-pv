@@ -11,11 +11,6 @@ The PV Lakehouse follows a medallion architecture (Bronze → Silver → Gold):
 
 ## ⚡ Docker & Spark Setup
 
-All commands run inside Docker containers for consistency. Optimized for **AMD Ryzen 9 8945HX** (32 cores, 15GB RAM).
-
-### 🖥️ Machine Configuration
-**CPU:** 32 cores (16 cores × 2 threads) | **RAM:** 15GB available | **Disk:** 1TB
-
 ### Memory Configuration (Optimized)
 ```bash
 --driver-memory 3g       # Driver heap size (increased from 2g)
