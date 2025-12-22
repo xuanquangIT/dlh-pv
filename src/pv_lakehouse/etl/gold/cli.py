@@ -11,7 +11,6 @@ from pv_lakehouse.etl.gold.base import BaseGoldLoader, GoldLoadOptions
 from pv_lakehouse.etl.gold.dim_aqi_category import GoldDimAQICategoryLoader
 from pv_lakehouse.etl.gold.dim_date import GoldDimDateLoader
 from pv_lakehouse.etl.gold.dim_facility import GoldDimFacilityLoader
-from pv_lakehouse.etl.gold.dim_forecast_model_version import GoldDimForecastModelVersionLoader
 from pv_lakehouse.etl.gold.dim_time import GoldDimTimeLoader
 from pv_lakehouse.etl.gold.fact_solar_environmental import GoldFactSolarEnvironmentalLoader
 from pv_lakehouse.etl.gold.fact_solar_forecast_regression import GoldFactSolarForecastRegressionLoader
@@ -22,7 +21,6 @@ _LOADER_REGISTRY: Dict[str, Type[BaseGoldLoader]] = {
     "dim_aqi_category": GoldDimAQICategoryLoader,
     "dim_date": GoldDimDateLoader,
     "dim_facility": GoldDimFacilityLoader,
-    "dim_forecast_model_version": GoldDimForecastModelVersionLoader,
     "dim_time": GoldDimTimeLoader,
     # Fact tables (load these after dimensions)
     "fact_solar_environmental": GoldFactSolarEnvironmentalLoader,
