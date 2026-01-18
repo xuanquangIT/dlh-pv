@@ -18,8 +18,8 @@ Bronze layer là lớp **dữ liệu thô (raw data)** trực tiếp từ các n
 | **Tính Chất** | Thô, không xử lý |
 | **Quality** | Không được validate, có thể có lỗi |
 | **Format** | Dữ liệu gốc từ API (JSON/CSV) |
-| **Lưu Trữ** | Iceberg tables (append-only) |
-| **Partition** | Theo ngày |
+| **Lưu Trữ** | Iceberg tables (UPSERT via MERGE) |
+| **Partition** | Không có explicit partition |
 | **Ý Nghĩa** | Dùng làm backup, audit trail |
 
 ---

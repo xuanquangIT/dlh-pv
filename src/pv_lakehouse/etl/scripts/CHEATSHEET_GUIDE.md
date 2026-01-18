@@ -279,11 +279,13 @@ docker compose -f docker/docker-compose.yml exec spark-master spark-submit \
 docker compose -f docker/docker-compose.yml exec spark-master spark-submit \
   --master spark://spark-master:7077 --deploy-mode client --driver-memory 2g --executor-memory 3g \
   /opt/workdir/src/pv_lakehouse/etl/gold/cli.py fact_solar_environmental --mode full
-  
-# Step 4: Gold Fact
+
 docker compose -f docker/docker-compose.yml exec spark-master spark-submit \
   --master spark://spark-master:7077 --deploy-mode client --driver-memory 2g --executor-memory 3g \
   /opt/workdir/src/pv_lakehouse/etl/gold/cli.py fact_solar_environmental --mode full
+  
+# Step 4: Gold Fact
+
 ```
 ```
 

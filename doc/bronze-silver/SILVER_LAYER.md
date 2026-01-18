@@ -160,12 +160,12 @@ is_equipment_downtime = is_peak & (energy_mwh == 0.0)
 ##### 4. Transition Hour Low Energy (⚠️ QUAN TRỌNG)
 
 ```python
-PEAK_REFERENCE_MWH = 85.0  # Reference capacity
+PEAK_REFERENCE_MWH = 186.0  # Reference capacity
 
 # Thresholds theo từng giai đoạn:
-# - Sunrise (06:00-08:00): 5% of peak = 4.25 MWh
-# - Early Morning (08:00-10:00): 8% of peak = 6.8 MWh  
-# - Sunset (17:00-19:00): 10% of peak = 8.5 MWh
+# - Sunrise (06:00-08:00): 5% of peak = 9.3 MWh
+# - Early Morning (08:00-10:00): 8% of peak = 14.9 MWh  
+# - Sunset (17:00-19:00): 10% of peak = 18.6 MWh
 
 threshold_factor = (
     F.when(is_sunrise, 0.05)        # 5% of peak for sunrise
@@ -227,7 +227,7 @@ is_transition_hour_low_energy = (
 - Không có lý do khoa học cụ thể - đây là "round number" dễ nhớ
 - Bạn hoàn toàn có thể thay bằng 6%, 7% nếu phân tích data thực cho thấy phù hợp hơn
 
-**PEAK_REFERENCE_MWH = 85.0:**
+**PEAK_REFERENCE_MWH = 186.0:**
 - Đây cũng là **giá trị heuristic** - ước lượng average peak capacity
 - Nên xác định lại từ actual data: `MAX(energy_mwh)` hoặc `PERCENTILE(0.95)` ở peak hours
 

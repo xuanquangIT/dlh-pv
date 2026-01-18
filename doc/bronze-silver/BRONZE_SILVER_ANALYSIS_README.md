@@ -154,7 +154,7 @@ _numeric_columns = {
 
 # Energy (line 29-30 in hourly_energy.py)
 ENERGY_LOWER = 0.0
-PEAK_REFERENCE_MWH = 85.0
+PEAK_REFERENCE_MWH = 186.0
 ```
 
 ## 🎓 Learning Outcomes

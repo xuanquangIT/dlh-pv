@@ -51,7 +51,7 @@ is_equipment_downtime = is_peak & (energy_mwh == 0.0)
 
 #### 4. Transition Hour Low Energy ⚠️
 ```python
-PEAK_REFERENCE_MWH = 85.0  # ⚠️ NÊN CẬP NHẬT = 186.0 (P95 từ data thực)
+PEAK_REFERENCE_MWH = 186.0  # ✅ ĐÃ CẬP NHẬT từ 85.0 (P95 từ data thực)
 
 threshold_factor = (
     F.when(is_sunrise, 0.05)        # 5% for 06:00-08:00

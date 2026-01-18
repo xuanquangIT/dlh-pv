@@ -182,7 +182,7 @@ Bronze Raw Data:
 # FILE: hourly_energy.py
 
 ENERGY_LOWER = 0.0  # Physical constraint: Solar cannot generate negative energy
-PEAK_REFERENCE_MWH = 85.0  # Facility-level reference capacity
+PEAK_REFERENCE_MWH = 186.0  # Facility-level reference capacity
 
 # Validation:
 is_within_bounds = energy_mwh >= ENERGY_LOWER
@@ -277,7 +277,7 @@ is_equipment_downtime = is_peak & (energy_mwh == 0.0)
 ```
 Bronze Anomaly Pattern - Sunrise (6:00-8:00):
   hour | expected_pct | observed | reason
-  06:00 | 5-15%       | 0.2 MWh  | slow ramp-up (should be ~4.25-12.75 MWh if peak=85)
+  06:00 | 5-15%       | 0.2 MWh  | slow ramp-up (should be ~9.3-27.9 MWh if peak=186)
   07:00 | 10-30%      | 0.5 MWh  | inverter delay
   08:00 | 20-50%      | 1.0 MWh  | wiring issue
 
@@ -290,33 +290,33 @@ Bronze Anomaly Pattern - Sunset (17:00-19:00):
 
 | Anomaly | Mô Tả | Tần Suất | Threshold | Nguyên Nhân |
 |---------|-------|---------|-----------|-----------|
-| **Sunrise Low Energy** | Energy tại 6:00-8:00 < 5% peak | 2-5% | < 4.25 MWh | Slow ramp-up, inverter delay |
-| **Early Morning Low Energy** | Energy tại 8:00-10:00 < 8% peak | 1-3% | < 6.8 MWh | Morning shading, equipment warmup |
-| **Sunset Low Energy** | Energy tại 17:00-19:00 < 10% peak | 1-2% | < 8.5 MWh | Sensor lag, grid ramping |
+| **Sunrise Low Energy** | Energy tại 6:00-8:00 < 5% peak | 2-5% | < 9.3 MWh | Slow ramp-up, inverter delay |
+| **Early Morning Low Energy** | Energy tại 8:00-10:00 < 8% peak | 1-3% | < 14.9 MWh | Morning shading, equipment warmup |
+| **Sunset Low Energy** | Energy tại 17:00-19:00 < 10% peak | 1-2% | < 18.6 MWh | Sensor lag, grid ramping |
 
 #### **Bounds & Filters ở Silver**
 
 ```python
-PEAK_REFERENCE_MWH = 85.0
+PEAK_REFERENCE_MWH = 186.0
 
 # Sunrise (6:00-8:00): Only 5% threshold
 is_sunrise = (hour >= 6) & (hour < 8)
-threshold = 0.05 * PEAK_REFERENCE_MWH  # = 4.25 MWh
-is_sunrise_low = is_sunrise & (energy > 0.01) & (energy < 4.25)
+threshold = 0.05 * PEAK_REFERENCE_MWH  # = 9.3 MWh
+is_sunrise_low = is_sunrise & (energy > 0.01) & (energy < 9.3)
                → FLAG: CAUTION (soft check)
                → quality_issues: "TRANSITION_HOUR_LOW_ENERGY"
 
 # Early Morning (8:00-10:00): 8% threshold
 is_early_morning = (hour >= 8) & (hour < 10)
-threshold = 0.08 * PEAK_REFERENCE_MWH  # = 6.8 MWh
-is_early_morning_low = is_early_morning & (energy > 0.01) & (energy < 6.8)
+threshold = 0.08 * PEAK_REFERENCE_MWH  # = 14.9 MWh
+is_early_morning_low = is_early_morning & (energy > 0.01) & (energy < 14.9)
                      → FLAG: CAUTION (soft check)
                      → quality_issues: "TRANSITION_HOUR_LOW_ENERGY"
 
 # Sunset (17:00-19:00): 10% threshold
 is_sunset = (hour >= 17) & (hour < 19)
-threshold = 0.10 * PEAK_REFERENCE_MWH  # = 8.5 MWh
-is_sunset_low = is_sunset & (energy > 0.01) & (energy < 8.5)
+threshold = 0.10 * PEAK_REFERENCE_MWH  # = 18.6 MWh
+is_sunset_low = is_sunset & (energy > 0.01) & (energy < 18.6)
               → FLAG: CAUTION (soft check)
               → quality_issues: "TRANSITION_HOUR_LOW_ENERGY"
 
@@ -342,25 +342,25 @@ is_transition_hour_low_energy = (
 Bronze Anomaly Pattern - Peak Hours (10:00-14:00):
   hour | expected | observed | efficiency | reason
   10:00 | 80 MWh | 25 MWh   | 31%        | equipment malfunction
-  11:00 | 85 MWh | 30 MWh   | 35%        | inverter clipping issue
-  13:00 | 85 MWh | 20 MWh   | 24%        | thermal throttling
+  11:00 | 186 MWh | 30 MWh   | 16%        | inverter clipping issue
+  13:00 | 186 MWh | 20 MWh   | 11%        | thermal throttling
 ```
 
 | Anomaly | Mô Tả | Tần Suất | Threshold | Nguyên Nhân |
 |---------|-------|---------|-----------|-----------|
-| **Peak Hour Low Efficiency** | Energy tại 10:00-14:00 < 50% peak | 0.5-2% | < 42.5 MWh | Equipment malfunction, inverter clipping |
+| **Peak Hour Low Efficiency** | Energy tại 10:00-14:00 < 50% peak | 0.5-2% | < 93 MWh | Equipment malfunction, inverter clipping |
 
 #### **Bounds & Filters ở Silver**
 
 ```python
 is_peak = (hour >= 10) & (hour <= 14)
-PEAK_REFERENCE_MWH = 85.0
-efficiency_threshold = 0.50 * PEAK_REFERENCE_MWH  # = 42.5 MWh
+PEAK_REFERENCE_MWH = 186.0
+efficiency_threshold = 0.50 * PEAK_REFERENCE_MWH  # = 93 MWh
 
 is_efficiency_anomaly = (
     is_peak & 
     (energy > 0.5) &  # Not zero (already flagged)
-    (energy < 42.5)
+    (energy < 93)
 )
                       → FLAG: CAUTION (soft check)
                       → quality_issues: "PEAK_HOUR_LOW_ENERGY"
@@ -488,10 +488,10 @@ quality_flag = "GOOD" if aqi_valid else "CAUTION"
 | Night-time generation | Manual check | `night & (energy > 1.0)` | CAUTION |
 | Daytime zero (8-17) | Manual check | `daytime & (hour 8-17) & (energy == 0)` | CAUTION |
 | Equipment downtime (peak) | Manual check | `peak & (energy == 0)` | CAUTION |
-| Sunrise low (< 5% peak) | Manual check | `sunrise & (0.01 < energy < 4.25)` | CAUTION |
-| Early morning low (< 8%) | Manual check | `early_morning & (0.01 < energy < 6.8)` | CAUTION |
-| Sunset low (< 10%) | Manual check | `sunset & (0.01 < energy < 8.5)` | CAUTION |
-| Peak efficiency low (< 50%) | Manual check | `peak & (0.5 < energy < 42.5)` | CAUTION |
+| Sunrise low (< 5% peak) | Manual check | `sunrise & (0.01 < energy < 9.3)` | CAUTION |
+| Early morning low (< 8%) | Manual check | `early_morning & (0.01 < energy < 14.9)` | CAUTION |
+| Sunset low (< 10%) | Manual check | `sunset & (0.01 < energy < 18.6)` | CAUTION |
+| Peak efficiency low (< 50%) | Manual check | `peak & (0.5 < energy < 93)` | CAUTION |
 | **Data Quality** | ~0.5-1% anomalies | **85-95% GOOD, 5-15% CAUTION** | ⚠️ |
 
 ### Air Quality Layer Summary
@@ -558,9 +558,9 @@ for record in training_data:
 ### Nguyên Tắc 5: Context-Aware Thresholds
 ```
 Energy thresholds depend on facility context:
-  - PEAK_REFERENCE_MWH = 85 MWh (facility-level average)
-  - Sunrise threshold: 5% × 85 = 4.25 MWh
-  - Peak efficiency: 50% × 85 = 42.5 MWh
+  - PEAK_REFERENCE_MWH = 186 MWh (facility-level average)
+  - Sunrise threshold: 5% × 186 = 9.3 MWh
+  - Peak efficiency: 50% × 186 = 93 MWh
   
 Áp dụng cho tất cả facilities regardless of size!
 ```
