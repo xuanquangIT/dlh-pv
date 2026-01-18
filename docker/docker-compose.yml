@@ -264,6 +264,70 @@ services:
     networks: [data-net]
     profiles: [ml]
 
+  prefect:
+    image: ${PREFECT_IMAGE}
+    container_name: prefect
+    depends_on:
+      postgres:
+        condition: service_healthy
+    working_dir: /repo
+    command: >
+      bash -lc "
+      pip install --no-cache-dir asyncpg || true;
+      prefect server start --host 0.0.0.0
+      "
+    environment:
+      # Use Postgres for the Prefect API database instead of the default SQLite
+      PREFECT_API_DATABASE_CONNECTION_URL: postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/prefect
+      PREFECT_API_URL: ${PREFECT_API_URL}
+    ports:
+      - "${PREFECT_PORT}:4200"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:4200/api/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+    restart: unless-stopped
+    logging: *default-logging
+    networks: [data-net]
+    profiles: [orchestrate]
+
+  prefect-agent:
+    image: ${PREFECT_IMAGE}
+    container_name: prefect-agent
+    depends_on:
+      prefect:
+        condition: service_healthy
+    working_dir: /repo
+    volumes:
+      - ../:/repo
+      - /var/run/docker.sock:/var/run/docker.sock
+    environment:
+      PREFECT_API_URL: ${PREFECT_API_URL}
+      PREFECT_WORK_POOL: default
+      PV_LAKEHOUSE_ROOT: /repo
+      DOCKER_COMPOSE_FILE: /repo/docker/docker-compose.yml
+      DOCKER_COMPOSE_CMD: "docker compose"
+    command: >
+      bash -lc '
+      PREFECT_POOL=$${PREFECT_WORK_POOL:-default};
+      if ! command -v docker >/dev/null 2>&1 || ! docker compose version >/dev/null 2>&1; then
+        apt-get update && apt-get install -y ca-certificates curl gnupg && 
+        install -m 0755 -d /etc/apt/keyrings && 
+        curl -fsSL https://download.docker.com/linux/debian/gpg | gpg --dearmor -o /etc/apt/keyrings/docker.gpg && 
+        chmod a+r /etc/apt/keyrings/docker.gpg && 
+        echo "deb [arch=$$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/debian bookworm stable" > /etc/apt/sources.list.d/docker.list && 
+        apt-get update && apt-get install -y docker-ce-cli docker-compose-plugin && 
+        rm -rf /var/lib/apt/lists/*;
+      fi;
+      prefect work-pool create $$PREFECT_POOL --type process || true;
+      prefect worker start --pool $$PREFECT_POOL
+      '
+    restart: unless-stopped
+    logging: *default-logging
+    networks: [data-net]
+    profiles: [orchestrate]
+
 networks:
   data-net:
 
