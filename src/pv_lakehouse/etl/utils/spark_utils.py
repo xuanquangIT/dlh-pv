@@ -3,16 +3,25 @@
 from __future__ import annotations
 
 import logging
-import os
 import shutil
 import tempfile
+from pathlib import Path
 from typing import Any, Dict, Iterable, Optional
 
+import yaml
 from pyspark.sql import DataFrame, SparkSession
 from pyspark.sql.utils import AnalysisException
 
+from pv_lakehouse.config.settings import get_settings
+
+LOGGER = logging.getLogger(__name__)
+
+# Cache loaded config to avoid repeated YAML parsing
+_CACHED_SPARK_CONFIG: Optional[Dict[str, str]] = None
+
 
 def _ensure_namespace_exists(spark: SparkSession, table_name: str) -> None:
+    """Ensure Iceberg namespace exists for table creation."""
     parts = table_name.split(".")
     if len(parts) < 3:
         return
@@ -29,76 +38,169 @@ def _ensure_namespace_exists(spark: SparkSession, table_name: str) -> None:
     except AnalysisException as error:  # pragma: no cover - defensive guard
         LOGGER.warning("Failed creating namespace %s: %s", fq_namespace, error)
 
-LOGGER = logging.getLogger(__name__)
 
-DEFAULT_SPARK_CONFIG: Dict[str, str] = {
-    "spark.sql.extensions": "org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions",
-    "spark.sql.catalog.lh": "org.apache.iceberg.spark.SparkCatalog",
-    "spark.sql.catalog.lh.type": "jdbc",
-    "spark.sql.catalog.lh.uri": "jdbc:postgresql://postgres:5432/iceberg_catalog",
-    "spark.sql.catalog.lh.jdbc.user": "pvlakehouse",
-    "spark.sql.catalog.lh.jdbc.password": "pvlakehouse",
-    "spark.sql.catalog.lh.jdbc.catalog-name": "lh",
-    "spark.sql.catalog.lh.warehouse": "s3a://lakehouse/iceberg/warehouse",
-    "spark.hadoop.fs.s3a.endpoint": "http://minio:9000",
-    "spark.hadoop.fs.s3a.access.key": "spark_svc",
-    "spark.hadoop.fs.s3a.secret.key": "pvlakehouse_spark",
-    "spark.hadoop.fs.s3a.path.style.access": "true",
-    "spark.hadoop.mapreduce.fileoutputcommitter.algorithm.version": "2",
-    "spark.hadoop.mapreduce.fileoutputcommitter.cleanup-failures.ignored": "true",
-    "spark.sql.iceberg.compression-codec": "snappy",
-    "spark.sql.adaptive.enabled": "true",
-    "spark.sql.session.timeZone": "UTC",
-    # Optimized for scalable batch processing with partition-aware writes
-    "spark.sql.shuffle.partitions": "200",  # Default for larger datasets
-    "spark.sql.adaptive.coalescePartitions.enabled": "true",
-    "spark.sql.adaptive.advisoryPartitionSizeInBytes": "64MB",  # Larger for efficiency
-    "spark.sql.files.maxPartitionBytes": "128MB",  # Read larger chunks
-    "spark.memory.fraction": "0.7",  # More memory for processing
-    "spark.memory.storageFraction": "0.4",  # Better caching
-}
+def load_spark_config_from_yaml() -> Dict[str, str]:
+    """Load Spark configuration from YAML and merge with runtime settings.
+
+    This function reads the static configuration structure from spark_config.yaml
+    and injects secrets/dynamic values from the Settings singleton.
+
+    Returns:
+        Dictionary of Spark configuration key-value pairs ready to pass to SparkSession.
+
+    Raises:
+        FileNotFoundError: If spark_config.yaml is missing.
+        yaml.YAMLError: If YAML file is malformed.
+    """
+    global _CACHED_SPARK_CONFIG
+
+    if _CACHED_SPARK_CONFIG is not None:
+        return _CACHED_SPARK_CONFIG.copy()
+
+    config_path = Path(__file__).parent.parent.parent / "config" / "spark_config.yaml"
+
+    if not config_path.exists():
+        raise FileNotFoundError(f"Spark config YAML not found: {config_path}")
+
+    with open(config_path, encoding="utf-8") as f:
+        yaml_config = yaml.safe_load(f)
+
+    # Build flat Spark config dict from YAML structure
+    spark_config: Dict[str, str] = {}
+
+    # Iceberg Catalog Configuration (with runtime secret injection)
+    catalog = yaml_config.get("catalog", {})
+    spark_config["spark.sql.extensions"] = catalog.get("extensions", "")
+    spark_config["spark.sql.catalog.lh"] = catalog.get("catalog_impl", "")
+    spark_config["spark.sql.catalog.lh.type"] = catalog.get("catalog_type", "")
+    spark_config["spark.sql.catalog.lh.jdbc.catalog-name"] = catalog.get("catalog_name", "lh")
+
+    # Inject from settings (secrets not in YAML)
+    settings = get_settings()
+    spark_config["spark.sql.catalog.lh.uri"] = settings.jdbc_url
+    spark_config["spark.sql.catalog.lh.jdbc.user"] = settings.database.postgres_user
+    spark_config["spark.sql.catalog.lh.jdbc.password"] = settings.database.postgres_password
+    spark_config["spark.sql.catalog.lh.warehouse"] = settings.s3_warehouse_path
+
+    # S3/MinIO Configuration (secrets injected from settings)
+    hadoop = yaml_config.get("hadoop", {})
+    fs = hadoop.get("fs", {})
+    s3a = fs.get("s3a", {})
+    spark_config["spark.hadoop.fs.s3a.path.style.access"] = s3a.get("path_style_access", "true")
+    spark_config["spark.hadoop.fs.s3a.endpoint"] = settings.s3.minio_endpoint
+    spark_config["spark.hadoop.fs.s3a.access.key"] = settings.s3.spark_svc_access_key
+    spark_config["spark.hadoop.fs.s3a.secret.key"] = settings.s3.spark_svc_secret_key
+
+    # MapReduce Configuration
+    mapreduce = hadoop.get("mapreduce", {}).get("fileoutputcommitter", {})
+    spark_config["spark.hadoop.mapreduce.fileoutputcommitter.algorithm.version"] = mapreduce.get(
+        "algorithm_version", "2"
+    )
+    spark_config["spark.hadoop.mapreduce.fileoutputcommitter.cleanup-failures.ignored"] = mapreduce.get(
+        "cleanup_failures_ignored", "true"
+    )
+
+    # Performance Configuration
+    perf = yaml_config.get("performance", {})
+    adaptive = perf.get("adaptive", {})
+    spark_config["spark.sql.adaptive.enabled"] = adaptive.get("enabled", "true")
+    spark_config["spark.sql.adaptive.coalescePartitions.enabled"] = adaptive.get(
+        "coalesce_partitions_enabled", "true"
+    )
+    spark_config["spark.sql.adaptive.advisoryPartitionSizeInBytes"] = adaptive.get(
+        "advisory_partition_size", "64MB"
+    )
+
+    files = perf.get("files", {})
+    spark_config["spark.sql.files.maxPartitionBytes"] = files.get("max_partition_bytes", "128MB")
+
+    memory = perf.get("memory", {})
+    spark_config["spark.memory.fraction"] = settings.spark.spark_memory_fraction
+    spark_config["spark.memory.storageFraction"] = settings.spark.spark_memory_storage_fraction
+
+    # Shuffle partitions from settings
+    spark_config["spark.sql.shuffle.partitions"] = str(settings.spark.spark_shuffle_partitions)
+
+    # Iceberg Specific
+    iceberg = yaml_config.get("iceberg", {})
+    spark_config["spark.sql.iceberg.compression-codec"] = iceberg.get("compression_codec", "snappy")
+
+    # Session Configuration
+    session = yaml_config.get("session", {})
+    spark_config["spark.sql.session.timeZone"] = session.get("timezone", "UTC")
+
+    # Cache for subsequent calls
+    _CACHED_SPARK_CONFIG = spark_config.copy()
+
+    LOGGER.debug("Loaded Spark config from YAML with %d entries", len(spark_config))
+    return spark_config
 
 
 def cleanup_spark_staging(prefix: str = "spark-") -> None:
-    """Delete leftover Spark staging directories in the system temp path."""
+    """Delete leftover Spark staging directories in the system temp path.
 
+    Args:
+        prefix: Directory name prefix to match for cleanup.
+    """
     tmp_dir = tempfile.gettempdir()
     removed = 0
-    for name in os.listdir(tmp_dir):
-        if not name.startswith(prefix):
+    for name in Path(tmp_dir).iterdir():
+        if not name.name.startswith(prefix):
             continue
 
-        path = os.path.join(tmp_dir, name)
         try:
-            if os.path.isdir(path):
-                shutil.rmtree(path, ignore_errors=True)
+            if name.is_dir():
+                shutil.rmtree(name, ignore_errors=True)
                 removed += 1
         except Exception as error:  # pragma: no cover - best effort cleanup
-            LOGGER.debug("Failed to remove staging directory %s: %s", path, error)
+            LOGGER.debug("Failed to remove staging directory %s: %s", name, error)
 
     if removed:
         LOGGER.info("Removed %d Spark staging directories under %s", removed, tmp_dir)
 
 
 def create_spark_session(app_name: str, *, extra_conf: Optional[Dict[str, Any]] = None) -> SparkSession:
-    """Create a Spark session configured for Iceberg + MinIO usage."""
+    """Create a Spark session configured for Iceberg + MinIO usage.
 
+    Configuration is loaded from:
+    1. spark_config.yaml (static structure)
+    2. Settings singleton (secrets and dynamic values)
+    3. extra_conf parameter (runtime overrides)
+
+    Args:
+        app_name: Application name for Spark UI identification.
+        extra_conf: Additional Spark configuration overrides.
+
+    Returns:
+        Configured SparkSession instance.
+
+    Raises:
+        FileNotFoundError: If spark_config.yaml is missing.
+        ValidationError: If required settings are not configured.
+
+    Example:
+        >>> spark = create_spark_session("bronze-loader")
+        >>> spark.sql("SELECT 1").show()
+    """
     cleanup_spark_staging()
     builder = SparkSession.builder.appName(app_name)
-    config_items = dict(DEFAULT_SPARK_CONFIG)
-    builder = builder.config(
-        "spark.jars.packages",
-        ",".join(
-            [
-                "org.apache.iceberg:iceberg-spark-runtime-3.5_2.12:1.5.0",
-                "org.apache.iceberg:iceberg-aws-bundle:1.5.0",
-                "org.postgresql:postgresql:42.7.4",
-            ]
-        ),
-    )
+
+    # Load configuration from YAML + Settings
+    config_items = load_spark_config_from_yaml()
+
+    # Maven packages for Iceberg, S3, and PostgreSQL
+    packages = [
+        "org.apache.iceberg:iceberg-spark-runtime-3.5_2.12:1.5.0",
+        "org.apache.iceberg:iceberg-aws-bundle:1.5.0",
+        "org.postgresql:postgresql:42.7.4",
+    ]
+    builder = builder.config("spark.jars.packages", ",".join(packages))
+
+    # Apply extra configuration overrides
     if extra_conf:
         config_items.update({k: str(v) for k, v in extra_conf.items()})
 
+    # Set all configuration items
     for key, value in config_items.items():
         builder = builder.config(key, value)
 
@@ -113,8 +215,18 @@ def write_iceberg_table(
     mode: str = "append",
     partition_cols: Optional[Iterable[str]] = None,
 ) -> None:
-    """Write a DataFrame to an Iceberg table using DataFrameWriterV2."""
+    """Write a DataFrame to an Iceberg table using DataFrameWriterV2.
 
+    Args:
+        dataframe: PySpark DataFrame to write.
+        table_name: Fully qualified table name (e.g., 'lh.bronze.raw_facilities').
+        mode: Write mode - 'append', 'overwrite', or 'upsert'.
+        partition_cols: Optional list of column names to partition by.
+
+    Raises:
+        ValueError: If mode is unsupported.
+        AnalysisException: If table operation fails.
+    """
     row_count = dataframe.count()
     _ensure_namespace_exists(dataframe.sparkSession, table_name)
     writer = dataframe.writeTo(table_name)
@@ -147,6 +259,12 @@ def write_iceberg_table(
 
 
 def register_iceberg_table_with_trino(spark: SparkSession, table_name: str) -> None:
+    """Register an Iceberg table with Trino catalog.
+
+    Args:
+        spark: Active SparkSession.
+        table_name: Fully qualified table name.
+    """
     parts = table_name.split(".")
     if len(parts) < 3:
         LOGGER.warning("Cannot register Iceberg table %s: expected catalog.namespace.table", table_name)
@@ -208,4 +326,9 @@ def register_iceberg_table_with_trino(spark: SparkSession, table_name: str) -> N
         )
 
 
-__all__ = ["create_spark_session", "write_iceberg_table", "register_iceberg_table_with_trino"]
+__all__ = [
+    "create_spark_session",
+    "write_iceberg_table",
+    "register_iceberg_table_with_trino",
+    "load_spark_config_from_yaml",
+]
