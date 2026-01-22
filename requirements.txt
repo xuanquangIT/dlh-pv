@@ -10,6 +10,7 @@ trino==0.336.0
 
 # HTTP
 requests>=2.32.4,<3
+tenacity>=8.2.0
 
 # Data
 pandas==2.0.3
