@@ -176,3 +176,11 @@ docker/trino/catalog/iceberg.properties
 
 # AIDA
 AIDA/
+
+# uv (Python package manager)
+uv.lock
+.uv/
+.venv.uv/
+
+# PR 
+.pr/
