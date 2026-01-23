@@ -1,9 +1,5 @@
-"""Unit tests for OpenElectricity Pydantic models."""
-
 from __future__ import annotations
-
 import pytest
-
 from pv_lakehouse.etl.clients.openelectricity.models import (
     ClientConfig,
     DateRange,
@@ -16,28 +12,19 @@ from pv_lakehouse.etl.clients.openelectricity.models import (
 )
 from datetime import datetime
 
-
 class TestLocation:
-    """Tests for Location model."""
-
     def test_location_with_values(self):
-        """Test location with valid coordinates."""
         loc = Location(lat=-33.8688, lng=151.2093)
         assert loc.lat == -33.8688
         assert loc.lng == 151.2093
 
     def test_location_empty(self):
-        """Test location with no values."""
         loc = Location()
         assert loc.lat is None
         assert loc.lng is None
 
-
 class TestUnit:
-    """Tests for Unit model."""
-
     def test_unit_basic(self):
-        """Test basic unit creation."""
         unit = Unit(
             code="UNIT1",
             name="Solar Unit 1",
@@ -52,17 +39,14 @@ class TestUnit:
         assert unit.capacity_mw == 100.5
 
     def test_unit_coerce_capacity_from_string(self):
-        """Test that capacity is coerced from string."""
         unit = Unit(capacity_mw="50.5")  # type: ignore
         assert unit.capacity_mw == 50.5
 
     def test_unit_coerce_capacity_from_invalid(self):
-        """Test that invalid capacity becomes None."""
         unit = Unit(capacity_mw="invalid")  # type: ignore
         assert unit.capacity_mw is None
 
     def test_unit_with_alias(self):
-        """Test unit with alias field names."""
         data = {"code": "U1", "capacity": 100.0, "status": "operating", "fueltech": "solar"}
         unit = Unit.model_validate(data)
         assert unit.code == "U1"
@@ -72,10 +56,7 @@ class TestUnit:
 
 
 class TestFacility:
-    """Tests for Facility model."""
-
     def test_facility_basic(self):
-        """Test basic facility creation."""
         facility = Facility(
             code="FAC1",
             name="Solar Farm 1",
@@ -89,7 +70,6 @@ class TestFacility:
         assert facility.units == []
 
     def test_facility_with_units(self):
-        """Test facility with units."""
         facility = Facility(
             code="FAC1",
             name="Solar Farm 1",
@@ -104,7 +84,6 @@ class TestFacility:
         assert facility.units[1].code == "U2"
 
     def test_facility_with_location(self):
-        """Test facility with location."""
         facility = Facility(
             code="FAC1",
             name="Solar Farm 1",
@@ -117,10 +96,7 @@ class TestFacility:
 
 
 class TestFacilityMetadata:
-    """Tests for FacilityMetadata model."""
-
     def test_facility_metadata_basic(self):
-        """Test basic metadata creation."""
         meta = FacilityMetadata(
             code="FAC1",
             name="Test Facility",
@@ -132,23 +108,18 @@ class TestFacilityMetadata:
         assert meta.units == []
 
     def test_facility_metadata_requires_code(self):
-        """Test that code is required."""
         with pytest.raises(Exception):
             FacilityMetadata(name="Test", network_id="NEM")  # type: ignore
 
 
 class TestFacilitySummary:
-    """Tests for FacilitySummary model."""
-
     def test_facility_summary_defaults(self):
-        """Test default values."""
         summary = FacilitySummary()
         assert summary.unit_count == 0
         assert summary.facility_code is None
         assert summary.total_capacity_mw is None
 
     def test_facility_summary_full(self):
-        """Test with all values set."""
         summary = FacilitySummary(
             facility_code="FAC1",
             facility_name="Test Facility",
@@ -165,10 +136,7 @@ class TestFacilitySummary:
 
 
 class TestTimeseriesRow:
-    """Tests for TimeseriesRow model."""
-
     def test_timeseries_row_basic(self):
-        """Test basic row creation."""
         row = TimeseriesRow(
             network_code="NEM",
             facility_code="FAC1",
@@ -184,10 +152,7 @@ class TestTimeseriesRow:
 
 
 class TestClientConfig:
-    """Tests for ClientConfig model."""
-
     def test_default_config(self):
-        """Test default configuration values."""
         config = ClientConfig()
         assert config.base_url == "https://api.openelectricity.org.au/v4"
         assert config.timeout == 120
@@ -196,7 +161,6 @@ class TestClientConfig:
         assert config.retry_max_wait == 60.0
 
     def test_custom_config(self):
-        """Test custom configuration."""
         config = ClientConfig(
             base_url="https://custom.api.com/v1",
             timeout=60,
@@ -208,10 +172,7 @@ class TestClientConfig:
 
 
 class TestDateRange:
-    """Tests for DateRange model."""
-
     def test_valid_date_range(self):
-        """Test valid date range."""
         dr = DateRange(
             start=datetime(2024, 1, 1),
             end=datetime(2024, 1, 31),

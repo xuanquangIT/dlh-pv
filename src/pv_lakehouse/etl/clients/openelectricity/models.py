@@ -1,21 +1,10 @@
-"""Pydantic models for OpenElectricity API responses.
-
-Provides type safety and validation for API data structures.
-"""
-
-from __future__ import annotations
-
+from __future__ import annotations #Cho phép sử dụng kiểu dữ liệu lồng nhau (ví dụ: List[Unit]) ngay trong class định nghĩa
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional #định nghĩa kiểu dữ liệu cho biến, tham số hàm
+from pydantic import BaseModel, Field, field_validator #validation dữ liệu, tạo data models với type checking tự động
+from pyspark.sql import types as T #định nghĩa schema cho DataFrame
 
-from pydantic import BaseModel, Field, field_validator
-from pyspark.sql import types as T
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Spark Schema (for Bronze layer)
-# ─────────────────────────────────────────────────────────────────────────────
-
+#Spark schema
 FACILITY_SCHEMA = T.StructType(
     [
         T.StructField("facility_code", T.StringType(), True),
@@ -39,37 +28,29 @@ FACILITY_SCHEMA = T.StructType(
     ]
 )
 
-
-# ─────────────────────────────────────────────────────────────────────────────
-# API Response Models
-# ─────────────────────────────────────────────────────────────────────────────
-
+#API response models
+#Data model cho vị trí địa lý
 class Location(BaseModel):
-    """Geographic location of a facility."""
+    lat: Optional[float] = None #Kinh độ
+    lng: Optional[float] = None #Vĩ độ
 
-    lat: Optional[float] = None
-    lng: Optional[float] = None
-
-
+#Data model cho đơn vị điện
 class Unit(BaseModel):
-    """Unit within a facility (generator, battery, etc.)."""
+    code: Optional[str] = None  #Mã đơn vị
+    name: Optional[str] = None #Tên đơn vị
+    status_id: Optional[str] = Field(None, alias="status") #Trạng thái
+    fueltech_id: Optional[str] = Field(None, alias="fueltech") #Loại nhiên liệu
+    dispatch_type: Optional[str] = None #Loại dispatch
+    capacity_mw: Optional[float] = Field(None, alias="capacity") #Dung lượng
+    capacity_registered: Optional[float] = None #Dung lượng đăng ký
+    capacity_maximum: Optional[float] = None #Dung lượng tối đa
+    capacity_storage: Optional[float] = None #Dung lượng lưu trữ
 
-    code: Optional[str] = None
-    name: Optional[str] = None
-    status_id: Optional[str] = Field(None, alias="status")
-    fueltech_id: Optional[str] = Field(None, alias="fueltech")
-    dispatch_type: Optional[str] = None
-    capacity_mw: Optional[float] = Field(None, alias="capacity")
-    capacity_registered: Optional[float] = None
-    capacity_maximum: Optional[float] = None
-    capacity_storage: Optional[float] = None
-
-    model_config = {"populate_by_name": True, "extra": "allow"}
+    model_config = {"populate_by_name": True, "extra": "allow"} 
 
     @field_validator("capacity_mw", "capacity_registered", "capacity_maximum", "capacity_storage", mode="before")
-    @classmethod
+    @classmethod #Chuyển đổi giá trị thành float
     def coerce_float(cls, v: Any) -> Optional[float]:
-        """Coerce numeric strings to float."""
         if v is None or v == "":
             return None
         try:
@@ -77,146 +58,104 @@ class Unit(BaseModel):
         except (TypeError, ValueError):
             return None
 
-
+#Data model cho trạm
 class Facility(BaseModel):
-    """Facility metadata from API response."""
-
-    code: Optional[str] = None
-    name: Optional[str] = None
-    network_id: Optional[str] = None
-    network_region: Optional[str] = None
-    created_at: Optional[str] = None
-    updated_at: Optional[str] = None
-    description: Optional[str] = None
-    location: Optional[Location] = None
-    units: List[Unit] = Field(default_factory=list)
+    code: Optional[str] = None #Mã trạm
+    name: Optional[str] = None #Tên trạm
+    network_id: Optional[str] = None #Mã mạng lưới
+    network_region: Optional[str] = None #Khu vực mạng lưới
+    created_at: Optional[str] = None #Ngày tạo
+    updated_at: Optional[str] = None #Ngày cập nhật
+    description: Optional[str] = None #Mô tả
+    location: Optional[Location] = None #Vị trí
+    units: List[Unit] = Field(default_factory=list) #Danh sách đơn vị
 
     model_config = {"extra": "allow"}
 
-
+#Data model cho metadata của trạm
 class FacilityMetadata(BaseModel):
-    """Minimal facility metadata used for timeseries lookups."""
+    code: str #Mã trạm
+    name: Optional[str] = None #Tên trạm
+    network_id: str #Mã mạng lưới
+    network_region: Optional[str] = None #Khu vực mạng lưới
+    units: List[Dict[str, Any]] = Field(default_factory=list) #Danh sách đơn vị
 
-    code: str
-    name: Optional[str] = None
-    network_id: str
-    network_region: Optional[str] = None
-    units: List[Dict[str, Any]] = Field(default_factory=list)
-
-
+#Data model cho response của trạm
 class FacilitiesResponse(BaseModel):
-    """Response from /facilities endpoint."""
+    success: bool = False #Kết quả
+    data: List[Facility] = Field(default_factory=list) #Danh sách trạm
+    error: Optional[str] = None #Lỗi
 
-    success: bool = False
-    data: List[Facility] = Field(default_factory=list)
-    error: Optional[str] = None
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Timeseries Models
-# ─────────────────────────────────────────────────────────────────────────────
-
+#Data model cho response của timeseries
 class TimeseriesColumns(BaseModel):
-    """Column identifiers for a timeseries result."""
-
-    unit_code: Optional[str] = None
-    facility_code: Optional[str] = None
-
+    unit_code: Optional[str] = None #Mã đơn vị
+    facility_code: Optional[str] = None #Mã trạm
 
 class TimeseriesResult(BaseModel):
-    """Single timeseries result (one unit/facility)."""
-
-    columns: Optional[TimeseriesColumns] = None
-    data: List[List[Any]] = Field(default_factory=list)  # [[timestamp, value], ...]
-
-
+    columns: Optional[TimeseriesColumns] = None #Cột
+    data: List[List[Any]] = Field(default_factory=list) 
 class TimeseriesSeries(BaseModel):
-    """A series of timeseries data for a specific metric."""
-
-    network_code: Optional[str] = None
-    metric: Optional[str] = None
-    interval: Optional[str] = None
-    unit: Optional[str] = None  # measurement unit (e.g., "MWh")
-    results: List[TimeseriesResult] = Field(default_factory=list)
+    network_code: Optional[str] = None #Mã mạng lưới
+    metric: Optional[str] = None #Đơn vị đo
+    interval: Optional[str] = None #Khoảng thời gian
+    unit: Optional[str] = None #Đơn vị
+    results: List[TimeseriesResult] = Field(default_factory=list) 
 
     model_config = {"extra": "allow"}
 
-
 class TimeseriesResponse(BaseModel):
-    """Response from /data/facilities/{network} endpoint."""
+    success: bool = False #Kết quả
+    data: List[TimeseriesSeries] = Field(default_factory=list) 
+    error: Optional[str] = None #Lỗi
 
-    success: bool = False
-    data: List[TimeseriesSeries] = Field(default_factory=list)
-    error: Optional[str] = None
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Flattened Row Models (for DataFrame output)
-# ─────────────────────────────────────────────────────────────────────────────
-
+# Facility summary model
 class FacilitySummary(BaseModel):
-    """Flattened facility summary for DataFrame output."""
-
-    facility_code: Optional[str] = None
-    facility_name: Optional[str] = None
-    network_id: Optional[str] = None
-    network_region: Optional[str] = None
-    facility_created_at: Optional[str] = None
-    facility_updated_at: Optional[str] = None
-    location_lat: Optional[float] = None
-    location_lng: Optional[float] = None
-    unit_count: int = 0
-    total_capacity_mw: Optional[float] = None
-    total_capacity_registered_mw: Optional[float] = None
-    total_capacity_maximum_mw: Optional[float] = None
-    total_capacity_storage_mwh: Optional[float] = None
-    unit_fueltech_summary: Optional[str] = None
-    unit_status_summary: Optional[str] = None
-    unit_dispatch_summary: Optional[str] = None
-    unit_codes: Optional[str] = None
-    facility_description: Optional[str] = None
-
+    facility_code: Optional[str] = None #Mã trạm
+    facility_name: Optional[str] = None #Tên trạm
+    network_id: Optional[str] = None #Mã mạng lưới
+    network_region: Optional[str] = None #Khu vực mạng lưới
+    facility_created_at: Optional[str] = None #Ngày tạo
+    facility_updated_at: Optional[str] = None #Ngày cập nhật
+    location_lat: Optional[float] = None #Vĩ độ
+    location_lng: Optional[float] = None #Kinh độ
+    unit_count: int = 0 #Số lượng đơn vị
+    total_capacity_mw: Optional[float] = None #Tổng dung lượng
+    total_capacity_registered_mw: Optional[float] = None #Tổng dung lượng đăng ký
+    total_capacity_maximum_mw: Optional[float] = None #Tổng dung lượng tối đa
+    total_capacity_storage_mwh: Optional[float] = None #Tổng dung lượng lưu trữ
+    unit_fueltech_summary: Optional[str] = None #Tóm tắt loại nhiên liệu
+    unit_status_summary: Optional[str] = None #Tóm tắt trạng thái
+    unit_dispatch_summary: Optional[str] = None #Tóm tắt loại dispatch
+    unit_codes: Optional[str] = None #Mã đơn vị
+    facility_description: Optional[str] = None #Mô tả
 
 class TimeseriesRow(BaseModel):
-    """Flattened timeseries row for DataFrame output."""
-
-    network_code: Optional[str] = None
-    network_id: Optional[str] = None
-    network_region: Optional[str] = None
-    facility_code: Optional[str] = None
-    facility_name: Optional[str] = None
-    unit_code: Optional[str] = None
-    metric: Optional[str] = None
-    interval: Optional[str] = None
-    value_unit: Optional[str] = None
-    interval_start: Optional[str] = None
-    value: Optional[float] = None
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Configuration Models
-# ─────────────────────────────────────────────────────────────────────────────
+    network_code: Optional[str] = None #Mã mạng lưới
+    network_id: Optional[str] = None #Mã mạng lưới
+    network_region: Optional[str] = None #Khu vực mạng lưới
+    facility_code: Optional[str] = None #Mã trạm
+    facility_name: Optional[str] = None #Tên trạm
+    unit_code: Optional[str] = None #Mã đơn vị
+    metric: Optional[str] = None #Đơn vị đo
+    interval: Optional[str] = None #Khoảng thời gian
+    value_unit: Optional[str] = None #Đơn vị
+    interval_start: Optional[str] = None #Thời gian bắt đầu
+    value: Optional[float] = None #Giá trị
 
 class ClientConfig(BaseModel):
-    """Configuration for OpenElectricityClient."""
-
     base_url: str = "https://api.openelectricity.org.au/v4"
     timeout: int = 120
     max_retries: int = 3
     retry_min_wait: float = 1.0  # seconds
     retry_max_wait: float = 60.0  # seconds
 
-
 class DateRange(BaseModel):
-    """Date range for API queries."""
-
     start: datetime
     end: datetime
 
     @field_validator("end")
-    @classmethod
+    @classmethod #Kiểm tra end phải sau start
     def end_after_start(cls, v: datetime, info) -> datetime:
-        """Validate that end is after start."""
         if "start" in info.data and v <= info.data["start"]:
             raise ValueError("end must be after start")
         return v
