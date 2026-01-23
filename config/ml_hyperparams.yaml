@@ -1,0 +1,60 @@
+# ML Hyperparameters Configuration
+# Defines model settings and training parameters
+
+# Model selection
+model:
+  type: "decision_tree"  # Options: "decision_tree", "gbt"
+  
+# Decision Tree Regressor parameters
+decision_tree:
+  max_depth: 20
+  min_instances_per_node: 20
+  max_bins: 64
+  min_info_gain: 0.0
+  seed: 42
+
+# Gradient Boosted Trees parameters (alternative)
+gbt:
+  max_depth: 10
+  max_iter: 50
+  step_size: 0.1
+  subsample_rate: 0.8
+  feature_subset_strategy: "auto"
+  seed: 42
+
+# Training parameters
+training:
+  sample_limit: 50000  # Balance between performance and memory
+  train_ratio: 0.7
+  validation_ratio: 0.15
+  test_ratio: 0.15
+  random_seed: 42
+  min_rows_required: 1000
+
+# Data split strategy
+data_split:
+  method: "random"  # Options: "random", "temporal"
+  seed: 42
+
+# Evaluation metrics to track
+metrics:
+  primary: "rmse"
+  track:
+    - "rmse"
+    - "mae"
+    - "r2"
+    - "mse"
+
+# MLflow experiment settings
+mlflow:
+  experiment_name: "pv_solar_regression"
+  run_name_prefix: "regression_dt"
+  artifact_path: "model"
+  log_model: true
+  log_artifacts: true
+
+# Output table settings
+output:
+  gold_table: "lh.gold.fact_solar_forecast_regression"
+  write_mode: "overwrite"
+  enable_predictions_write: true
