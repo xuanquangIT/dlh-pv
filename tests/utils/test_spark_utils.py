@@ -4,11 +4,13 @@ This module tests:
 - YAML configuration loading
 - Spark session creation with new config system
 - Integration with Settings
+- Thread safety for cached configuration
 - No hardcoded credentials remain
 """
 
 from __future__ import annotations
 
+import threading
 from pathlib import Path
 
 import pytest
@@ -133,6 +135,47 @@ class TestSparkConfigYAML:
         # Should return copies to prevent mutation
         assert config1 == config2
         assert config1 is not config2  # Different objects
+
+    def test_config_thread_safety(self, mock_env_minimal, reset_settings_cache):
+        """Configuration loading should be thread-safe with no race conditions."""
+        from pv_lakehouse.etl.utils import spark_utils
+
+        # Reset cache to test concurrent initialization
+        spark_utils._CACHED_SPARK_CONFIG = None
+
+        results = []
+        errors = []
+
+        def load_config():
+            """Load config in separate thread."""
+            try:
+                config = load_spark_config_from_yaml()
+                results.append(config)
+            except Exception as e:
+                errors.append(e)
+
+        # Create 10 threads that try to load config simultaneously
+        threads = [threading.Thread(target=load_config) for _ in range(10)]
+
+        # Start all threads at once
+        for thread in threads:
+            thread.start()
+
+        # Wait for all to complete
+        for thread in threads:
+            thread.join()
+
+        # No errors should occur
+        assert len(errors) == 0, f"Thread errors: {errors}"
+
+        # All results should be equal (same configuration)
+        assert len(results) == 10
+        first_config = results[0]
+        for config in results[1:]:
+            assert config == first_config
+
+        # Cache should be set exactly once
+        assert spark_utils._CACHED_SPARK_CONFIG is not None
 
 
 class TestSparkSessionCreation:

@@ -12,10 +12,14 @@ Example:
 
 from __future__ import annotations
 
+import logging
+import threading
 from typing import Optional
 
-from pydantic import Field, field_validator
+from pydantic import Field, ValidationError, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+LOGGER = logging.getLogger(__name__)
 
 
 class DatabaseSettings(BaseSettings):
@@ -215,10 +219,14 @@ class Settings(BaseSettings):
 
 # Lazy initialization - only create settings when accessed
 _settings: Optional[Settings] = None
+_settings_lock = threading.Lock()
 
 
 def get_settings() -> Settings:
-    """Get or create the Settings singleton.
+    """Get or create the Settings singleton (thread-safe).
+
+    This function uses double-checked locking to ensure thread-safe
+    initialization of the Settings singleton.
 
     Returns:
         Settings instance loaded from environment variables/.env file.
@@ -227,17 +235,45 @@ def get_settings() -> Settings:
         ValidationError: If required configuration is missing.
     """
     global _settings
-    if _settings is None:
-        _settings = Settings()
+    
+    # First check without lock (fast path)
+    if _settings is not None:
+        return _settings
+    
+    # Acquire lock for initialization
+    with _settings_lock:
+        # Double-check after acquiring lock
+        if _settings is None:
+            LOGGER.info("Initializing Settings from environment variables and .env file")
+            try:
+                _settings = Settings()
+                LOGGER.info("Settings initialized successfully")
+            except ValidationError as e:
+                LOGGER.error("Configuration validation failed: %s", e)
+                raise
+            except Exception as e:
+                LOGGER.error("Unexpected error loading configuration: %s", e)
+                raise
+    
     return _settings
 
 
 # For backward compatibility and convenience
 try:
     settings = get_settings()
-except Exception:
+except ValidationError as e:
     # In test environments, this might fail at import time
     # Tests should use get_settings() or fixture to set env vars first
+    LOGGER.warning(
+        "Settings validation failed at module import (expected in test environments): %s",
+        e
+    )
+    settings = None  # type: ignore
+except Exception as e:
+    LOGGER.warning(
+        "Settings initialization failed at module import (expected in test environments): %s",
+        e
+    )
     settings = None  # type: ignore
 
 

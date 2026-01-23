@@ -178,11 +178,18 @@ class TestSecurityChecks:
 
         python_files = list(src_dir.rglob("*.py"))
 
+        # Extended patterns to catch more formats
         forbidden_patterns = [
-            b'"pvlakehouse"',  # Old hardcoded password
-            b"'pvlakehouse'",
-            b'"pvlakehouse_spark"',  # Old S3 secret
-            b"'pvlakehouse_spark'",
+            b'"pvlakehouse"',  # Old hardcoded password (double quotes)
+            b"'pvlakehouse'",  # Old hardcoded password (single quotes)
+            b'"pvlakehouse_spark"',  # Old S3 secret (double quotes)
+            b"'pvlakehouse_spark'",  # Old S3 secret (single quotes)
+            b'f"pvlakehouse"',  # F-string format
+            b"f'pvlakehouse'",  # F-string format
+            b'password="pvlakehouse"',  # Assignment format
+            b"password='pvlakehouse'",  # Assignment format
+            b"pvlakehouse_trino",  # Other service accounts
+            b"pvlakehouse_mlflow",  # MLflow service account
         ]
 
         violations = []

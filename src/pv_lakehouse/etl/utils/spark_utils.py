@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import shutil
 import tempfile
+import threading
 from pathlib import Path
 from typing import Any, Dict, Iterable, Optional
 
@@ -18,6 +19,7 @@ LOGGER = logging.getLogger(__name__)
 
 # Cache loaded config to avoid repeated YAML parsing
 _CACHED_SPARK_CONFIG: Optional[Dict[str, str]] = None
+_config_lock = threading.Lock()
 
 
 def _ensure_namespace_exists(spark: SparkSession, table_name: str) -> None:
@@ -44,6 +46,7 @@ def load_spark_config_from_yaml() -> Dict[str, str]:
 
     This function reads the static configuration structure from spark_config.yaml
     and injects secrets/dynamic values from the Settings singleton.
+    Uses thread-safe caching to avoid repeated YAML parsing.
 
     Returns:
         Dictionary of Spark configuration key-value pairs ready to pass to SparkSession.
@@ -54,51 +57,60 @@ def load_spark_config_from_yaml() -> Dict[str, str]:
     """
     global _CACHED_SPARK_CONFIG
 
+    # First check without lock (fast path)
     if _CACHED_SPARK_CONFIG is not None:
         return _CACHED_SPARK_CONFIG.copy()
 
-    config_path = Path(__file__).parent.parent.parent / "config" / "spark_config.yaml"
+    # Acquire lock for loading
+    with _config_lock:
+        # Double-check after acquiring lock
+        if _CACHED_SPARK_CONFIG is not None:
+            return _CACHED_SPARK_CONFIG.copy()
 
-    if not config_path.exists():
-        raise FileNotFoundError(f"Spark config YAML not found: {config_path}")
+        LOGGER.info("Loading Spark configuration from YAML")
 
-    with open(config_path, encoding="utf-8") as f:
-        yaml_config = yaml.safe_load(f)
+        config_path = Path(__file__).parent.parent.parent / "config" / "spark_config.yaml"
 
-    # Build flat Spark config dict from YAML structure
-    spark_config: Dict[str, str] = {}
+        if not config_path.exists():
+            raise FileNotFoundError(f"Spark config YAML not found: {config_path}")
 
-    # Iceberg Catalog Configuration (with runtime secret injection)
-    catalog = yaml_config.get("catalog", {})
-    spark_config["spark.sql.extensions"] = catalog.get("extensions", "")
-    spark_config["spark.sql.catalog.lh"] = catalog.get("catalog_impl", "")
-    spark_config["spark.sql.catalog.lh.type"] = catalog.get("catalog_type", "")
-    spark_config["spark.sql.catalog.lh.jdbc.catalog-name"] = catalog.get("catalog_name", "lh")
+        with open(config_path, encoding="utf-8") as f:
+            yaml_config = yaml.safe_load(f)
 
-    # Inject from settings (secrets not in YAML)
-    settings = get_settings()
-    spark_config["spark.sql.catalog.lh.uri"] = settings.jdbc_url
-    spark_config["spark.sql.catalog.lh.jdbc.user"] = settings.database.postgres_user
-    spark_config["spark.sql.catalog.lh.jdbc.password"] = settings.database.postgres_password
-    spark_config["spark.sql.catalog.lh.warehouse"] = settings.s3_warehouse_path
+        # Build flat Spark config dict from YAML structure
+        spark_config: Dict[str, str] = {}
 
-    # S3/MinIO Configuration (secrets injected from settings)
-    hadoop = yaml_config.get("hadoop", {})
-    fs = hadoop.get("fs", {})
-    s3a = fs.get("s3a", {})
-    spark_config["spark.hadoop.fs.s3a.path.style.access"] = s3a.get("path_style_access", "true")
-    spark_config["spark.hadoop.fs.s3a.endpoint"] = settings.s3.minio_endpoint
-    spark_config["spark.hadoop.fs.s3a.access.key"] = settings.s3.spark_svc_access_key
-    spark_config["spark.hadoop.fs.s3a.secret.key"] = settings.s3.spark_svc_secret_key
+        # Iceberg Catalog Configuration (with runtime secret injection)
+        catalog = yaml_config.get("catalog", {})
+        spark_config["spark.sql.extensions"] = catalog.get("extensions", "")
+        spark_config["spark.sql.catalog.lh"] = catalog.get("catalog_impl", "")
+        spark_config["spark.sql.catalog.lh.type"] = catalog.get("catalog_type", "")
+        spark_config["spark.sql.catalog.lh.jdbc.catalog-name"] = catalog.get("catalog_name", "lh")
 
-    # MapReduce Configuration
-    mapreduce = hadoop.get("mapreduce", {}).get("fileoutputcommitter", {})
-    spark_config["spark.hadoop.mapreduce.fileoutputcommitter.algorithm.version"] = mapreduce.get(
-        "algorithm_version", "2"
-    )
-    spark_config["spark.hadoop.mapreduce.fileoutputcommitter.cleanup-failures.ignored"] = mapreduce.get(
-        "cleanup_failures_ignored", "true"
-    )
+        # Inject from settings (secrets not in YAML)
+        settings = get_settings()
+        spark_config["spark.sql.catalog.lh.uri"] = settings.jdbc_url
+        spark_config["spark.sql.catalog.lh.jdbc.user"] = settings.database.postgres_user
+        spark_config["spark.sql.catalog.lh.jdbc.password"] = settings.database.postgres_password
+        spark_config["spark.sql.catalog.lh.warehouse"] = settings.s3_warehouse_path
+
+        # S3/MinIO Configuration (secrets injected from settings)
+        hadoop = yaml_config.get("hadoop", {})
+        fs = hadoop.get("fs", {})
+        s3a = fs.get("s3a", {})
+        spark_config["spark.hadoop.fs.s3a.path.style.access"] = s3a.get("path_style_access", "true")
+        spark_config["spark.hadoop.fs.s3a.endpoint"] = settings.s3.minio_endpoint
+        spark_config["spark.hadoop.fs.s3a.access.key"] = settings.s3.spark_svc_access_key
+        spark_config["spark.hadoop.fs.s3a.secret.key"] = settings.s3.spark_svc_secret_key
+
+        # MapReduce Configuration
+        mapreduce = hadoop.get("mapreduce", {}).get("fileoutputcommitter", {})
+        spark_config["spark.hadoop.mapreduce.fileoutputcommitter.algorithm.version"] = mapreduce.get(
+            "algorithm_version", "2"
+        )
+        spark_config["spark.hadoop.mapreduce.fileoutputcommitter.cleanup-failures.ignored"] = mapreduce.get(
+            "cleanup_failures_ignored", "true"
+        )
 
     # Performance Configuration
     perf = yaml_config.get("performance", {})
@@ -132,7 +144,7 @@ def load_spark_config_from_yaml() -> Dict[str, str]:
     # Cache for subsequent calls
     _CACHED_SPARK_CONFIG = spark_config.copy()
 
-    LOGGER.debug("Loaded Spark config from YAML with %d entries", len(spark_config))
+    LOGGER.info("Loaded Spark config from YAML with %d entries", len(spark_config))
     return spark_config
 
 
@@ -142,9 +154,14 @@ def cleanup_spark_staging(prefix: str = "spark-") -> None:
     Args:
         prefix: Directory name prefix to match for cleanup.
     """
-    tmp_dir = tempfile.gettempdir()
+    tmp_dir = Path(tempfile.gettempdir())
+    
+    if not tmp_dir.exists():
+        LOGGER.debug("Temp directory %s does not exist, skipping cleanup", tmp_dir)
+        return
+    
     removed = 0
-    for name in Path(tmp_dir).iterdir():
+    for name in tmp_dir.iterdir():
         if not name.name.startswith(prefix):
             continue
 
