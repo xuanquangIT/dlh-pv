@@ -1,24 +1,4 @@
-"""OpenElectricity API Client Package.
-
-This package provides a clean, testable interface to the OpenElectricity API
-with support for:
-- Type-safe responses via Pydantic models
-- Dependency injection for HTTP client (testability)
-- Exponential backoff retry logic (resilience)
-
-Example usage:
-    >>> from pv_lakehouse.etl.clients.openelectricity import OpenElectricityClient
-    >>> client = OpenElectricityClient(api_key="your-key")
-    >>> df = client.fetch_facilities()
-    
-    # Or use the backward-compatible module functions:
-    >>> from pv_lakehouse.etl.clients.openelectricity import fetch_facilities_dataframe
-    >>> df = fetch_facilities_dataframe(api_key="your-key")
-"""
-
 from __future__ import annotations
-
-# Re-export main client class and functions
 from .client import (
     OpenElectricityClient,
     HTTPClient,
@@ -33,7 +13,6 @@ from .client import (
     MAX_LOOKBACK_WINDOWS,
 )
 
-# Re-export models
 from .models import (
     FACILITY_SCHEMA,
     Location,
@@ -51,7 +30,6 @@ from .models import (
     DateRange,
 )
 
-# Re-export parsers (for advanced usage)
 from .parsers import (
     get_timezone_offset_hours,
     get_timezone_id,

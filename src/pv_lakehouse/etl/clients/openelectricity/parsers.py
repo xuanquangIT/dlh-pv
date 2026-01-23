@@ -1,16 +1,8 @@
-"""Parsers and data transformation functions for OpenElectricity API.
-
-This module contains functions for parsing and transforming API responses
-into structured data suitable for DataFrame creation.
-"""
-
 from __future__ import annotations
-
 import datetime as dt
 import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
-
 from .models import (
     Facility,
     FacilityMetadata,
@@ -18,38 +10,24 @@ from .models import (
     TimeseriesRow,
 )
 
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Constants
-# ─────────────────────────────────────────────────────────────────────────────
-
 NETWORK_TIMEZONE_IDS = {"NEM": "Australia/Brisbane", "WEM": "Australia/Perth"}
 NETWORK_FALLBACK_OFFSETS = {"NEM": 10, "WEM": 8}
 MAX_RANGE_ERROR_PATTERN = re.compile(r"Maximum range is (\d+) days", re.IGNORECASE)
 
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Timezone Helpers
-# ─────────────────────────────────────────────────────────────────────────────
-
+#trả về giờ offset từ UTC của network
 def get_timezone_offset_hours(network_id: str) -> int:
-    """Get timezone offset in hours for a network (handles DST fallback)."""
     return NETWORK_FALLBACK_OFFSETS.get(network_id, 10)
-
-
+#trả về IANA timezone ID của network
 def get_timezone_id(network_id: str) -> str:
-    """Get IANA timezone ID for a network."""
     return NETWORK_TIMEZONE_IDS.get(network_id, "Australia/Brisbane")
-
-
+#trả về timezone object của network
 def resolve_network_timezone(network_code: str):
-    """Resolve timezone object for a network."""
     try:
         from zoneinfo import ZoneInfo
     except ImportError:
-        ZoneInfo = None  # type: ignore[assignment,misc]
-
-    tz_name = NETWORK_TIMEZONE_IDS.get(network_code)
+        ZoneInfo = None
+    
+    tz_name = NETWORK_TIMEZONE_IDS.get(network_code) #lấy tên timezone của network
     if ZoneInfo and tz_name:
         try:
             return ZoneInfo(tz_name)
@@ -57,19 +35,13 @@ def resolve_network_timezone(network_code: str):
             pass
 
     from datetime import timezone, timedelta
-
     offset_hours = NETWORK_FALLBACK_OFFSETS.get(network_code)
     if offset_hours is not None:
-        return timezone(timedelta(hours=offset_hours))
+        return timezone(timedelta(hours=offset_hours)) #ví dụ: timezone(timedelta(hours=10)) trả về UTC +10
     return timezone.utc
 
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Date/Time Helpers
-# ─────────────────────────────────────────────────────────────────────────────
-
+#parse datetime string thành datetime object
 def parse_naive_datetime(value: str) -> dt.datetime:
-    """Parse an ISO-format datetime string, requiring it to be timezone-naive."""
     try:
         parsed = dt.datetime.fromisoformat(value)
     except ValueError as exc:
@@ -77,49 +49,41 @@ def parse_naive_datetime(value: str) -> dt.datetime:
     if parsed.tzinfo is not None:
         raise ValueError("Datetime values must be timezone naive (network local time).")
     return parsed
-
-
+#format datetime object thành datetime string
 def format_naive_datetime(value: dt.datetime) -> str:
-    """Format a datetime as ISO string without timezone."""
     return value.strftime("%Y-%m-%dT%H:%M:%S")
 
-
 def chunk_date_range(
-    start: dt.datetime, end: dt.datetime, max_days: Optional[int]
+    start: dt.datetime,
+    end: dt.datetime,
+    max_days: Optional[int]
 ) -> List[Tuple[dt.datetime, dt.datetime]]:
-    """Split a date range into chunks of at most max_days each."""
     if not max_days or max_days <= 0:
         return [(start, end)]
     
+    #list chứa các tuple (start, end)
     segments: List[Tuple[dt.datetime, dt.datetime]] = []
-    delta = dt.timedelta(days=max_days)
+    delta = dt.timedelta(days=max_days) 
     current = start
     
     while current < end:
-        next_dt = min(current + delta, end)
-        segments.append((current, next_dt))
+        next_dt = min(current + delta, end) # không vượt quá end
+        segments.append((current, next_dt)) #thêm tuple (current, next_dt) vào list segments
         current = next_dt
     
     return segments
 
-
 def extract_max_days_from_error(error_text: str) -> Optional[int]:
-    """Extract maximum days from API error message."""
     match = MAX_RANGE_ERROR_PATTERN.search(error_text or "")
     if match:
         try:
-            return int(match.group(1))
+            return int(match.group(1)) #group(1) trả về số lượng ngày tối đa
         except ValueError:
             return None
     return None
 
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Facility Code Loader
-# ─────────────────────────────────────────────────────────────────────────────
-
+# đọc danh sách mã trạm từ facilities.js 
 def load_default_facility_codes(override_path: Optional[Path] = None) -> List[str]:
-    """Return the canonical list of facility codes shared with JS tooling."""
     js_path = override_path or Path(__file__).resolve().parent / "../../bronze/facilities.js"
     js_path = js_path.resolve()
     
@@ -134,32 +98,21 @@ def load_default_facility_codes(override_path: Optional[Path] = None) -> List[st
 
     return [code.upper() for code in matches if code.strip()]
 
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Value Coercion Helpers
-# ─────────────────────────────────────────────────────────────────────────────
-
+# chuyển đổi giá trị sang float, nếu lỗi trả về 0.0
 def safe_float(value: Any) -> float:
-    """Safely convert a value to float, returning 0.0 on failure."""
     try:
         return float(value)
     except (TypeError, ValueError):
         return 0.0
 
-
+# chuyển đổi giá trị sang string, nếu lỗi trả về None
 def as_str(value: Any) -> Optional[str]:
-    """Convert a value to string, returning None for empty values."""
     if value is None or value == "":
         return None
     return str(value)
 
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Facility Parsing
-# ─────────────────────────────────────────────────────────────────────────────
-
+#facility parser
 def summarize_facility(facility: Dict[str, Any]) -> FacilitySummary:
-    """Convert raw facility API response to FacilitySummary model."""
     units = facility.get("units") or []
     total_capacity = 0.0
     total_registered = 0.0
@@ -174,8 +127,7 @@ def summarize_facility(facility: Dict[str, Any]) -> FacilitySummary:
         code = unit.get("code")
         if code:
             unit_codes.append(code)
-
-        # Extract capacity from various possible field names
+        
         for capacity_key in ("capacity_mw", "capacity", "capacity_registered", "registered_capacity"):
             capacity_value = unit.get(capacity_key)
             if capacity_value is not None:
@@ -234,9 +186,7 @@ def summarize_facility(facility: Dict[str, Any]) -> FacilitySummary:
         facility_description=as_str(facility.get("description")),
     )
 
-
 def parse_facility_metadata(facility: Dict[str, Any]) -> Optional[FacilityMetadata]:
-    """Parse facility metadata for timeseries lookups."""
     code = facility.get("code")
     if not code:
         return None
@@ -249,30 +199,23 @@ def parse_facility_metadata(facility: Dict[str, Any]) -> Optional[FacilityMetada
         units=facility.get("units") or [],
     )
 
-
 def build_unit_to_facility_map(facilities: Dict[str, FacilityMetadata]) -> Dict[str, str]:
-    """Build a mapping from unit codes to facility codes."""
     mapping: Dict[str, str] = {}
     for facility in facilities.values():
         for unit in facility.units:
             unit_code = unit.get("code")
-            if unit_code and unit_code not in mapping:
+            if unit_code and unit_code not in mapping: 
                 mapping[unit_code] = facility.code
     return mapping
 
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Timeseries Parsing
-# ─────────────────────────────────────────────────────────────────────────────
-
+#timeseries parser
 def flatten_timeseries(
     payload: Dict[str, Any],
     facilities: Dict[str, FacilityMetadata],
     unit_to_facility: Dict[str, str],
 ) -> List[TimeseriesRow]:
-    """Flatten timeseries API response into list of TimeseriesRow models."""
     rows: List[TimeseriesRow] = []
-    
+    #lấy data từ payload
     for series in payload.get("data", []):
         network_code = series.get("network_code")
         metric = series.get("metric")
@@ -306,7 +249,6 @@ def flatten_timeseries(
                 )
     
     return rows
-
 
 __all__ = [
     # Timezone helpers
