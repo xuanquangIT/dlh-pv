@@ -37,10 +37,14 @@ class MLflowTracker(ExperimentTracker):
         self._active_run = mlflow.start_run(run_name=run_name)
         return self._active_run
     
-    def end_run(self):
-        """End the current MLflow run."""
+    def end_run(self, status: str = "FINISHED"):
+        """End the current MLflow run.
+        
+        Args:
+            status: Run status - "FINISHED", "FAILED", "KILLED"
+        """
         if self._active_run:
-            mlflow.end_run()
+            mlflow.end_run(status=status)
             self._active_run = None
     
     def log_params(self, params: Dict[str, Any]):
@@ -107,11 +111,20 @@ class MLflowTracker(ExperimentTracker):
                 # training code
                 pass
         """
+        run_status = "FINISHED"
         try:
             self.start_run(run_name)
             yield self
+        except Exception as e:
+            run_status = "FAILED"
+            # Log the exception
+            try:
+                mlflow.set_tag("error", str(e)[:250])
+            except:
+                pass
+            raise
         finally:
-            self.end_run()
+            self.end_run(status=run_status)
 
 
 def create_tracker(tracking_uri: str, 
