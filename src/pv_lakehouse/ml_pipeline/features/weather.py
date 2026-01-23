@@ -24,13 +24,25 @@ def add_weather_interactions(df: DataFrame) -> DataFrame:
                              F.col("cloud_cover") / (F.col("shortwave_radiation") + 1))
                        .otherwise(0.0))
     
-    # Hour-radiation interaction (time of day effect)
+    # Hour-radiation interaction (time of day effect on solar)
     df = df.withColumn("hour_radiation_interaction",
                        F.col("hour_of_day") * F.col("shortwave_radiation"))
     
     # Completeness-radiation interaction
     df = df.withColumn("completeness_radiation_interaction",
                        F.col("completeness_pct") * F.col("shortwave_radiation"))
+    
+    # Wind-temperature interaction (cooling effect)
+    if "wind_speed_10m" in df.columns:
+        df = df.withColumn("wind_temp_interaction",
+                          F.col("wind_speed_10m") * F.col("temperature_2m"))
+    
+    # Direct vs diffuse radiation ratio (cloud condition indicator)
+    if "direct_radiation" in df.columns and "diffuse_radiation" in df.columns:
+        df = df.withColumn("direct_diffuse_ratio",
+                          F.when(F.col("diffuse_radiation") > 0,
+                                F.col("direct_radiation") / (F.col("diffuse_radiation") + 1))
+                          .otherwise(0.0))
     
     # Non-linear effects
     df = df.withColumn("shortwave_radiation_sq",

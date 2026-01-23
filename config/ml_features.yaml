@@ -32,12 +32,16 @@ weather_features:
     - "cloud_cover"
     - "shortwave_radiation"
     - "direct_radiation"
+    - "diffuse_radiation"
+    - "wind_speed_10m"
   
   derived:
     - "radiation_temp_interaction"
     - "cloud_radiation_ratio"
     - "hour_radiation_interaction"
     - "completeness_radiation_interaction"
+    - "wind_temp_interaction"
+    - "direct_diffuse_ratio"
     - "shortwave_radiation_sq"
     - "temperature_sq"
     - "cloud_temp_interaction"

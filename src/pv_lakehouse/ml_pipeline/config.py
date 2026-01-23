@@ -77,6 +77,7 @@ class TrainingConfig:
     test_ratio: float = 0.15
     random_seed: int = 42
     min_rows_required: int = 1000
+    data_split_method: str = "random"  # "random" or "temporal"
     
     primary_metric: str = "rmse"
     metrics_to_track: list[str] = field(default_factory=lambda: ["rmse", "mae", "r2", "mse"])
@@ -174,6 +175,7 @@ class MLConfig:
             test_ratio=training_params["test_ratio"],
             random_seed=training_params["random_seed"],
             min_rows_required=training_params["min_rows_required"],
+            data_split_method=hyperparams_data["data_split"].get("method", "random"),
             primary_metric=hyperparams_data["metrics"]["primary"],
             metrics_to_track=hyperparams_data["metrics"]["track"],
         )

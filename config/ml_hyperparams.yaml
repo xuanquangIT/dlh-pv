@@ -13,16 +13,16 @@ decision_tree:
   min_info_gain: 0.0
   seed: 42
 
-# Gradient Boosted Trees parameters (PRODUCTION - matches original train_regression_model.py)
+# Gradient Boosted Trees parameters (PRODUCTION - tuned for better R²)
 gbt:
-  max_depth: 6  # Optimal depth for boosting
-  max_iter: 120  # Slight increase for better convergence
-  step_size: 0.1  # Conservative learning rate
-  min_instances_per_node: 50
-  max_bins: 128
-  subsample_rate: 0.8  # Row sampling per iteration
+  max_depth: 8  # Increased from 6 to reduce underfitting
+  max_iter: 150  # Increased from 120 for better convergence
+  step_size: 0.08  # Slightly lower for smoother learning
+  min_instances_per_node: 20  # Reduced from 50 to allow finer splits
+  max_bins: 256  # Increased from 128 for better numeric features
+  subsample_rate: 0.85  # Increased from 0.8 for more data per tree
   feature_subset_strategy: "auto"
-  min_info_gain: 0.01
+  min_info_gain: 0.005  # Reduced from 0.01 to allow more splits
   seed: 42
 
 # Training parameters
@@ -32,12 +32,14 @@ training:
   validation_ratio: 0.15
   test_ratio: 0.15
   random_seed: 42
-  min_rows_required: 50  # Minimum rows for training (lowered for testing)
+  min_rows_required: 500  # Increased from 50 to ensure statistically valid test set
+  primary_metric: "rmse"  # Primary optimization metric
 
 # Data split strategy
 data_split:
-  method: "random"  # Options: "random", "temporal"
+  method: "temporal"  # Use temporal split for time series (avoid data leakage)
   seed: 42
+  # For temporal split: train on older data, test on recent data
 
 # Evaluation metrics to track
 metrics:

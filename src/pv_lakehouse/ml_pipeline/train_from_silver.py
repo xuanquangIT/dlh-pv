@@ -118,12 +118,35 @@ def train_pipeline(config: MLConfig, spark: SparkSession, sample_limit: int = No
 	val_ratio = config.training.validation_ratio
 	test_ratio = config.training.test_ratio
 	
-	train_df, val_df, test_df = df.randomSplit(
-		[train_ratio, val_ratio, test_ratio],
-		seed=config.training.random_seed
-	)
+	# Use temporal split if configured (better for time series)
+	if config.training.data_split_method == "temporal":
+		print("Using temporal split (train on older data, test on recent)")
+		# Sort by time and split sequentially
+		df_sorted = df.orderBy("date_hour")
+		total_count = df_sorted.count()
+		
+		train_end = int(total_count * train_ratio)
+		val_end = int(total_count * (train_ratio + val_ratio))
+		
+		# Use row_number for sequential split
+		from pyspark.sql.window import Window
+		window_spec = Window.orderBy("date_hour")
+		df_indexed = df_sorted.withColumn("row_num", F.row_number().over(window_spec))
+		
+		train_df = df_indexed.filter(F.col("row_num") <= train_end).drop("row_num")
+		val_df = df_indexed.filter((F.col("row_num") > train_end) & (F.col("row_num") <= val_end)).drop("row_num")
+		test_df = df_indexed.filter(F.col("row_num") > val_end).drop("row_num")
+	else:
+		print("Using random split")
+		train_df, val_df, test_df = df.randomSplit(
+			[train_ratio, val_ratio, test_ratio],
+			seed=config.training.random_seed
+		)
 	
-	print(f"Train: {train_df.count()}, Val: {val_df.count()}, Test: {test_df.count()}")
+	train_count = train_df.count()
+	val_count = val_df.count()
+	test_count = test_df.count()
+	print(f"Train: {train_count}, Val: {val_count}, Test: {test_count}")
 	
 	# 4. Train model
 	print("\n=== Model Training ===")

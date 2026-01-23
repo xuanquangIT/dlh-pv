@@ -91,13 +91,23 @@ def calculate_custom_metrics(predictions_df: DataFrame,
     
     # Max residual (worst prediction)
     max_residual = with_residuals.agg(F.max("residual")).collect()[0][0]
+    min_residual = with_residuals.agg(F.min("residual")).collect()[0][0]
+    
+    # Residual standard deviation (error variance)
+    residual_std = with_residuals.agg(F.stddev("residual")).collect()[0][0]
+    
+    # Median residual (robust bias measure)
+    median_residual = with_residuals.approxQuantile("residual", [0.5], 0.01)[0]
     
     # Prediction count
     total_predictions = predictions_df.count()
     
     return {
         "mean_residual": float(mean_residual) if mean_residual else 0.0,
+        "median_residual": float(median_residual) if median_residual else 0.0,
+        "residual_std": float(residual_std) if residual_std else 0.0,
         "max_residual": float(max_residual) if max_residual else 0.0,
+        "min_residual": float(min_residual) if min_residual else 0.0,
         "prediction_count": int(total_predictions),
     }
 
