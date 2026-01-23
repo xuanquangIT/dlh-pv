@@ -55,8 +55,8 @@ mlflow:
   experiment_name: "pv_solar_regression"
   run_name_prefix: "regression_dt"
   artifact_path: "model"
-  log_model: true
-  log_artifacts: true
+  log_model: false  # Disabled due to S3 403 Forbidden - log metrics only
+  log_artifacts: false
 
 # Output table settings
 output:
