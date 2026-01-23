@@ -1,0 +1,49 @@
+# Apache Spark Configuration for PV Lakehouse
+# This YAML file contains static Spark configuration.
+# Secrets (passwords, keys) are injected at runtime from Settings.
+
+# Iceberg Catalog Configuration
+catalog:
+  extensions: "org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions"
+  catalog_impl: "org.apache.iceberg.spark.SparkCatalog"
+  catalog_type: "jdbc"
+  catalog_name: "lh"
+  # warehouse path constructed from settings: s3a://lakehouse/iceberg/warehouse
+  # jdbc uri constructed from settings: jdbc:postgresql://postgres:5432/iceberg_catalog
+
+# Hadoop/S3 Configuration
+hadoop:
+  fs:
+    s3a:
+      path_style_access: "true"
+      # endpoint, access_key, secret_key injected from settings at runtime
+  mapreduce:
+    fileoutputcommitter:
+      algorithm_version: "2"
+      cleanup_failures_ignored: "true"
+
+# Performance Tuning
+performance:
+  adaptive:
+    enabled: "true"
+    coalesce_partitions_enabled: "true"
+    advisory_partition_size: "64MB"
+  files:
+    max_partition_bytes: "128MB"
+  memory:
+    fraction: "0.7"  # Overridden by settings.spark.spark_memory_fraction
+    storage_fraction: "0.4"  # Overridden by settings.spark.spark_memory_storage_fraction
+
+# Iceberg Specific Settings
+iceberg:
+  compression_codec: "snappy"
+
+# Session Configuration
+session:
+  timezone: "UTC"
+
+# Maven Packages (loaded via spark.jars.packages)
+packages:
+  - "org.apache.iceberg:iceberg-spark-runtime-3.5_2.12:1.5.0"
+  - "org.apache.iceberg:iceberg-aws-bundle:1.5.0"
+  - "org.postgresql:postgresql:42.7.4"
