@@ -12,7 +12,7 @@ import os
 import argparse
 from pathlib import Path
 
-from pyspark.sql import SparkSession, functions as F
+from pyspark.sql import SparkSession, DataFrame, functions as F
 
 from pv_lakehouse.etl.utils.spark_utils import create_spark_session
 from pv_lakehouse.ml_pipeline.config import MLConfig
@@ -26,13 +26,136 @@ from pv_lakehouse.ml_pipeline.evaluation.metrics import evaluate_model, print_me
 from pv_lakehouse.ml_pipeline.tracking.mlflow_logger import create_tracker
 
 
-# Silver table names
+# Constants
 SILVER_ENERGY = "lh.silver.clean_hourly_energy"
 SILVER_WEATHER = "lh.silver.clean_hourly_weather"
 SILVER_AQ = "lh.silver.clean_hourly_air_quality"
 
+OPTIMAL_PARTITIONS = 4  # Balance between parallelism and overhead
+TOP_N_FEATURES = 10  # Number of top features to display
+DEFAULT_MLFLOW_URI = "http://mlflow:5000"
 
-def load_silver_data(spark: SparkSession, sample_limit: int = None) -> object:
+
+def _split_data_temporal(df: DataFrame, train_ratio: float, val_ratio: float):
+	"""Split data using temporal ordering.
+	
+	Args:
+		df: Input DataFrame
+		train_ratio: Training data ratio
+		val_ratio: Validation data ratio
+		
+	Returns:
+		Tuple of (train_df, val_df, test_df)
+	"""
+	from pyspark.sql.window import Window
+	
+	df_sorted = df.orderBy("date_hour")
+	total_count = df_sorted.count()
+	
+	train_end = int(total_count * train_ratio)
+	val_end = int(total_count * (train_ratio + val_ratio))
+	
+	window_spec = Window.orderBy("date_hour")
+	df_indexed = df_sorted.withColumn("row_num", F.row_number().over(window_spec))
+	
+	train_df = df_indexed.filter(F.col("row_num") <= train_end).drop("row_num")
+	val_df = df_indexed.filter(
+		(F.col("row_num") > train_end) & (F.col("row_num") <= val_end)
+	).drop("row_num")
+	test_df = df_indexed.filter(F.col("row_num") > val_end).drop("row_num")
+	
+	return train_df, val_df, test_df
+
+
+def _split_data_random(df: DataFrame, train_ratio: float, val_ratio: float, 
+                       test_ratio: float, seed: int):
+	"""Split data randomly.
+	
+	Args:
+		df: Input DataFrame
+		train_ratio: Training data ratio
+		val_ratio: Validation data ratio
+		test_ratio: Test data ratio
+		seed: Random seed
+		
+	Returns:
+		Tuple of (train_df, val_df, test_df)
+	"""
+	return df.randomSplit([train_ratio, val_ratio, test_ratio], seed=seed)
+
+
+def _load_and_prepare_energy(spark: SparkSession) -> DataFrame:
+	"""Load and prepare energy data.
+	
+	Args:
+		spark: SparkSession
+		
+	Returns:
+		DataFrame with energy data
+	"""
+	return spark.table(SILVER_ENERGY).select(
+		"facility_code", "date_hour",
+		F.col("energy_mwh").cast("double"),
+		F.col("intervals_count").cast("double"),
+		F.col("completeness_pct").cast("double"),
+	)
+
+
+def _load_and_prepare_weather(spark: SparkSession) -> DataFrame:
+	"""Load and prepare weather data.
+	
+	Args:
+		spark: SparkSession
+		
+	Returns:
+		DataFrame with weather data
+	"""
+	return spark.table(SILVER_WEATHER).select(
+		"facility_code", "date_hour",
+		F.col("temperature_2m").cast("double"),
+		F.col("cloud_cover").cast("double"),
+		F.col("shortwave_radiation").cast("double"),
+		F.col("direct_radiation").cast("double"),
+		F.col("diffuse_radiation").cast("double"),
+		F.col("precipitation").cast("double"),
+		F.col("wind_speed_10m").cast("double"),
+	)
+
+
+def _load_and_prepare_air_quality(spark: SparkSession) -> DataFrame:
+	"""Load and prepare air quality data.
+	
+	Args:
+		spark: SparkSession
+		
+	Returns:
+		DataFrame with air quality data
+	"""
+	return spark.table(SILVER_AQ).select(
+		"facility_code", "date_hour",
+		F.col("pm2_5").cast("double"),
+		F.col("pm10").cast("double"),
+		F.col("ozone").cast("double"),
+		F.col("nitrogen_dioxide").cast("double"),
+	)
+
+
+def _join_silver_tables(energy_df: DataFrame, weather_df: DataFrame, air_df: DataFrame) -> DataFrame:
+	"""Join all silver tables.
+	
+	Args:
+		energy_df: Energy data
+		weather_df: Weather data
+		air_df: Air quality data
+		
+	Returns:
+		Joined DataFrame
+	"""
+	df = energy_df.join(weather_df, on=["facility_code", "date_hour"], how="left")
+	return df.join(air_df, on=["facility_code", "date_hour"], how="left")
+
+
+def load_silver_data(spark: SparkSession, sample_limit: int = None) -> DataFrame:
 	"""Load and join Silver layer tables.
 	
 	Args:
@@ -44,40 +167,13 @@ def load_silver_data(spark: SparkSession, sample_limit: int = None) -> object:
 	"""
 	print("Loading data from Silver layer...")
 	
-	# Load energy data
-	energy_df = spark.table(SILVER_ENERGY).select(
-		"facility_code", "date_hour",
-		F.col("energy_mwh").cast("double"),
-		F.col("intervals_count").cast("double"),
-		F.col("completeness_pct").cast("double"),
-	)
+	# Load tables
+	energy_df = _load_and_prepare_energy(spark)
+	weather_df = _load_and_prepare_weather(spark)
+	air_df = _load_and_prepare_air_quality(spark)
 	
-	# Load weather data
-	weather_df = spark.table(SILVER_WEATHER).select(
-		"facility_code", "date_hour",
-		F.col("temperature_2m").cast("double"),
-		F.col("cloud_cover").cast("double"),
-		F.col("shortwave_radiation").cast("double"),
-		F.col("direct_radiation").cast("double"),
-		F.col("diffuse_radiation").cast("double"),
-		F.col("precipitation").cast("double"),
-		F.col("wind_speed_10m").cast("double"),
-	)
-	
-	# Load air quality data (optional)
-	air_df = spark.table(SILVER_AQ).select(
-		"facility_code", "date_hour",
-		F.col("pm2_5").cast("double"),
-		F.col("pm10").cast("double"),
-		F.col("ozone").cast("double"),
-		F.col("nitrogen_dioxide").cast("double"),
-	)
-	
-	# Join all tables
-	df = energy_df.join(weather_df, on=["facility_code", "date_hour"], how="left")
-	df = df.join(air_df, on=["facility_code", "date_hour"], how="left")
-	
-	# Filter nulls and order
+	# Join and filter
+	df = _join_silver_tables(energy_df, weather_df, air_df)
 	df = df.where(F.col("energy_mwh").isNotNull())
 	df = df.orderBy(F.col("date_hour").desc())
 	
@@ -86,8 +182,8 @@ def load_silver_data(spark: SparkSession, sample_limit: int = None) -> object:
 		df = df.limit(sample_limit)
 		print(f"Limited to {sample_limit} rows")
 	
-	# Coalesce to reduce partitions and cache for better performance
-	df = df.coalesce(4).cache()
+	# Optimize: reduce partitions and cache for better performance
+	df = df.coalesce(OPTIMAL_PARTITIONS).cache()
 	
 	total = df.count()
 	print(f"Loaded {total} rows from Silver layer")
@@ -118,29 +214,13 @@ def train_pipeline(config: MLConfig, spark: SparkSession, sample_limit: int = No
 	val_ratio = config.training.validation_ratio
 	test_ratio = config.training.test_ratio
 	
-	# Use temporal split if configured (better for time series)
 	if config.training.data_split_method == "temporal":
 		print("Using temporal split (train on older data, test on recent)")
-		# Sort by time and split sequentially
-		df_sorted = df.orderBy("date_hour")
-		total_count = df_sorted.count()
-		
-		train_end = int(total_count * train_ratio)
-		val_end = int(total_count * (train_ratio + val_ratio))
-		
-		# Use row_number for sequential split
-		from pyspark.sql.window import Window
-		window_spec = Window.orderBy("date_hour")
-		df_indexed = df_sorted.withColumn("row_num", F.row_number().over(window_spec))
-		
-		train_df = df_indexed.filter(F.col("row_num") <= train_end).drop("row_num")
-		val_df = df_indexed.filter((F.col("row_num") > train_end) & (F.col("row_num") <= val_end)).drop("row_num")
-		test_df = df_indexed.filter(F.col("row_num") > val_end).drop("row_num")
+		train_df, val_df, test_df = _split_data_temporal(df, train_ratio, val_ratio)
 	else:
 		print("Using random split")
-		train_df, val_df, test_df = df.randomSplit(
-			[train_ratio, val_ratio, test_ratio],
-			seed=config.training.random_seed
+		train_df, val_df, test_df = _split_data_random(
+			df, train_ratio, val_ratio, test_ratio, config.training.random_seed
 		)
 	
 	train_count = train_df.count()
@@ -164,15 +244,15 @@ def train_pipeline(config: MLConfig, spark: SparkSession, sample_limit: int = No
 	
 	# 6. Feature importance
 	feature_importance = model.get_feature_importance()
-	top_features = sorted(feature_importance.items(), key=lambda x: x[1], reverse=True)[:10]
-	print("\nTop 10 Features:")
+	top_features = sorted(feature_importance.items(), key=lambda x: x[1], reverse=True)[:TOP_N_FEATURES]
+	print(f"\nTop {TOP_N_FEATURES} Features:")
 	for feat, imp in top_features:
 		print(f"  {feat:40s}: {imp:.4f}")
 	
 	# 7. Track experiment
 	print("\n=== Experiment Tracking ===")
 	tracker = create_tracker(
-		tracking_uri=os.environ.get("MLFLOW_TRACKING_URI", "http://mlflow:5000"),
+		tracking_uri=os.environ.get("MLFLOW_TRACKING_URI", DEFAULT_MLFLOW_URI),
 		experiment_name=config.mlflow.experiment_name,
 		use_mlflow=True
 	)

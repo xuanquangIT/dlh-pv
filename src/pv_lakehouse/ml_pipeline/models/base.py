@@ -64,11 +64,30 @@ class BaseModel(ABC):
         return self.pipeline_model.transform(df)
     
     def get_feature_importance(self) -> dict[str, float]:
-        """Get feature importance from trained model.
+        """Get feature importance scores from trained model.
         
         Returns:
             Dictionary mapping feature names to importance scores
         """
+        if self.pipeline_model is None:
+            return {}
+        
+        stages = self.pipeline_model.stages
+        if len(stages) < 2:
+            return {}
+        
+        assembler = stages[0]
+        model = stages[1]
+        
+        if hasattr(model, 'featureImportances'):
+            importances = model.featureImportances.toArray()
+            feature_names = assembler.getInputCols()
+            
+            return {
+                name: float(importance)
+                for name, importance in zip(feature_names, importances)
+            }
+        
         return {}
     
     def save(self, path: str) -> None:

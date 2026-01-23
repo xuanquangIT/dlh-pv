@@ -43,30 +43,6 @@ class DecisionTreeRegressorModel(BaseModel):
         
         print("Training complete")
         return self.pipeline_model
-    
-    def get_feature_importance(self) -> dict[str, float]:
-        """Extract feature importance from trained Decision Tree."""
-        if self.pipeline_model is None:
-            return {}
-        
-        # Get the trained model from pipeline
-        stages = self.pipeline_model.stages
-        if len(stages) < 2:
-            return {}
-        
-        assembler = stages[0]
-        tree_model = stages[1]
-        
-        if hasattr(tree_model, 'featureImportances'):
-            importances = tree_model.featureImportances.toArray()
-            feature_names = assembler.getInputCols()
-            
-            return {
-                name: float(importance)
-                for name, importance in zip(feature_names, importances)
-            }
-        
-        return {}
 
 
 class GBTRegressorModel(BaseModel):
@@ -107,29 +83,6 @@ class GBTRegressorModel(BaseModel):
         
         print("Training complete")
         return self.pipeline_model
-    
-    def get_feature_importance(self) -> dict[str, float]:
-        """Extract feature importance from trained GBT."""
-        if self.pipeline_model is None:
-            return {}
-        
-        stages = self.pipeline_model.stages
-        if len(stages) < 2:
-            return {}
-        
-        assembler = stages[0]
-        gbt_model = stages[1]
-        
-        if hasattr(gbt_model, 'featureImportances'):
-            importances = gbt_model.featureImportances.toArray()
-            feature_names = assembler.getInputCols()
-            
-            return {
-                name: float(importance)
-                for name, importance in zip(feature_names, importances)
-            }
-        
-        return {}
 
 
 def create_model(config):
