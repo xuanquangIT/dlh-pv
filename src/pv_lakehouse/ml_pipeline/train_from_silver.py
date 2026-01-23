@@ -33,7 +33,6 @@ SILVER_AQ = "lh.silver.clean_hourly_air_quality"
 
 
 def load_silver_data(spark: SparkSession, sample_limit: int = None) -> object:
-def load_silver_data(spark: SparkSession, sample_limit: int = None) -> object:
 	"""Load and join Silver layer tables.
 	
 	Args:
