@@ -8,7 +8,7 @@ echo "=== ML Pipeline Refactor Test ==="
 echo ""
 
 # Set PYTHONPATH
-export PYTHONPATH=/workspace/src:$PYTHONPATH
+export PYTHONPATH=/opt/workdir/src:$PYTHONPATH
 
 # Test with small sample
 echo "Testing with 1000 rows sample..."

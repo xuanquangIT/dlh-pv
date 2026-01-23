@@ -74,7 +74,9 @@ def add_lag_features(df: DataFrame,
     window_spec = Window.partitionBy(partition_col).orderBy(time_col)
     
     for lag_h in lag_hours:
-        lag_col_name = f"{value_col.replace('_', '')}_lag_{lag_h}h"
+        # Create lag column name: energy_mwh -> energy_lag_1h
+        base_name = value_col.replace('_mwh', '')  # Remove _mwh suffix
+        lag_col_name = f"{base_name}_lag_{lag_h}h"
         # Using lag with offset based on hourly data
         df = df.withColumn(lag_col_name, 
                           F.lag(F.col(value_col), lag_h).over(window_spec))

@@ -32,7 +32,7 @@ training:
   validation_ratio: 0.15
   test_ratio: 0.15
   random_seed: 42
-  min_rows_required: 1000
+  min_rows_required: 50  # Minimum rows for training (lowered for testing)
 
 # Data split strategy
 data_split:

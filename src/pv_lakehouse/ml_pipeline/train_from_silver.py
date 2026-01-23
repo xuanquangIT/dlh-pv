@@ -86,6 +86,9 @@ def load_silver_data(spark: SparkSession, sample_limit: int = None) -> object:
 		df = df.limit(sample_limit)
 		print(f"Limited to {sample_limit} rows")
 	
+	# Coalesce to reduce partitions and cache for better performance
+	df = df.coalesce(4).cache()
+	
 	total = df.count()
 	print(f"Loaded {total} rows from Silver layer")
 	

@@ -96,10 +96,26 @@ def validate_features(df: DataFrame, min_rows: int = 1000) -> DataFrame:
     Raises:
         ValueError: If validation fails
     """
-    # Remove rows with null values in critical columns
-    df = df.dropna()
+    # Debug: show row count before filtering
+    initial_count = df.count()
+    print(f"Initial row count: {initial_count}")
+    
+    # Fill nulls in lag features with 0 FIRST (before dropna)
+    lag_cols = [c for c in df.columns if '_lag_' in c]
+    if lag_cols:
+        print(f"Filling {len(lag_cols)} lag columns with 0 for null values")
+        for lag_col in lag_cols:
+            df = df.fillna({lag_col: 0.0})
+    
+    # Then remove rows with null values only in non-lag columns
+    # Keep facility_code and date_hour which may have nulls
+    df = df.dropna(subset=[c for c in df.columns 
+                           if c not in ['facility_code', 'date_hour'] 
+                           and '_lag_' not in c])
     
     row_count = df.count()
+    print(f"After null filtering: {row_count} rows (dropped {initial_count - row_count})")
+    
     if row_count < min_rows:
         raise ValueError(f"Insufficient data: {row_count} rows (minimum {min_rows})")
     
