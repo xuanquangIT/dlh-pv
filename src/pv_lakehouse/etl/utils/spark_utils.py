@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, Optional
 
 import yaml
+from pydantic import ValidationError
 from pyspark.sql import DataFrame, SparkSession
 from pyspark.sql.utils import AnalysisException
 
@@ -74,8 +75,13 @@ def load_spark_config_from_yaml() -> Dict[str, str]:
         if not config_path.exists():
             raise FileNotFoundError(f"Spark config YAML not found: {config_path}")
 
-        with open(config_path, encoding="utf-8") as f:
-            yaml_config = yaml.safe_load(f)
+        try:
+            with open(config_path, encoding="utf-8") as f:
+                yaml_config = yaml.safe_load(f)
+        except yaml.YAMLError as e:
+            raise ValueError(f"Invalid YAML in Spark config file {config_path}: {e}") from e
+        except OSError as e:
+            raise OSError(f"Failed to read Spark config file {config_path}: {e}") from e
 
         # Build flat Spark config dict from YAML structure
         spark_config: Dict[str, str] = {}
@@ -88,7 +94,14 @@ def load_spark_config_from_yaml() -> Dict[str, str]:
         spark_config["spark.sql.catalog.lh.jdbc.catalog-name"] = catalog.get("catalog_name", "lh")
 
         # Inject from settings (secrets not in YAML)
-        settings = get_settings()
+        try:
+            settings = get_settings()
+        except (ValidationError, ValueError) as e:
+            raise RuntimeError(
+                "Failed to load Settings for Spark configuration. "
+                "Ensure all required environment variables are set."
+            ) from e
+        
         spark_config["spark.sql.catalog.lh.uri"] = settings.jdbc_url
         spark_config["spark.sql.catalog.lh.jdbc.user"] = settings.database.postgres_user
         spark_config["spark.sql.catalog.lh.jdbc.password"] = settings.database.postgres_password

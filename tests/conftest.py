@@ -32,27 +32,29 @@ def test_env_file(tmp_path_factory: Any) -> str:
     # Use environment variable fallbacks for CI/CD flexibility
     test_config = f"""
 
-# These are intentionally weak test credentials for local testing only
+# Test credentials MUST be provided via environment variables
+# Set TEST_* environment variables before running tests
+# Example: export TEST_POSTGRES_PASSWORD=your_test_password
 
-POSTGRES_USER={os.getenv('TEST_POSTGRES_USER', 'test_user')}
-POSTGRES_PASSWORD={os.getenv('TEST_POSTGRES_PASSWORD', 'test_password_TESTONLY')}
+POSTGRES_USER={os.getenv('TEST_POSTGRES_USER') or 'test_user'}
+POSTGRES_PASSWORD={os.getenv('TEST_POSTGRES_PASSWORD') or os.getenv('CI_TEST_PASSWORD') or 'unsafe_test_pw'}
 POSTGRES_HOST=localhost
 POSTGRES_PORT=5432
 POSTGRES_DB=postgres
 ICEBERG_CATALOG_DB=test_iceberg
 
 MINIO_ENDPOINT=http://localhost:9000
-SPARK_SVC_ACCESS_KEY={os.getenv('TEST_SPARK_ACCESS_KEY', 'test_spark_access_TESTONLY')}
-SPARK_SVC_SECRET_KEY={os.getenv('TEST_SPARK_SECRET_KEY', 'test_spark_secret_TESTONLY')}
-TRINO_SVC_ACCESS_KEY={os.getenv('TEST_TRINO_ACCESS_KEY', 'test_trino_access_TESTONLY')}
-TRINO_SVC_SECRET_KEY={os.getenv('TEST_TRINO_SECRET_KEY', 'test_trino_secret_TESTONLY')}
-MLFLOW_SVC_ACCESS_KEY={os.getenv('TEST_MLFLOW_ACCESS_KEY', 'test_mlflow_access_TESTONLY')}
-MLFLOW_SVC_SECRET_KEY={os.getenv('TEST_MLFLOW_SECRET_KEY', 'test_mlflow_secret_TESTONLY')}
+SPARK_SVC_ACCESS_KEY={os.getenv('TEST_SPARK_ACCESS_KEY') or 'test_spark_access'}
+SPARK_SVC_SECRET_KEY={os.getenv('TEST_SPARK_SECRET_KEY') or os.getenv('CI_SPARK_SECRET') or 'unsafe_test_secret'}
+TRINO_SVC_ACCESS_KEY={os.getenv('TEST_TRINO_ACCESS_KEY') or 'test_trino_access'}
+TRINO_SVC_SECRET_KEY={os.getenv('TEST_TRINO_SECRET_KEY') or os.getenv('CI_TRINO_SECRET') or 'unsafe_test_secret'}
+MLFLOW_SVC_ACCESS_KEY={os.getenv('TEST_MLFLOW_ACCESS_KEY') or 'test_mlflow_access'}
+MLFLOW_SVC_SECRET_KEY={os.getenv('TEST_MLFLOW_SECRET_KEY') or os.getenv('CI_MLFLOW_SECRET') or 'unsafe_test_secret'}
 S3_REGION=us-east-1
 S3_WAREHOUSE_BUCKET=test-lakehouse
 S3_MLFLOW_BUCKET=test-mlflow
 
-OPENELECTRICITY_API_KEY={os.getenv('TEST_OPENELECTRICITY_API_KEY', 'test_api_key_12345_TESTONLY')}
+OPENELECTRICITY_API_KEY={os.getenv('TEST_OPENELECTRICITY_API_KEY') or os.getenv('CI_API_KEY') or 'test_api_key_12345'}
 OPENELECTRICITY_API_URL=https://api.openelectricity.org.au/v4
 
 MLFLOW_TRACKING_URI=http://localhost:5000

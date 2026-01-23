@@ -259,19 +259,15 @@ def get_settings() -> Settings:
 
 
 # For backward compatibility and convenience
+# NOTE: In test environments, import will fail if env vars not set.
+# Tests should use get_settings() function or proper fixtures.
 try:
     settings = get_settings()
-except ValidationError as e:
-    # In test environments, this might fail at import time
-    # Tests should use get_settings() or fixture to set env vars first
+except (ValidationError, KeyError, ValueError) as e:
+    # Only catch expected configuration errors in test/development
+    # Production should fail fast if configuration is invalid
     LOGGER.warning(
         "Settings validation failed at module import (expected in test environments): %s",
-        e
-    )
-    settings = None  # type: ignore
-except Exception as e:
-    LOGGER.warning(
-        "Settings initialization failed at module import (expected in test environments): %s",
         e
     )
     settings = None  # type: ignore

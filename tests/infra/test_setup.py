@@ -94,11 +94,14 @@ class TestDockerCompose:
 class TestServiceConnectivity:
     """Integration tests for Docker services (requires running stack)."""
 
+    # Test connection timeout in seconds
+    CONNECTION_TIMEOUT = 2
+
     def test_postgres_port_accessible(self):
         """PostgreSQL port should be accessible (if service is running)."""
         try:
             with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-                sock.settimeout(2)
+                sock.settimeout(self.CONNECTION_TIMEOUT)
                 result = sock.connect_ex(("localhost", 5432))
 
             if result == 0:
@@ -112,7 +115,7 @@ class TestServiceConnectivity:
         """MinIO port should be accessible (if service is running)."""
         try:
             with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-                sock.settimeout(2)
+                sock.settimeout(self.CONNECTION_TIMEOUT)
                 result = sock.connect_ex(("localhost", 9000))
 
             if result == 0:
