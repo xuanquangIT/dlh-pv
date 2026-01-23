@@ -87,8 +87,11 @@ class GBTRegressorModel(BaseModel):
             maxDepth=self.config.max_depth,
             maxIter=self.config.gbt_max_iter,
             stepSize=self.config.gbt_step_size,
+            minInstancesPerNode=self.config.min_instances_per_node,
+            maxBins=self.config.max_bins,
             subsamplingRate=self.config.gbt_subsample_rate,
             featureSubsetStrategy=self.config.gbt_feature_subset_strategy,
+            minInfoGain=self.config.min_info_gain,
             seed=self.config.seed
         )
         

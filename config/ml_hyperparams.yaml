@@ -3,9 +3,9 @@
 
 # Model selection
 model:
-  type: "decision_tree"  # Options: "decision_tree", "gbt"
+  type: "gbt"  # Options: "decision_tree", "gbt" - GBT is production default
   
-# Decision Tree Regressor parameters
+# Decision Tree Regressor parameters (alternative)
 decision_tree:
   max_depth: 20
   min_instances_per_node: 20
@@ -13,13 +13,16 @@ decision_tree:
   min_info_gain: 0.0
   seed: 42
 
-# Gradient Boosted Trees parameters (alternative)
+# Gradient Boosted Trees parameters (PRODUCTION - matches original train_regression_model.py)
 gbt:
-  max_depth: 10
-  max_iter: 50
-  step_size: 0.1
-  subsample_rate: 0.8
+  max_depth: 6  # Optimal depth for boosting
+  max_iter: 120  # Slight increase for better convergence
+  step_size: 0.1  # Conservative learning rate
+  min_instances_per_node: 50
+  max_bins: 128
+  subsample_rate: 0.8  # Row sampling per iteration
   feature_subset_strategy: "auto"
+  min_info_gain: 0.01
   seed: 42
 
 # Training parameters

@@ -51,7 +51,7 @@ class FeatureConfig:
 class ModelConfig:
     """Model hyperparameters configuration."""
     
-    model_type: str = "decision_tree"
+    model_type: str = "gbt"  # Default to GBT for production
     
     # Decision Tree params
     max_depth: int = 20
@@ -61,7 +61,7 @@ class ModelConfig:
     seed: int = 42
     
     # GBT params (if using GBT)
-    gbt_max_iter: int = 50
+    gbt_max_iter: int = 120
     gbt_step_size: float = 0.1
     gbt_subsample_rate: float = 0.8
     gbt_feature_subset_strategy: str = "auto"
@@ -154,6 +154,10 @@ class MLConfig:
             gbt_params = hyperparams_data["gbt"]
             model = ModelConfig(
                 model_type=model_type,
+                max_depth=gbt_params["max_depth"],
+                min_instances_per_node=gbt_params["min_instances_per_node"],
+                max_bins=gbt_params["max_bins"],
+                min_info_gain=gbt_params["min_info_gain"],
                 gbt_max_iter=gbt_params["max_iter"],
                 gbt_step_size=gbt_params["step_size"],
                 gbt_subsample_rate=gbt_params["subsample_rate"],
