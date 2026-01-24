@@ -1,7 +1,3 @@
-"""Pure metric calculation functions for model evaluation.
-
-All functions are pure - no side effects, no MLflow, no I/O.
-"""
 from __future__ import annotations
 
 import math
@@ -13,16 +9,7 @@ from pyspark.sql import DataFrame
 def calculate_regression_metrics(predictions_df: DataFrame, 
                                  label_col: str = "energy_mwh",
                                  prediction_col: str = "prediction") -> Dict[str, float]:
-    """Calculate all regression metrics.
     
-    Args:
-        predictions_df: DataFrame with predictions and labels
-        label_col: Name of label column
-        prediction_col: Name of prediction column
-        
-    Returns:
-        Dictionary of metric names to values
-    """
     evaluator = RegressionEvaluator(
         labelCol=label_col,
         predictionCol=prediction_col
@@ -45,16 +32,7 @@ def calculate_regression_metrics(predictions_df: DataFrame,
 def calculate_mape(predictions_df: DataFrame,
                   label_col: str = "energy_mwh",
                   prediction_col: str = "prediction") -> float:
-    """Calculate Mean Absolute Percentage Error.
     
-    Args:
-        predictions_df: DataFrame with predictions and labels
-        label_col: Name of label column
-        prediction_col: Name of prediction column
-        
-    Returns:
-        MAPE value as float
-    """
     from pyspark.sql import functions as F
     
     mape_df = predictions_df.select(
@@ -68,16 +46,7 @@ def calculate_mape(predictions_df: DataFrame,
 def calculate_custom_metrics(predictions_df: DataFrame,
                             label_col: str = "energy_mwh",
                             prediction_col: str = "prediction") -> Dict[str, float]:
-    """Calculate custom domain-specific metrics.
     
-    Args:
-        predictions_df: DataFrame with predictions and labels
-        label_col: Name of label column
-        prediction_col: Name of prediction column
-        
-    Returns:
-        Dictionary of custom metrics
-    """
     from pyspark.sql import functions as F
     
     # Calculate residuals
@@ -116,17 +85,7 @@ def evaluate_model(predictions_df: DataFrame,
                   label_col: str = "energy_mwh",
                   prediction_col: str = "prediction",
                   include_custom: bool = True) -> Dict[str, float]:
-    """Comprehensive model evaluation.
     
-    Args:
-        predictions_df: DataFrame with predictions and labels
-        label_col: Name of label column
-        prediction_col: Name of prediction column
-        include_custom: Whether to include custom metrics
-        
-    Returns:
-        Dictionary with all metrics
-    """
     metrics = calculate_regression_metrics(predictions_df, label_col, prediction_col)
     
     # Add MAPE
@@ -145,11 +104,7 @@ def evaluate_model(predictions_df: DataFrame,
 
 
 def print_metrics(metrics: Dict[str, float]) -> None:
-    """Pretty print metrics to console.
     
-    Args:
-        metrics: Dictionary of metrics
-    """
     print("\n" + "="*50)
     print("MODEL EVALUATION METRICS")
     print("="*50)

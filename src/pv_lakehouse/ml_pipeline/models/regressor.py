@@ -1,4 +1,3 @@
-"""Regression model implementations for solar energy forecasting."""
 from __future__ import annotations
 
 from pyspark.ml import Pipeline
@@ -10,10 +9,8 @@ from .base import BaseModel
 
 
 class DecisionTreeRegressorModel(BaseModel):
-    """Decision Tree Regressor for energy forecasting."""
     
     def build_pipeline(self, feature_cols: list[str], target_col: str):
-        """Build Decision Tree regression pipeline."""
         assembler = VectorAssembler(
             inputCols=feature_cols,
             outputCol="features",
@@ -34,7 +31,6 @@ class DecisionTreeRegressorModel(BaseModel):
         return Pipeline(stages=[assembler, regressor])
     
     def train(self, train_df: DataFrame, feature_cols: list[str], target_col: str):
-        """Train the Decision Tree model."""
         print(f"Training Decision Tree Regressor...")
         print(f"Features: {len(feature_cols)}, Target: {target_col}")
         
@@ -46,10 +42,8 @@ class DecisionTreeRegressorModel(BaseModel):
 
 
 class GBTRegressorModel(BaseModel):
-    """Gradient Boosted Trees Regressor for energy forecasting."""
     
     def build_pipeline(self, feature_cols: list[str], target_col: str):
-        """Build GBT regression pipeline."""
         assembler = VectorAssembler(
             inputCols=feature_cols,
             outputCol="features",
@@ -74,7 +68,6 @@ class GBTRegressorModel(BaseModel):
         return Pipeline(stages=[assembler, regressor])
     
     def train(self, train_df: DataFrame, feature_cols: list[str], target_col: str):
-        """Train the GBT model."""
         print(f"Training Gradient Boosted Trees Regressor...")
         print(f"Features: {len(feature_cols)}, Target: {target_col}")
         
@@ -86,14 +79,6 @@ class GBTRegressorModel(BaseModel):
 
 
 def create_model(config):
-    """Factory function to create model based on config.
-    
-    Args:
-        config: ModelConfig instance
-        
-    Returns:
-        BaseModel instance
-    """
     if config.model_type == "decision_tree":
         return DecisionTreeRegressorModel(config)
     elif config.model_type == "gbt":

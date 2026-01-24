@@ -1,8 +1,3 @@
-"""Feature engineering pipeline - orchestrates all transformations.
-
-This module provides the main entry point for feature engineering,
-combining temporal, weather, and other transformations.
-"""
 from __future__ import annotations
 
 from pyspark.sql import DataFrame
@@ -16,17 +11,7 @@ def prepare_features(df: DataFrame,
                      feature_config,
                      include_lag: bool = True,
                      include_air_quality: bool = False) -> DataFrame:
-    """Apply complete feature engineering pipeline.
     
-    Args:
-        df: Input DataFrame from Silver layer
-        feature_config: FeatureConfig instance
-        include_lag: Whether to include lag features
-        include_air_quality: Whether to include air quality features
-        
-    Returns:
-        DataFrame with all engineered features
-    """
     print("Starting feature engineering pipeline...")
     
     # 1. Add temporal features
@@ -60,16 +45,7 @@ def prepare_features(df: DataFrame,
 def select_training_features(df: DataFrame, 
                              feature_config,
                              include_air_quality: bool = False) -> DataFrame:
-    """Select only the required columns for training.
     
-    Args:
-        df: DataFrame with all features
-        feature_config: FeatureConfig instance
-        include_air_quality: Whether to include air quality columns
-        
-    Returns:
-        DataFrame with selected columns
-    """
     # Get feature columns
     feature_cols = feature_config.get_all_features(include_air_quality)
     target_col = feature_config.target_column
@@ -84,18 +60,7 @@ def select_training_features(df: DataFrame,
 
 
 def validate_features(df: DataFrame, min_rows: int = 1000) -> DataFrame:
-    """Validate feature DataFrame before training.
     
-    Args:
-        df: Feature DataFrame
-        min_rows: Minimum required rows
-        
-    Returns:
-        Validated DataFrame
-        
-    Raises:
-        ValueError: If validation fails
-    """
     # Debug: show row count before filtering
     initial_count = df.count()
     print(f"Initial row count: {initial_count}")

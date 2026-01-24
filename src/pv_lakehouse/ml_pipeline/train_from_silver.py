@@ -1,11 +1,3 @@
-"""Train a regression model from Silver tables using modular ML pipeline.
-
-Refactored to use modular architecture:
-- Configuration loaded from YAML files
-- Feature engineering in separate modules
-- Model abstraction for flexibility
-- Experiment tracking abstracted from training logic
-"""
 from __future__ import annotations
 
 import os
@@ -37,16 +29,6 @@ DEFAULT_MLFLOW_URI = "http://mlflow:5000"
 
 
 def _split_data_temporal(df: DataFrame, train_ratio: float, val_ratio: float):
-	"""Split data using temporal ordering.
-	
-	Args:
-		df: Input DataFrame
-		train_ratio: Training data ratio
-		val_ratio: Validation data ratio
-		
-	Returns:
-		Tuple of (train_df, val_df, test_df)
-	"""
 	from pyspark.sql.window import Window
 	
 	df_sorted = df.orderBy("date_hour")
@@ -69,30 +51,10 @@ def _split_data_temporal(df: DataFrame, train_ratio: float, val_ratio: float):
 
 def _split_data_random(df: DataFrame, train_ratio: float, val_ratio: float, 
                        test_ratio: float, seed: int):
-	"""Split data randomly.
-	
-	Args:
-		df: Input DataFrame
-		train_ratio: Training data ratio
-		val_ratio: Validation data ratio
-		test_ratio: Test data ratio
-		seed: Random seed
-		
-	Returns:
-		Tuple of (train_df, val_df, test_df)
-	"""
 	return df.randomSplit([train_ratio, val_ratio, test_ratio], seed=seed)
 
 
 def _load_and_prepare_energy(spark: SparkSession) -> DataFrame:
-	"""Load and prepare energy data.
-	
-	Args:
-		spark: SparkSession
-		
-	Returns:
-		DataFrame with energy data
-	"""
 	return spark.table(SILVER_ENERGY).select(
 		"facility_code", "date_hour",
 		F.col("energy_mwh").cast("double"),
@@ -102,14 +64,7 @@ def _load_and_prepare_energy(spark: SparkSession) -> DataFrame:
 
 
 def _load_and_prepare_weather(spark: SparkSession) -> DataFrame:
-	"""Load and prepare weather data.
 	
-	Args:
-		spark: SparkSession
-		
-	Returns:
-		DataFrame with weather data
-	"""
 	return spark.table(SILVER_WEATHER).select(
 		"facility_code", "date_hour",
 		F.col("temperature_2m").cast("double"),
@@ -123,14 +78,7 @@ def _load_and_prepare_weather(spark: SparkSession) -> DataFrame:
 
 
 def _load_and_prepare_air_quality(spark: SparkSession) -> DataFrame:
-	"""Load and prepare air quality data.
 	
-	Args:
-		spark: SparkSession
-		
-	Returns:
-		DataFrame with air quality data
-	"""
 	return spark.table(SILVER_AQ).select(
 		"facility_code", "date_hour",
 		F.col("pm2_5").cast("double"),
@@ -141,30 +89,13 @@ def _load_and_prepare_air_quality(spark: SparkSession) -> DataFrame:
 
 
 def _join_silver_tables(energy_df: DataFrame, weather_df: DataFrame, air_df: DataFrame) -> DataFrame:
-	"""Join all silver tables.
 	
-	Args:
-		energy_df: Energy data
-		weather_df: Weather data
-		air_df: Air quality data
-		
-	Returns:
-		Joined DataFrame
-	"""
 	df = energy_df.join(weather_df, on=["facility_code", "date_hour"], how="left")
 	return df.join(air_df, on=["facility_code", "date_hour"], how="left")
 
 
 def load_silver_data(spark: SparkSession, sample_limit: int = None) -> DataFrame:
-	"""Load and join Silver layer tables.
 	
-	Args:
-		spark: SparkSession
-		sample_limit: Optional limit on number of rows
-		
-	Returns:
-		DataFrame with joined Silver data
-	"""
 	print("Loading data from Silver layer...")
 	
 	# Load tables
@@ -192,13 +123,7 @@ def load_silver_data(spark: SparkSession, sample_limit: int = None) -> DataFrame
 
 
 def train_pipeline(config: MLConfig, spark: SparkSession, sample_limit: int = None):
-	"""Main training pipeline orchestration.
 	
-	Args:
-		config: ML configuration
-		spark: SparkSession
-		sample_limit: Optional sample limit for testing
-	"""
 	# 1. Load data
 	df = load_silver_data(spark, sample_limit)
 	
@@ -306,7 +231,6 @@ def parse_args():
 
 
 def main():
-	"""Main entry point."""
 	args = parse_args()
 	
 	# Resolve config paths

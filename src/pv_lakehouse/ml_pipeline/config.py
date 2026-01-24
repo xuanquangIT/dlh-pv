@@ -1,7 +1,3 @@
-"""Configuration management for ML pipeline.
-
-Loads and validates configurations from YAML files.
-"""
 from __future__ import annotations
 
 import os
@@ -14,7 +10,6 @@ import yaml
 
 @dataclass
 class FeatureConfig:
-    """Feature engineering configuration."""
     
     target_column: str
     energy_features: list[str] = field(default_factory=list)
@@ -32,7 +27,6 @@ class FeatureConfig:
     noise_ratio: float = 0.0
     
     def get_all_features(self, include_air_quality: bool = False) -> list[str]:
-        """Return all feature column names."""
         features = (
             self.energy_features +
             self.temporal_basic +
@@ -49,7 +43,6 @@ class FeatureConfig:
 
 @dataclass
 class ModelConfig:
-    """Model hyperparameters configuration."""
     
     model_type: str = "gbt"  # Default to GBT for production
     
@@ -69,7 +62,6 @@ class ModelConfig:
 
 @dataclass
 class TrainingConfig:
-    """Training process configuration."""
     
     sample_limit: int = 50000
     train_ratio: float = 0.7
@@ -85,7 +77,6 @@ class TrainingConfig:
 
 @dataclass
 class MLflowConfig:
-    """MLflow experiment tracking configuration."""
     
     experiment_name: str = "pv_solar_regression"
     run_name_prefix: str = "regression_dt"
@@ -96,7 +87,6 @@ class MLflowConfig:
 
 @dataclass
 class OutputConfig:
-    """Output table configuration."""
     
     gold_table: str = "lh.gold.fact_solar_forecast_regression"
     write_mode: str = "overwrite"
@@ -105,7 +95,6 @@ class OutputConfig:
 
 @dataclass
 class MLConfig:
-    """Complete ML pipeline configuration."""
     
     features: FeatureConfig
     model: ModelConfig
@@ -115,7 +104,6 @@ class MLConfig:
     
     @classmethod
     def from_yaml(cls, features_path: str, hyperparams_path: str) -> MLConfig:
-        """Load configuration from YAML files."""
         with open(features_path) as f:
             features_data = yaml.safe_load(f)
         

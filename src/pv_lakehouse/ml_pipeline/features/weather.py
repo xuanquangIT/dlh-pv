@@ -1,4 +1,3 @@
-"""Weather-related feature engineering."""
 from __future__ import annotations
 
 from pyspark.sql import DataFrame
@@ -6,14 +5,7 @@ from pyspark.sql import functions as F
 
 
 def add_weather_interactions(df: DataFrame) -> DataFrame:
-    """Add weather interaction and derived features.
     
-    Args:
-        df: DataFrame with weather columns
-        
-    Returns:
-        DataFrame with interaction features
-    """
     # Radiation-temperature interaction (solar efficiency)
     df = df.withColumn("radiation_temp_interaction",
                        F.col("shortwave_radiation") * F.col("temperature_2m"))
@@ -60,16 +52,7 @@ def add_weather_interactions(df: DataFrame) -> DataFrame:
 def add_production_indicators(df: DataFrame, 
                               min_radiation: float = 10.0,
                               low_energy_threshold: float = 0.1) -> DataFrame:
-    """Add binary indicators for production conditions.
     
-    Args:
-        df: DataFrame with radiation and energy columns
-        min_radiation: Minimum radiation for production hours
-        low_energy_threshold: Threshold for low energy detection
-        
-    Returns:
-        DataFrame with production indicators
-    """
     # Production hour: daytime with sufficient solar radiation
     df = df.withColumn("is_production_hour",
                        F.when(F.col("shortwave_radiation") >= min_radiation, 1.0)
