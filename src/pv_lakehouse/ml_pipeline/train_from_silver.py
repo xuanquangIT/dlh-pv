@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-import os
 import argparse
+import logging
+import os
 from pathlib import Path
 
 from pyspark.sql import SparkSession, DataFrame, functions as F
@@ -16,6 +17,8 @@ from pv_lakehouse.ml_pipeline.features.engineering import (
 from pv_lakehouse.ml_pipeline.models.regressor import create_model
 from pv_lakehouse.ml_pipeline.evaluation.metrics import evaluate_model, print_metrics
 from pv_lakehouse.ml_pipeline.tracking.mlflow_logger import create_tracker
+
+logger = logging.getLogger(__name__)
 
 
 # Constants
@@ -55,37 +58,49 @@ def _split_data_random(df: DataFrame, train_ratio: float, val_ratio: float,
 
 
 def _load_and_prepare_energy(spark: SparkSession) -> DataFrame:
-	return spark.table(SILVER_ENERGY).select(
-		"facility_code", "date_hour",
-		F.col("energy_mwh").cast("double"),
-		F.col("intervals_count").cast("double"),
-		F.col("completeness_pct").cast("double"),
-	)
+	try:
+		return spark.table(SILVER_ENERGY).select(
+			"facility_code", "date_hour",
+			F.col("energy_mwh").cast("double"),
+			F.col("intervals_count").cast("double"),
+			F.col("completeness_pct").cast("double"),
+		)
+	except Exception as e:
+		logger.error(f"Failed to load table {SILVER_ENERGY}: {e}")
+		raise
 
 
 def _load_and_prepare_weather(spark: SparkSession) -> DataFrame:
 	
-	return spark.table(SILVER_WEATHER).select(
-		"facility_code", "date_hour",
-		F.col("temperature_2m").cast("double"),
-		F.col("cloud_cover").cast("double"),
-		F.col("shortwave_radiation").cast("double"),
-		F.col("direct_radiation").cast("double"),
-		F.col("diffuse_radiation").cast("double"),
-		F.col("precipitation").cast("double"),
-		F.col("wind_speed_10m").cast("double"),
-	)
+	try:
+		return spark.table(SILVER_WEATHER).select(
+			"facility_code", "date_hour",
+			F.col("temperature_2m").cast("double"),
+			F.col("cloud_cover").cast("double"),
+			F.col("shortwave_radiation").cast("double"),
+			F.col("direct_radiation").cast("double"),
+			F.col("diffuse_radiation").cast("double"),
+			F.col("precipitation").cast("double"),
+			F.col("wind_speed_10m").cast("double"),
+		)
+	except Exception as e:
+		logger.error(f"Failed to load table {SILVER_WEATHER}: {e}")
+		raise
 
 
 def _load_and_prepare_air_quality(spark: SparkSession) -> DataFrame:
 	
-	return spark.table(SILVER_AQ).select(
-		"facility_code", "date_hour",
-		F.col("pm2_5").cast("double"),
-		F.col("pm10").cast("double"),
-		F.col("ozone").cast("double"),
-		F.col("nitrogen_dioxide").cast("double"),
-	)
+	try:
+		return spark.table(SILVER_AQ).select(
+			"facility_code", "date_hour",
+			F.col("pm2_5").cast("double"),
+			F.col("pm10").cast("double"),
+			F.col("ozone").cast("double"),
+			F.col("nitrogen_dioxide").cast("double"),
+		)
+	except Exception as e:
+		logger.error(f"Failed to load table {SILVER_AQ}: {e}")
+		raise
 
 
 def _join_silver_tables(energy_df: DataFrame, weather_df: DataFrame, air_df: DataFrame) -> DataFrame:
@@ -96,7 +111,7 @@ def _join_silver_tables(energy_df: DataFrame, weather_df: DataFrame, air_df: Dat
 
 def load_silver_data(spark: SparkSession, sample_limit: int = None) -> DataFrame:
 	
-	print("Loading data from Silver layer...")
+	logger.info("Loading data from Silver layer...")
 	
 	# Load tables
 	energy_df = _load_and_prepare_energy(spark)
@@ -111,13 +126,13 @@ def load_silver_data(spark: SparkSession, sample_limit: int = None) -> DataFrame
 	# Apply sampling if requested
 	if sample_limit and sample_limit > 0:
 		df = df.limit(sample_limit)
-		print(f"Limited to {sample_limit} rows")
+		logger.info(f"Limited to {sample_limit} rows")
 	
 	# Optimize: reduce partitions and cache for better performance
 	df = df.coalesce(OPTIMAL_PARTITIONS).cache()
 	
 	total = df.count()
-	print(f"Loaded {total} rows from Silver layer")
+	logger.info(f"Loaded {total} rows from Silver layer")
 	
 	return df
 
@@ -128,22 +143,22 @@ def train_pipeline(config: MLConfig, spark: SparkSession, sample_limit: int = No
 	df = load_silver_data(spark, sample_limit)
 	
 	# 2. Feature engineering
-	print("\n=== Feature Engineering ===")
+	logger.info("\n=== Feature Engineering ===")
 	df = prepare_features(df, config.features, include_lag=True, include_air_quality=False)
 	df = select_training_features(df, config.features, include_air_quality=False)
 	df = validate_features(df, min_rows=config.training.min_rows_required)
 	
 	# 3. Split data
-	print("\n=== Data Split ===")
+	logger.info("\n=== Data Split ===")
 	train_ratio = config.training.train_ratio
 	val_ratio = config.training.validation_ratio
 	test_ratio = config.training.test_ratio
 	
 	if config.training.data_split_method == "temporal":
-		print("Using temporal split (train on older data, test on recent)")
+		logger.info("Using temporal split (train on older data, test on recent)")
 		train_df, val_df, test_df = _split_data_temporal(df, train_ratio, val_ratio)
 	else:
-		print("Using random split")
+		logger.info("Using random split")
 		train_df, val_df, test_df = _split_data_random(
 			df, train_ratio, val_ratio, test_ratio, config.training.random_seed
 		)
@@ -151,10 +166,10 @@ def train_pipeline(config: MLConfig, spark: SparkSession, sample_limit: int = No
 	train_count = train_df.count()
 	val_count = val_df.count()
 	test_count = test_df.count()
-	print(f"Train: {train_count}, Val: {val_count}, Test: {test_count}")
+	logger.info(f"Train: {train_count}, Val: {val_count}, Test: {test_count}")
 	
 	# 4. Train model
-	print("\n=== Model Training ===")
+	logger.info("\n=== Model Training ===")
 	model = create_model(config.model)
 	feature_cols = config.features.get_all_features(include_air_quality=False)
 	target_col = config.features.target_column
@@ -162,7 +177,7 @@ def train_pipeline(config: MLConfig, spark: SparkSession, sample_limit: int = No
 	trained_model = model.train(train_df, feature_cols, target_col)
 	
 	# 5. Evaluate on test set
-	print("\n=== Model Evaluation ===")
+	logger.info("\n=== Model Evaluation ===")
 	predictions = model.predict(test_df)
 	metrics = evaluate_model(predictions, target_col, "prediction")
 	print_metrics(metrics)
@@ -170,12 +185,12 @@ def train_pipeline(config: MLConfig, spark: SparkSession, sample_limit: int = No
 	# 6. Feature importance
 	feature_importance = model.get_feature_importance()
 	top_features = sorted(feature_importance.items(), key=lambda x: x[1], reverse=True)[:TOP_N_FEATURES]
-	print(f"\nTop {TOP_N_FEATURES} Features:")
+	logger.info(f"\nTop {TOP_N_FEATURES} Features:")
 	for feat, imp in top_features:
-		print(f"  {feat:40s}: {imp:.4f}")
+		logger.info(f"  {feat:40s}: {imp:.4f}")
 	
 	# 7. Track experiment
-	print("\n=== Experiment Tracking ===")
+	logger.info("\n=== Experiment Tracking ===")
 	tracker = create_tracker(
 		tracking_uri=os.environ.get("MLFLOW_TRACKING_URI", DEFAULT_MLFLOW_URI),
 		experiment_name=config.mlflow.experiment_name,
@@ -205,7 +220,7 @@ def train_pipeline(config: MLConfig, spark: SparkSession, sample_limit: int = No
 			"feature_engineering": "modular",
 		})
 	
-	print("\n=== Training Complete ===")
+	logger.info("\n=== Training Complete ===")
 	return model, metrics
 
 
@@ -238,9 +253,9 @@ def main():
 	features_path = project_root / args.features_config
 	hyperparams_path = project_root / args.hyperparams_config
 	
-	print(f"Loading configuration from:")
-	print(f"  Features: {features_path}")
-	print(f"  Hyperparams: {hyperparams_path}")
+	logger.info("Loading configuration from:")
+	logger.info(f"  Features: {features_path}")
+	logger.info(f"  Hyperparams: {hyperparams_path}")
 	
 	# Load configuration
 	config = MLConfig.from_yaml(str(features_path), str(hyperparams_path))
@@ -259,9 +274,16 @@ def main():
 		# Run training pipeline
 		model, metrics = train_pipeline(config, spark, sample_limit=args.limit)
 		
-		print("\n✅ Training pipeline completed successfully")
-		print(f"Primary metric ({config.training.primary_metric}): {metrics.get(config.training.primary_metric, 'N/A')}")
+		if model is None or metrics is None:
+			raise ValueError("Training pipeline returned invalid results")
 		
+		logger.info("\nTraining pipeline completed successfully")
+		primary_metric_value = metrics.get(config.training.primary_metric, 'N/A')
+		logger.info(f"Primary metric ({config.training.primary_metric}): {primary_metric_value}")
+		
+	except Exception as e:
+		logger.error(f"Training pipeline failed: {e}", exc_info=True)
+		raise
 	finally:
 		spark.stop()
 

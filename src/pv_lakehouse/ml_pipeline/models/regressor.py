@@ -1,11 +1,15 @@
 from __future__ import annotations
 
+import logging
+
 from pyspark.ml import Pipeline
 from pyspark.ml.feature import VectorAssembler
 from pyspark.ml.regression import DecisionTreeRegressor, GBTRegressor
 from pyspark.sql import DataFrame
 
 from .base import BaseModel
+
+logger = logging.getLogger(__name__)
 
 
 class DecisionTreeRegressorModel(BaseModel):
@@ -31,13 +35,13 @@ class DecisionTreeRegressorModel(BaseModel):
         return Pipeline(stages=[assembler, regressor])
     
     def train(self, train_df: DataFrame, feature_cols: list[str], target_col: str):
-        print(f"Training Decision Tree Regressor...")
-        print(f"Features: {len(feature_cols)}, Target: {target_col}")
+        logger.info("Training Decision Tree Regressor")
+        logger.info(f"Features: {len(feature_cols)}, Target: {target_col}")
         
         pipeline = self.build_pipeline(feature_cols, target_col)
         self.pipeline_model = pipeline.fit(train_df)
         
-        print("Training complete")
+        logger.info("Training complete")
         return self.pipeline_model
 
 
@@ -68,13 +72,13 @@ class GBTRegressorModel(BaseModel):
         return Pipeline(stages=[assembler, regressor])
     
     def train(self, train_df: DataFrame, feature_cols: list[str], target_col: str):
-        print(f"Training Gradient Boosted Trees Regressor...")
-        print(f"Features: {len(feature_cols)}, Target: {target_col}")
+        logger.info("Training Gradient Boosted Trees Regressor")
+        logger.info(f"Features: {len(feature_cols)}, Target: {target_col}")
         
         pipeline = self.build_pipeline(feature_cols, target_col)
         self.pipeline_model = pipeline.fit(train_df)
         
-        print("Training complete")
+        logger.info("Training complete")
         return self.pipeline_model
 
 

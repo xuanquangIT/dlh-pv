@@ -1,9 +1,6 @@
-"""MLflow implementation of experiment tracker.
-
-All MLflow imports and calls are isolated in this module.
-"""
 from __future__ import annotations
 
+import logging
 import os
 from typing import Any, Dict, Optional
 from contextlib import contextmanager
@@ -13,17 +10,12 @@ import mlflow.spark
 
 from . import ExperimentTracker
 
+logger = logging.getLogger(__name__)
+
 
 class MLflowTracker(ExperimentTracker):
-    """MLflow-based experiment tracker."""
     
     def __init__(self, tracking_uri: str, experiment_name: str):
-        """Initialize MLflow tracker.
-        
-        Args:
-            tracking_uri: MLflow tracking server URI
-            experiment_name: Name of the experiment
-        """
         self.tracking_uri = tracking_uri
         self.experiment_name = experiment_name
         
@@ -33,57 +25,41 @@ class MLflowTracker(ExperimentTracker):
         self._active_run = None
     
     def start_run(self, run_name: Optional[str] = None):
-        """Start a new MLflow run."""
         self._active_run = mlflow.start_run(run_name=run_name)
         return self._active_run
     
     def end_run(self, status: str = "FINISHED"):
-        """End the current MLflow run.
-        
-        Args:
-            status: Run status - "FINISHED", "FAILED", "KILLED"
-        """
         if self._active_run:
             mlflow.end_run(status=status)
             self._active_run = None
     
     def log_params(self, params: Dict[str, Any]):
-        """Log parameters to MLflow."""
         for key, value in params.items():
             try:
                 mlflow.log_param(key, value)
             except Exception as e:
-                print(f"Warning: Failed to log param {key}: {e}")
+                logger.warning(f"Failed to log param {key}: {e}", exc_info=True)
     
     def log_metrics(self, metrics: Dict[str, float]):
-        """Log metrics to MLflow."""
         for key, value in metrics.items():
             try:
                 mlflow.log_metric(key, float(value))
             except Exception as e:
-                print(f"Warning: Failed to log metric {key}: {e}")
+                logger.warning(f"Failed to log metric {key}: {e}", exc_info=True)
     
     def log_metric(self, key: str, value: float):
-        """Log a single metric to MLflow."""
         try:
             mlflow.log_metric(key, float(value))
         except Exception as e:
-            print(f"Warning: Failed to log metric {key}: {e}")
+            logger.warning(f"Failed to log metric {key}: {e}", exc_info=True)
     
     def log_artifact(self, file_path: str, artifact_path: Optional[str] = None):
-        """Log an artifact file to MLflow."""
         try:
             mlflow.log_artifact(file_path, artifact_path)
         except Exception as e:
-            print(f"Warning: Failed to log artifact {file_path}: {e}")
+            logger.warning(f"Failed to log artifact {file_path}: {e}", exc_info=True)
     
     def log_model(self, model: Any, artifact_path: str):
-        """Log a PySpark model to MLflow.
-        
-        Args:
-            model: PySpark Pipeline or Model
-            artifact_path: Path within MLflow artifacts
-        """
         try:
             dfs_tmpdir = os.environ.get("MLFLOW_DFS_TMP", None)
             mlflow.spark.log_model(
@@ -92,25 +68,17 @@ class MLflowTracker(ExperimentTracker):
                 dfs_tmpdir=dfs_tmpdir
             )
         except Exception as e:
-            print(f"Warning: Failed to log model: {e}")
+            logger.warning(f"Failed to log model: {e}", exc_info=True)
     
     def set_tags(self, tags: Dict[str, str]):
-        """Set tags for the current run."""
         for key, value in tags.items():
             try:
                 mlflow.set_tag(key, value)
             except Exception as e:
-                print(f"Warning: Failed to set tag {key}: {e}")
+                logger.warning(f"Failed to set tag {key}: {e}", exc_info=True)
     
     @contextmanager
     def run_context(self, run_name: Optional[str] = None):
-        """Context manager for MLflow runs.
-        
-        Usage:
-            with tracker.run_context("my_run"):
-                # training code
-                pass
-        """
         run_status = "FINISHED"
         try:
             self.start_run(run_name)
@@ -120,8 +88,8 @@ class MLflowTracker(ExperimentTracker):
             # Log the exception
             try:
                 mlflow.set_tag("error", str(e)[:250])
-            except:
-                pass
+            except Exception as tag_error:
+                logger.warning(f"Failed to set error tag: {tag_error}", exc_info=True)
             raise
         finally:
             self.end_run(status=run_status)
@@ -130,16 +98,6 @@ class MLflowTracker(ExperimentTracker):
 def create_tracker(tracking_uri: str, 
                   experiment_name: str,
                   use_mlflow: bool = True) -> ExperimentTracker:
-    """Factory function to create an experiment tracker.
-    
-    Args:
-        tracking_uri: MLflow tracking server URI
-        experiment_name: Experiment name
-        use_mlflow: Whether to use MLflow (False for testing)
-        
-    Returns:
-        ExperimentTracker instance
-    """
     if use_mlflow:
         return MLflowTracker(tracking_uri, experiment_name)
     else:

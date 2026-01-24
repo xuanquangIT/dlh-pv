@@ -39,10 +39,17 @@ class BaseModel(ABC):
         if len(stages) < 2:
             return {}
         
+        # Validate assembler (first stage should have getInputCols method)
         assembler = stages[0]
-        model = stages[1]
+        if not hasattr(assembler, 'getInputCols'):
+            return {}
         
-        if hasattr(model, 'featureImportances'):
+        # Validate model (second stage should have featureImportances)
+        model = stages[1]
+        if not hasattr(model, 'featureImportances'):
+            return {}
+        
+        try:
             importances = model.featureImportances.toArray()
             feature_names = assembler.getInputCols()
             
@@ -50,6 +57,8 @@ class BaseModel(ABC):
                 name: float(importance)
                 for name, importance in zip(feature_names, importances)
             }
+        except (AttributeError, IndexError):
+            return {}
         
         return {}
     
