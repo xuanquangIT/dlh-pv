@@ -53,7 +53,26 @@ class HTTPClient(Protocol):
     ) -> Dict[str, Any]:
         ...
 
-class RequestsHTTPClient:
+class RequestsHTTPClient:    
+    def __init__(self) -> None:
+        self._session: Optional[requests.Session] = None
+    
+    def _get_session(self) -> requests.Session:
+        if self._session is None:
+            self._session = requests.Session()
+        return self._session
+    
+    def close(self) -> None:
+        if self._session is not None:
+            self._session.close()
+            self._session = None
+    
+    def __enter__(self) -> "RequestsHTTPClient":
+        return self
+    
+    def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
+        self.close()
+    
     def get(
         self,
         url: str,
@@ -61,14 +80,41 @@ class RequestsHTTPClient:
         params: List[Tuple[str, str]],
         timeout: int,
     ) -> Dict[str, Any]:
-        # Perform GET request
-        response = requests.get(url, headers=headers, params=params, timeout=timeout)
+        session = self._get_session()
+        response: Optional[requests.Response] = None
         
-        if response.status_code == 401:
-            raise RuntimeError("401 Unauthorized: check your OpenElectricity credentials.")
-        
-        response.raise_for_status()
-        return response.json()
+        try:
+            # Perform GET request using session for connection pooling
+            response = session.get(url, headers=headers, params=params, timeout=timeout)
+            
+            if response.status_code == 401:
+                raise RuntimeError("401 Unauthorized: check your OpenElectricity credentials.")
+            
+            response.raise_for_status()
+            return response.json()
+            
+        except requests.exceptions.Timeout as exc:
+            raise requests.exceptions.Timeout(
+                f"Request timed out after {timeout} seconds while connecting to {url}"
+            ) from exc
+        except requests.exceptions.ConnectionError as exc:
+            raise requests.exceptions.ConnectionError(
+                f"Failed to establish connection to {url}: {exc}"
+            ) from exc
+        except requests.exceptions.HTTPError as exc:
+            error_text = ""
+            if response is not None:
+                try:
+                    error_text = response.text[:200]
+                except Exception:
+                    pass
+            raise requests.exceptions.HTTPError(
+                f"HTTP {response.status_code if response else 'unknown'} error for {url}: {error_text}"
+            ) from exc
+        finally:
+            # Ensure response is properly closed to release connection back to pool
+            if response is not None:
+                response.close()
 
 # Read environment file
 def _read_env_file(env_path: Path) -> Dict[str, str]:
@@ -119,13 +165,24 @@ class OpenElectricityClient:
         self._api_key = load_api_key(api_key)
         # Config
         self._config = config or ClientConfig()
-        # HTTP client
+        # HTTP client - track if we own it for cleanup
+        self._owns_http_client = http_client is None
         self._http_client = http_client or RequestsHTTPClient()
         
         # Build endpoint URLs
         base_url = self._config.base_url.rstrip("/")
         self._facilities_endpoint = f"{base_url}/facilities/"
         self._data_endpoint_template = f"{base_url}/data/facilities/{{network_code}}"
+
+    def close(self) -> None:
+        if self._owns_http_client and hasattr(self._http_client, "close"):
+            self._http_client.close()
+    
+    def __enter__(self) -> "OpenElectricityClient":
+        return self
+    
+    def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
+        self.close()
 
     @property
     # Return API key
@@ -424,14 +481,14 @@ def fetch_facilities_dataframe(
     fueltechs: Optional[Sequence[str]] = None,
     region: Optional[str] = None,
 ) -> pd.DataFrame:
-    client = OpenElectricityClient(api_key=api_key)
-    return client.fetch_facilities(
-        selected_codes=selected_codes,
-        networks=networks,
-        statuses=statuses,
-        fueltechs=fueltechs,
-        region=region,
-    )
+    with OpenElectricityClient(api_key=api_key) as client:
+        return client.fetch_facilities(
+            selected_codes=selected_codes,
+            networks=networks,
+            statuses=statuses,
+            fueltechs=fueltechs,
+            region=region,
+        )
 
 
 def fetch_facility_timeseries_dataframe(
@@ -445,16 +502,16 @@ def fetch_facility_timeseries_dataframe(
     target_window_days: int = TARGET_WINDOW_DAYS,
     max_lookback_windows: int = MAX_LOOKBACK_WINDOWS,
 ) -> pd.DataFrame:
-    client = OpenElectricityClient(api_key=api_key)
-    return client.fetch_timeseries(
-        facility_codes=facility_codes,
-        metrics=metrics,
-        interval=interval,
-        date_start=date_start,
-        date_end=date_end,
-        target_window_days=target_window_days,
-        max_lookback_windows=max_lookback_windows,
-    )
+    with OpenElectricityClient(api_key=api_key) as client:
+        return client.fetch_timeseries(
+            facility_codes=facility_codes,
+            metrics=metrics,
+            interval=interval,
+            date_start=date_start,
+            date_end=date_end,
+            target_window_days=target_window_days,
+            max_lookback_windows=max_lookback_windows,
+        )
 
 
 __all__ = [
