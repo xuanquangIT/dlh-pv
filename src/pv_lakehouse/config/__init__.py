@@ -1,0 +1,7 @@
+"""Configuration management for PV Lakehouse."""
+
+from __future__ import annotations
+
+from .settings import get_settings, settings
+
+__all__ = ["settings", "get_settings"]

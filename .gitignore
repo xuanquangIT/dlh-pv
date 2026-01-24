@@ -170,3 +170,17 @@ local_settings.py
 # Ignore Trino runtime catalog that may contain secrets - keep the template committed
 docker/trino/catalog/iceberg.properties
 !docker/trino/catalog/iceberg.properties.template
+
+# Task
+.task/
+
+# AIDA
+AIDA/
+
+# uv (Python package manager)
+uv.lock
+.uv/
+.venv.uv/
+
+# PR 
+.pr/
