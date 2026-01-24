@@ -25,8 +25,15 @@ fastparquet>=2023.10.1,<2025.0.0
 # Spark (required by tests and some scripts)
 pyspark==3.5.1
 
+# Configuration Management
+pydantic==2.5.3
+pydantic-settings==2.1.0
+PyYAML==6.0.1
+
 # Testing
 pytest==7.4.0
+pytest-cov==4.1.0
+pytest-mock==3.12.0
 
 # Compatibility pins required by mlflow 2.4.0
 cloudpickle==2.2.1
