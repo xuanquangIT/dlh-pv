@@ -61,7 +61,7 @@ class RequestsHTTPClient:
         params: List[Tuple[str, str]],
         timeout: int,
     ) -> Dict[str, Any]:
-        # Thực hiện GET request
+        # Perform GET request
         response = requests.get(url, headers=headers, params=params, timeout=timeout)
         
         if response.status_code == 401:
@@ -70,7 +70,7 @@ class RequestsHTTPClient:
         response.raise_for_status()
         return response.json()
 
-# đọc env file
+# Read environment file
 def _read_env_file(env_path: Path) -> Dict[str, str]:
     if not env_path.exists():
         return {}
@@ -83,7 +83,7 @@ def _read_env_file(env_path: Path) -> Dict[str, str]:
         key, value = line.split("=", 1)
         values[key.strip()] = value.strip().strip('"').strip("'")
     return values
-#load api key
+# Load API key
 def load_api_key(cli_key: Optional[str] = None) -> str:
     if cli_key:
         return cli_key
@@ -107,7 +107,7 @@ def load_api_key(cli_key: Optional[str] = None) -> str:
         "Missing API key. Provide via parameter, environment variable, or .env file."
     )
 
-#main client class để tương tác với OpenElectricity API 
+# Main client class for interacting with OpenElectricity API 
 class OpenElectricityClient:
     def __init__(
         self,
@@ -115,29 +115,29 @@ class OpenElectricityClient:
         config: Optional[ClientConfig] = None,
         http_client: Optional[HTTPClient] = None,
     ):
-        # load api key
+        # Load API key
         self._api_key = load_api_key(api_key)
-        # config
+        # Config
         self._config = config or ClientConfig()
-        # http client
+        # HTTP client
         self._http_client = http_client or RequestsHTTPClient()
         
-        # xây dựng url endpoint
+        # Build endpoint URLs
         base_url = self._config.base_url.rstrip("/")
         self._facilities_endpoint = f"{base_url}/facilities/"
         self._data_endpoint_template = f"{base_url}/data/facilities/{{network_code}}"
 
     @property
-    # trả về api key
+    # Return API key
     def api_key(self) -> str:
         return self._api_key
-    # trả về header cho request
+    # Return request headers
     def _get_headers(self) -> Dict[str, str]:
         return {
             "Authorization": f"Bearer {self._api_key}",
             "Accept": "application/json",
         }
-    # tạo decorator để retry 
+    # Create retry decorator 
     def _create_retry_decorator(self) -> Callable:
         return retry(
             retry=retry_if_exception_type((requests.RequestException, ConnectionError)),
@@ -149,7 +149,7 @@ class OpenElectricityClient:
             ),
             reraise=True,
         )
-    # thực hiện request
+    # Execute request
     def _request_json(
         self,
         url: str,
@@ -175,7 +175,7 @@ class OpenElectricityClient:
         except RetryError as e:
             raise e.last_attempt.exception() from e
 
-    # build params cho request
+    # Build params for request
     def _build_params(
         self,
         networks: Iterable[str],
@@ -191,7 +191,7 @@ class OpenElectricityClient:
             params.append(("network_region", region))
         return params
 
-    #lấy danh sách facilities từ API
+    # Fetch facilities list from API
     def fetch_facilities(
         self,
         *,
@@ -201,32 +201,32 @@ class OpenElectricityClient:
         fueltechs: Optional[Sequence[str]] = None,
         region: Optional[str] = None,
     ) -> pd.DataFrame:
-        # chuẩn hóa các tham số
+        # Normalize parameters
         networks_list = [v.upper() for v in (networks or ["NEM", "WEM"]) if v]
         statuses_list = [v.lower() for v in (statuses or ["operating"]) if v]
         fueltechs_list = [v.lower() for v in (fueltechs or ["solar_utility"]) if v]
         region_filter = region.strip() if isinstance(region, str) else None
         
-        # nếu region_filter là ALL thì bỏ filter
+        # If region_filter is ALL, remove filter
         if region_filter and region_filter.upper() == "ALL":
             region_filter = None
-        # build params cho request
+        # Build request params
         params = self._build_params(networks_list, statuses_list, fueltechs_list, region_filter)
         payload = self._request_json(self._facilities_endpoint, params)
         
-        # Parse facilities thành DataFrame
+        # Parse facilities into DataFrame
         rows = [summarize_facility(item).model_dump() for item in payload.get("data", [])]
         dataframe = pd.DataFrame(rows)
 
         if dataframe.empty:
             return dataframe
 
-        # Sắp xếp DataFrame theo network, region, name
+        # Sort DataFrame by network, region, name
         dataframe = dataframe.sort_values(
             ["network_id", "network_region", "facility_name"], na_position="last"
         ).reset_index(drop=True)
 
-        # Filter theo selected_codes
+        # Filter by selected_codes
         if selected_codes:
             desired = {code.upper() for code in selected_codes if code}
             if desired:
@@ -236,7 +236,7 @@ class OpenElectricityClient:
                 ].reset_index(drop=True)
 
         return dataframe
-    # Lấy metadata của các facilities
+    # Fetch facility metadata
     def _fetch_facility_metadata(
         self, facility_codes: Sequence[str]
     ) -> Dict[str, FacilityMetadata]:
@@ -258,20 +258,20 @@ class OpenElectricityClient:
 
         return facilities
     
-    # Tính toán window 
+    # Calculate time window 
     def _default_time_window(
         self, network_code: str, interval: str
     ) -> Tuple[dt.datetime, dt.datetime]:
-        # Lấy timezone của network
+        # Get network timezone
         tzinfo = resolve_network_timezone(network_code)
         now = dt.datetime.now(tz=tzinfo)
         
-        # Tính toán start
+        # Calculate start
         start = now - dt.timedelta(days=TARGET_WINDOW_DAYS)
         
         return start.replace(tzinfo=None), now.replace(tzinfo=None)
 
-    # Lấy dữ liệu timeseries 
+    # Fetch timeseries data 
     def _fetch_timeseries_payloads(
         self,
         network_code: str,
@@ -281,22 +281,22 @@ class OpenElectricityClient:
         start_dt: dt.datetime,
         end_dt: dt.datetime,
     ) -> List[Dict[str, Any]]:
-        # Tạo base params
+        # Create base params
         params_base: List[Tuple[str, str]] = [("interval", interval)]
         params_base.extend(("metrics", metric) for metric in metrics)
         params_base.extend(("facility_code", code) for code in facility_codes)
-        # Tạo url
+        # Create URL
         url = self._data_endpoint_template.format(network_code=network_code)
         max_chunk_days = INTERVAL_MAX_DAYS.get(interval)
 
         while True:
-            # Tạo list payload
+            # Create payload list
             payloads: List[Dict[str, Any]] = []
-            # Tách date range thành các segment
+            # Split date range into segments
             segments = chunk_date_range(start_dt, end_dt, max_chunk_days)
             
             try:
-                # Lấy dữ liệu
+                # Fetch data
                 for chunk_start, chunk_end in segments:
                     params = list(params_base)
                     params.append(("date_start", format_naive_datetime(chunk_start)))
@@ -312,11 +312,11 @@ class OpenElectricityClient:
                         response_text = exc.response.text
                     except Exception:
                         response_text = ""
-                # Lấy max_days từ error
+                # Get max_days from error
                 max_days = extract_max_days_from_error(response_text)
                 if not max_days:
                     raise
-                # Nếu max_days nhỏ hơn max_chunk_days
+                # If max_days is less than max_chunk_days
                 if max_chunk_days and max_chunk_days <= max_days:
                     if max_days <= 1:
                         raise
@@ -324,7 +324,7 @@ class OpenElectricityClient:
                 else:
                     max_chunk_days = max_days
 
-    # Lấy dữ liệu timeseries
+    # Fetch timeseries data
     def fetch_timeseries(
         self,
         *,
@@ -341,6 +341,7 @@ class OpenElectricityClient:
             raise ValueError(
                 f"Invalid interval '{interval}'. Supported values: {', '.join(sorted(SUPPORTED_INTERVALS))}."
             )
+
 
         # Parse date range
         manual_start = parse_naive_datetime(date_start) if date_start else None
@@ -386,7 +387,7 @@ class OpenElectricityClient:
                 rows.extend(window_rows)
                 continue
 
-            # Auto-detect với lookback strategy 
+            # Auto-detect with lookback strategy 
             attempt_start, attempt_end = self._default_time_window(network_code, interval)
             attempts = 0
             best_rows: List[Dict[str, Any]] = []
@@ -402,13 +403,13 @@ class OpenElectricityClient:
 
             rows.extend(best_rows)
 
-        # Convert về dataframe
+        # Convert to dataframe
         dataframe = pd.DataFrame(rows)
         if dataframe.empty:
             return dataframe
 
         dataframe = dataframe.sort_values(
-            ["network_id", "network_region", "facility_name"], na_position="last" # na_position="last" để giữ các giá trị null ở cuối
+            ["network_id", "network_region", "facility_name"], na_position="last"  # Keep null values at the end
         ).reset_index(drop=True)
         
         return dataframe
