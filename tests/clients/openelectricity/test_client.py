@@ -57,7 +57,7 @@ class TestLoadApiKey:
 class TestRequestsHTTPClient:
     def test_get_unauthorized(self):
         client = RequestsHTTPClient()
-        with patch("requests.get") as mock_get:
+        with patch("requests.Session.get") as mock_get:
             mock_response = mock_get.return_value
             mock_response.status_code = 401
             mock_response.raise_for_status.side_effect = None

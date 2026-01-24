@@ -31,7 +31,7 @@ def resolve_network_timezone(network_code: str):
     if ZoneInfo and tz_name:
         try:
             return ZoneInfo(tz_name)
-        except Exception:
+        except (KeyError, ValueError):
             pass
 
     from datetime import timezone, timedelta
@@ -53,6 +53,7 @@ def parse_naive_datetime(value: str) -> dt.datetime:
 def format_naive_datetime(value: dt.datetime) -> str:
     return value.strftime("%Y-%m-%dT%H:%M:%S")
 
+# Split date range into chunks of max_days, returns list of (start, end) tuples
 def chunk_date_range(
     start: dt.datetime,
     end: dt.datetime,
@@ -73,6 +74,7 @@ def chunk_date_range(
     
     return segments
 
+# Extract max days limit from API error message, returns None if not found
 def extract_max_days_from_error(error_text: str) -> Optional[int]:
     match = MAX_RANGE_ERROR_PATTERN.search(error_text or "")
     if match:
@@ -89,8 +91,13 @@ def load_default_facility_codes(override_path: Optional[Path] = None) -> List[st
     
     if not js_path.exists():
         raise FileNotFoundError(f"Missing facilities.js at {js_path}")
-
-    contents = js_path.read_text(encoding="utf-8")
+    try:
+        contents = js_path.read_text(encoding="utf-8")
+    except PermissionError as exc:
+        raise PermissionError(f"Permission denied reading {js_path}") from exc
+    except OSError as exc:
+        raise OSError(f"Failed to read {js_path}: {exc}") from exc
+    
     matches = re.findall(r'"([^"\n]+)"', contents)
     
     if not matches:
@@ -186,6 +193,7 @@ def summarize_facility(facility: Dict[str, Any]) -> FacilitySummary:
         facility_description=as_str(facility.get("description")),
     )
 
+# Parse facility dict into FacilityMetadata, returns None if no code
 def parse_facility_metadata(facility: Dict[str, Any]) -> Optional[FacilityMetadata]:
     code = facility.get("code")
     if not code:
@@ -199,6 +207,7 @@ def parse_facility_metadata(facility: Dict[str, Any]) -> Optional[FacilityMetada
         units=facility.get("units") or [],
     )
 
+# Build mapping from unit_code to facility_code
 def build_unit_to_facility_map(facilities: Dict[str, FacilityMetadata]) -> Dict[str, str]:
     mapping: Dict[str, str] = {}
     for facility in facilities.values():
