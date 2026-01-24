@@ -53,24 +53,31 @@ class HTTPClient(Protocol):
     ) -> Dict[str, Any]:
         ...
 
-class RequestsHTTPClient:    
+class RequestsHTTPClient:
+    """HTTP client implementation using requests library with connection pooling."""
+    
     def __init__(self) -> None:
+        """Initialize the HTTP client with lazy session creation."""
         self._session: Optional[requests.Session] = None
     
     def _get_session(self) -> requests.Session:
+        """Get or create a requests session for connection pooling."""
         if self._session is None:
             self._session = requests.Session()
         return self._session
     
     def close(self) -> None:
+        """Close the HTTP session and release resources."""
         if self._session is not None:
             self._session.close()
             self._session = None
     
     def __enter__(self) -> "RequestsHTTPClient":
+        """Enter context manager."""
         return self
     
     def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
+        """Exit context manager and close the session."""
         self.close()
     
     def get(
@@ -80,6 +87,24 @@ class RequestsHTTPClient:
         params: List[Tuple[str, str]],
         timeout: int,
     ) -> Dict[str, Any]:
+        """
+        Perform an HTTP GET request and return JSON response.
+
+        Args:
+            url: The endpoint URL to request.
+            headers: HTTP headers to include in the request.
+            params: Query parameters as list of tuples.
+            timeout: Request timeout in seconds.
+
+        Returns:
+            Parsed JSON response as a dictionary.
+
+        Raises:
+            RuntimeError: If the request returns 401 Unauthorized.
+            requests.exceptions.Timeout: If the request times out.
+            requests.exceptions.ConnectionError: If connection fails.
+            requests.exceptions.HTTPError: For other HTTP errors.
+        """
         session = self._get_session()
         response: Optional[requests.Response] = None
         
@@ -116,8 +141,16 @@ class RequestsHTTPClient:
             if response is not None:
                 response.close()
 
-# Read environment file
 def _read_env_file(env_path: Path) -> Dict[str, str]:
+    """
+    Read and parse a .env file.
+
+    Args:
+        env_path: Path to the .env file.
+
+    Returns:
+        Dictionary of key-value pairs from the file.
+    """
     if not env_path.exists():
         return {}
     values: Dict[str, str] = {}
@@ -129,8 +162,19 @@ def _read_env_file(env_path: Path) -> Dict[str, str]:
         key, value = line.split("=", 1)
         values[key.strip()] = value.strip().strip('"').strip("'")
     return values
-# Load API key
 def load_api_key(cli_key: Optional[str] = None) -> str:
+    """
+    Load OpenElectricity API key from CLI, environment, or .env file.
+
+    Args:
+        cli_key: Optional API key provided via CLI.
+
+    Returns:
+        The API key string.
+
+    Raises:
+        RuntimeError: If no API key is found.
+    """
     if cli_key:
         return cli_key
     # Check environment variables
@@ -153,49 +197,75 @@ def load_api_key(cli_key: Optional[str] = None) -> str:
         "Missing API key. Provide via parameter, environment variable, or .env file."
     )
 
-# Main client class for interacting with OpenElectricity API 
 class OpenElectricityClient:
+    """
+    Client for interacting with the OpenElectricity API.
+
+    Provides methods to fetch facility metadata and timeseries data.
+    Supports connection pooling, retry logic, and API key management.
+
+    Example:
+        >>> with OpenElectricityClient(api_key="your-key") as client:
+        ...     facilities = client.fetch_facilities(networks=["NEM"])
+        ...     timeseries = client.fetch_timeseries(facility_codes=["BALBG1"])
+    """
+
     def __init__(
         self,
         api_key: Optional[str] = None,
         config: Optional[ClientConfig] = None,
         http_client: Optional[HTTPClient] = None,
-    ):
-        # Load API key
+    ) -> None:
+        """
+        Initialize the OpenElectricity client.
+
+        Args:
+            api_key: Optional API key. If not provided, will be loaded from
+                environment variables or .env file.
+            config: Optional client configuration for timeouts and retries.
+            http_client: Optional HTTP client for dependency injection (testing).
+        """
         self._api_key = load_api_key(api_key)
-        # Config
         self._config = config or ClientConfig()
-        # HTTP client - track if we own it for cleanup
         self._owns_http_client = http_client is None
         self._http_client = http_client or RequestsHTTPClient()
         
-        # Build endpoint URLs
         base_url = self._config.base_url.rstrip("/")
         self._facilities_endpoint = f"{base_url}/facilities/"
         self._data_endpoint_template = f"{base_url}/data/facilities/{{network_code}}"
 
     def close(self) -> None:
+        """Close the client and release resources."""
         if self._owns_http_client and hasattr(self._http_client, "close"):
             self._http_client.close()
     
     def __enter__(self) -> "OpenElectricityClient":
+        """Enter context manager."""
         return self
     
     def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
+        """Exit context manager and close the client."""
         self.close()
 
     @property
-    # Return API key
     def api_key(self) -> str:
+        """Return the API key used for authentication."""
         return self._api_key
-    # Return request headers
+
     def _get_headers(self) -> Dict[str, str]:
+        """Build HTTP headers for API requests."""
         return {
             "Authorization": f"Bearer {self._api_key}",
             "Accept": "application/json",
         }
-    # Create retry decorator 
+
     def _create_retry_decorator(self) -> Callable:
+        """
+        Create a tenacity retry decorator with configured settings.
+
+        Returns:
+            A retry decorator configured with exponential backoff.
+        """
         return retry(
             retry=retry_if_exception_type((requests.RequestException, ConnectionError)),
             stop=stop_after_attempt(self._config.max_retries),
@@ -206,12 +276,25 @@ class OpenElectricityClient:
             ),
             reraise=True,
         )
-    # Execute request
     def _request_json(
         self,
         url: str,
         params: List[Tuple[str, str]],
     ) -> Dict[str, Any]:
+        """
+        Execute an HTTP GET request with retry logic.
+
+        Args:
+            url: The API endpoint URL.
+            params: Query parameters as list of tuples.
+
+        Returns:
+            Parsed JSON response as a dictionary.
+
+        Raises:
+            RuntimeError: If the API returns an error response.
+            requests.RequestException: If all retry attempts fail.
+        """
         retry_decorator = self._create_retry_decorator()
         
         @retry_decorator
@@ -232,7 +315,6 @@ class OpenElectricityClient:
         except RetryError as e:
             raise e.last_attempt.exception() from e
 
-    # Build params for request
     def _build_params(
         self,
         networks: Iterable[str],
@@ -240,6 +322,18 @@ class OpenElectricityClient:
         fueltechs: Iterable[str],
         region: Optional[str],
     ) -> List[Tuple[str, str]]:
+        """
+        Build query parameters for facility filtering.
+
+        Args:
+            networks: Network IDs to filter by (e.g., "NEM", "WEM").
+            statuses: Facility statuses to filter by (e.g., "operating").
+            fueltechs: Fuel technology types to filter by.
+            region: Optional network region to filter by.
+
+        Returns:
+            List of (key, value) tuples for query parameters.
+        """
         params: List[Tuple[str, str]] = []
         params.extend(("network_id", value) for value in networks)
         params.extend(("status_id", value) for value in statuses)
@@ -248,7 +342,6 @@ class OpenElectricityClient:
             params.append(("network_region", region))
         return params
 
-    # Fetch facilities list from API
     def fetch_facilities(
         self,
         *,
@@ -258,6 +351,19 @@ class OpenElectricityClient:
         fueltechs: Optional[Sequence[str]] = None,
         region: Optional[str] = None,
     ) -> pd.DataFrame:
+        """
+        Fetch facility metadata from the OpenElectricity API.
+
+        Args:
+            selected_codes: Optional list of facility codes to filter.
+            networks: Network IDs (default: ["NEM", "WEM"]).
+            statuses: Facility statuses (default: ["operating"]).
+            fueltechs: Fuel technologies (default: ["solar_utility"]).
+            region: Optional network region filter.
+
+        Returns:
+            DataFrame with facility metadata.
+        """
         # Normalize parameters
         networks_list = [v.upper() for v in (networks or ["NEM", "WEM"]) if v]
         statuses_list = [v.lower() for v in (statuses or ["operating"]) if v]
@@ -293,10 +399,21 @@ class OpenElectricityClient:
                 ].reset_index(drop=True)
 
         return dataframe
-    # Fetch facility metadata
     def _fetch_facility_metadata(
         self, facility_codes: Sequence[str]
     ) -> Dict[str, FacilityMetadata]:
+        """
+        Fetch detailed metadata for specific facilities.
+
+        Args:
+            facility_codes: List of facility codes to fetch.
+
+        Returns:
+            Dictionary mapping facility codes to their metadata.
+
+        Raises:
+            ValueError: If facility_codes is empty or codes are not found.
+        """
         if not facility_codes:
             raise ValueError("facility_codes must not be empty")
 
@@ -315,10 +432,19 @@ class OpenElectricityClient:
 
         return facilities
     
-    # Calculate time window 
     def _default_time_window(
         self, network_code: str, interval: str
     ) -> Tuple[dt.datetime, dt.datetime]:
+        """
+        Calculate default time window for timeseries queries.
+
+        Args:
+            network_code: The network code (e.g., "NEM").
+            interval: Data interval (e.g., "1h").
+
+        Returns:
+            Tuple of (start_datetime, end_datetime) in network timezone.
+        """
         # Get network timezone
         tzinfo = resolve_network_timezone(network_code)
         now = dt.datetime.now(tz=tzinfo)
@@ -328,7 +454,6 @@ class OpenElectricityClient:
         
         return start.replace(tzinfo=None), now.replace(tzinfo=None)
 
-    # Fetch timeseries data 
     def _fetch_timeseries_payloads(
         self,
         network_code: str,
@@ -338,6 +463,22 @@ class OpenElectricityClient:
         start_dt: dt.datetime,
         end_dt: dt.datetime,
     ) -> List[Dict[str, Any]]:
+        """
+        Fetch raw timeseries payloads from the API.
+
+        Handles date range chunking and automatic retry on max_days errors.
+
+        Args:
+            network_code: The network code (e.g., "NEM").
+            facility_codes: List of facility codes to fetch.
+            metrics: List of metrics to fetch (e.g., ["power", "energy"]).
+            interval: Data interval (e.g., "1h").
+            start_dt: Start datetime.
+            end_dt: End datetime.
+
+        Returns:
+            List of API response payloads.
+        """
         # Create base params
         params_base: List[Tuple[str, str]] = [("interval", interval)]
         params_base.extend(("metrics", metric) for metric in metrics)
@@ -381,7 +522,6 @@ class OpenElectricityClient:
                 else:
                     max_chunk_days = max_days
 
-    # Fetch timeseries data
     def fetch_timeseries(
         self,
         *,
@@ -393,6 +533,24 @@ class OpenElectricityClient:
         target_window_days: int = TARGET_WINDOW_DAYS,
         max_lookback_windows: int = MAX_LOOKBACK_WINDOWS,
     ) -> pd.DataFrame:
+        """
+        Fetch timeseries data for facilities.
+
+        Args:
+            facility_codes: List of facility codes to fetch data for.
+            metrics: List of metrics (default: ["power", "energy"]).
+            interval: Data interval (default: "1h").
+            date_start: Optional start date (ISO format).
+            date_end: Optional end date (ISO format).
+            target_window_days: Days per lookback window for auto-detection.
+            max_lookback_windows: Maximum lookback attempts.
+
+        Returns:
+            DataFrame with timeseries data.
+
+        Raises:
+            ValueError: If interval is invalid or date range is malformed.
+        """
         # Validate interval
         if interval not in SUPPORTED_INTERVALS:
             raise ValueError(
@@ -471,7 +629,6 @@ class OpenElectricityClient:
         
         return dataframe
 
-# Backward-compatible functions
 def fetch_facilities_dataframe(
     *,
     api_key: Optional[str] = None,
@@ -481,6 +638,22 @@ def fetch_facilities_dataframe(
     fueltechs: Optional[Sequence[str]] = None,
     region: Optional[str] = None,
 ) -> pd.DataFrame:
+    """
+    Fetch facilities DataFrame (backward-compatible function).
+
+    This is a convenience wrapper around OpenElectricityClient.fetch_facilities().
+
+    Args:
+        api_key: Optional API key for authentication.
+        selected_codes: Optional list of facility codes to filter.
+        networks: Network IDs (default: ["NEM", "WEM"]).
+        statuses: Facility statuses (default: ["operating"]).
+        fueltechs: Fuel technologies (default: ["solar_utility"]).
+        region: Optional network region filter.
+
+    Returns:
+        DataFrame with facility metadata.
+    """
     with OpenElectricityClient(api_key=api_key) as client:
         return client.fetch_facilities(
             selected_codes=selected_codes,
@@ -502,6 +675,24 @@ def fetch_facility_timeseries_dataframe(
     target_window_days: int = TARGET_WINDOW_DAYS,
     max_lookback_windows: int = MAX_LOOKBACK_WINDOWS,
 ) -> pd.DataFrame:
+    """
+    Fetch facility timeseries DataFrame (backward-compatible function).
+
+    This is a convenience wrapper around OpenElectricityClient.fetch_timeseries().
+
+    Args:
+        facility_codes: List of facility codes to fetch data for.
+        metrics: List of metrics (default: ["power", "energy"]).
+        interval: Data interval (default: "1h").
+        date_start: Optional start date (ISO format).
+        date_end: Optional end date (ISO format).
+        api_key: Optional API key for authentication.
+        target_window_days: Days per lookback window for auto-detection.
+        max_lookback_windows: Maximum lookback attempts.
+
+    Returns:
+        DataFrame with timeseries data.
+    """
     with OpenElectricityClient(api_key=api_key) as client:
         return client.fetch_timeseries(
             facility_codes=facility_codes,

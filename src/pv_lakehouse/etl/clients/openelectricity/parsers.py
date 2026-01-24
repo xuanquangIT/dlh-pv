@@ -14,20 +14,48 @@ NETWORK_TIMEZONE_IDS = {"NEM": "Australia/Brisbane", "WEM": "Australia/Perth"}
 NETWORK_FALLBACK_OFFSETS = {"NEM": 10, "WEM": 8}
 MAX_RANGE_ERROR_PATTERN = re.compile(r"Maximum range is (\d+) days", re.IGNORECASE)
 
-# Returns the UTC offset hours for the network
 def get_timezone_offset_hours(network_id: str) -> int:
+    """
+    Get the UTC offset hours for a network.
+
+    Args:
+        network_id: Network identifier (e.g., 'NEM', 'WEM').
+
+    Returns:
+        UTC offset hours (e.g., 10 for NEM, 8 for WEM).
+    """
     return NETWORK_FALLBACK_OFFSETS.get(network_id, 10)
-# Returns the IANA timezone ID for the network
+
+
 def get_timezone_id(network_id: str) -> str:
+    """
+    Get the IANA timezone ID for a network.
+
+    Args:
+        network_id: Network identifier (e.g., 'NEM', 'WEM').
+
+    Returns:
+        IANA timezone ID (e.g., 'Australia/Brisbane').
+    """
     return NETWORK_TIMEZONE_IDS.get(network_id, "Australia/Brisbane")
-# Returns the timezone object for the network
 def resolve_network_timezone(network_code: str):
+    """
+    Get a timezone object for a network.
+
+    Uses ZoneInfo if available, falls back to fixed UTC offset.
+
+    Args:
+        network_code: Network identifier (e.g., 'NEM', 'WEM').
+
+    Returns:
+        A timezone-aware object (ZoneInfo or timezone with fixed offset).
+    """
     try:
         from zoneinfo import ZoneInfo
     except ImportError:
         ZoneInfo = None
     
-    tz_name = NETWORK_TIMEZONE_IDS.get(network_code)  # Get timezone name for the network
+    tz_name = NETWORK_TIMEZONE_IDS.get(network_code)
     if ZoneInfo and tz_name:
         try:
             return ZoneInfo(tz_name)
@@ -37,11 +65,22 @@ def resolve_network_timezone(network_code: str):
     from datetime import timezone, timedelta
     offset_hours = NETWORK_FALLBACK_OFFSETS.get(network_code)
     if offset_hours is not None:
-        return timezone(timedelta(hours=offset_hours))  # Example: timezone(timedelta(hours=10)) returns UTC+10
+        return timezone(timedelta(hours=offset_hours))
     return timezone.utc
 
-# Parse datetime string into datetime object
 def parse_naive_datetime(value: str) -> dt.datetime:
+    """
+    Parse an ISO datetime string into a timezone-naive datetime.
+
+    Args:
+        value: ISO format datetime string (YYYY-MM-DDTHH:MM:SS).
+
+    Returns:
+        A timezone-naive datetime object.
+
+    Raises:
+        ValueError: If the string is invalid or contains timezone info.
+    """
     try:
         parsed = dt.datetime.fromisoformat(value)
     except ValueError as exc:
@@ -49,43 +88,85 @@ def parse_naive_datetime(value: str) -> dt.datetime:
     if parsed.tzinfo is not None:
         raise ValueError("Datetime values must be timezone naive (network local time).")
     return parsed
-# Format datetime object into datetime string
+
+
 def format_naive_datetime(value: dt.datetime) -> str:
+    """
+    Format a datetime object as an ISO datetime string.
+
+    Args:
+        value: Datetime object to format.
+
+    Returns:
+        ISO format string (YYYY-MM-DDTHH:MM:SS).
+    """
     return value.strftime("%Y-%m-%dT%H:%M:%S")
 
-# Split date range into chunks of max_days, returns list of (start, end) tuples
 def chunk_date_range(
     start: dt.datetime,
     end: dt.datetime,
     max_days: Optional[int]
 ) -> List[Tuple[dt.datetime, dt.datetime]]:
+    """
+    Split a date range into chunks of maximum size.
+
+    Args:
+        start: Start datetime.
+        end: End datetime.
+        max_days: Maximum days per chunk (None for no limit).
+
+    Returns:
+        List of (start, end) datetime tuples for each chunk.
+    """
     if not max_days or max_days <= 0:
         return [(start, end)]
     
-    # List containing tuples of (start, end)
     segments: List[Tuple[dt.datetime, dt.datetime]] = []
-    delta = dt.timedelta(days=max_days) 
+    delta = dt.timedelta(days=max_days)
     current = start
     
     while current < end:
-        next_dt = min(current + delta, end)  # Don't exceed end
-        segments.append((current, next_dt))  # Add tuple (current, next_dt) to segments list
+        next_dt = min(current + delta, end)
+        segments.append((current, next_dt))
         current = next_dt
     
     return segments
 
-# Extract max days limit from API error message, returns None if not found
 def extract_max_days_from_error(error_text: str) -> Optional[int]:
+    """
+    Extract maximum days limit from an API error message.
+
+    Parses error messages like "Maximum range is 30 days".
+
+    Args:
+        error_text: Error message text from the API.
+
+    Returns:
+        Maximum days as integer, or None if not found.
+    """
     match = MAX_RANGE_ERROR_PATTERN.search(error_text or "")
     if match:
         try:
-            return int(match.group(1))  # group(1) returns the maximum number of days
+            return int(match.group(1))
         except ValueError:
             return None
     return None
 
-# Read the list of facility codes from facilities.js 
 def load_default_facility_codes(override_path: Optional[Path] = None) -> List[str]:
+    """
+    Load default facility codes from the facilities.js file.
+
+    Args:
+        override_path: Optional custom path to facilities.js.
+
+    Returns:
+        List of uppercase facility codes.
+
+    Raises:
+        FileNotFoundError: If facilities.js doesn't exist.
+        PermissionError: If file cannot be read.
+        ValueError: If no facility codes can be parsed.
+    """
     js_path = override_path or Path(__file__).resolve().parent / "../../bronze/facilities.js"
     js_path = js_path.resolve()
     
@@ -105,21 +186,49 @@ def load_default_facility_codes(override_path: Optional[Path] = None) -> List[st
 
     return [code.upper() for code in matches if code.strip()]
 
-# Convert value to float, return 0.0 if error
 def safe_float(value: Any) -> float:
+    """
+    Safely convert a value to float.
+
+    Args:
+        value: Value to convert.
+
+    Returns:
+        Float value, or 0.0 if conversion fails.
+    """
     try:
         return float(value)
     except (TypeError, ValueError):
         return 0.0
 
-# Convert value to string, return None if error
+
 def as_str(value: Any) -> Optional[str]:
+    """
+    Convert a value to string, returning None for empty values.
+
+    Args:
+        value: Value to convert.
+
+    Returns:
+        String value, or None if value is None or empty.
+    """
     if value is None or value == "":
         return None
     return str(value)
 
-# Facility parser
 def summarize_facility(facility: Dict[str, Any]) -> FacilitySummary:
+    """
+    Convert a raw facility dictionary to a FacilitySummary.
+
+    Aggregates unit data and creates summary strings for fuel types,
+    statuses, and dispatch types.
+
+    Args:
+        facility: Raw facility dictionary from API response.
+
+    Returns:
+        FacilitySummary with aggregated data.
+    """
     units = facility.get("units") or []
     total_capacity = 0.0
     total_registered = 0.0
@@ -193,8 +302,16 @@ def summarize_facility(facility: Dict[str, Any]) -> FacilitySummary:
         facility_description=as_str(facility.get("description")),
     )
 
-# Parse facility dict into FacilityMetadata, returns None if no code
 def parse_facility_metadata(facility: Dict[str, Any]) -> Optional[FacilityMetadata]:
+    """
+    Parse a facility dictionary into FacilityMetadata.
+
+    Args:
+        facility: Raw facility dictionary from API response.
+
+    Returns:
+        FacilityMetadata object, or None if facility has no code.
+    """
     code = facility.get("code")
     if not code:
         return None
@@ -207,22 +324,40 @@ def parse_facility_metadata(facility: Dict[str, Any]) -> Optional[FacilityMetada
         units=facility.get("units") or [],
     )
 
-# Build mapping from unit_code to facility_code
 def build_unit_to_facility_map(facilities: Dict[str, FacilityMetadata]) -> Dict[str, str]:
+    """
+    Build a mapping from unit codes to facility codes.
+
+    Args:
+        facilities: Dictionary of facility code to FacilityMetadata.
+
+    Returns:
+        Dictionary mapping unit_code to facility_code.
+    """
     mapping: Dict[str, str] = {}
     for facility in facilities.values():
         for unit in facility.units:
             unit_code = unit.get("code")
-            if unit_code and unit_code not in mapping: 
+            if unit_code and unit_code not in mapping:
                 mapping[unit_code] = facility.code
     return mapping
 
-# Timeseries parser
 def flatten_timeseries(
     payload: Dict[str, Any],
     facilities: Dict[str, FacilityMetadata],
     unit_to_facility: Dict[str, str],
 ) -> List[TimeseriesRow]:
+    """
+    Flatten nested timeseries API response into row objects.
+
+    Args:
+        payload: Raw API response containing timeseries data.
+        facilities: Dictionary of facility code to FacilityMetadata.
+        unit_to_facility: Mapping from unit codes to facility codes.
+
+    Returns:
+        List of TimeseriesRow objects, one per data point.
+    """
     rows: List[TimeseriesRow] = []
     # Get data from payload
     for series in payload.get("data", []):
