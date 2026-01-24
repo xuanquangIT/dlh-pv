@@ -28,29 +28,48 @@ FACILITY_SCHEMA = T.StructType(
     ]
 )
 
-# API response models
-# Data model for geographic location
 class Location(BaseModel):
-    lat: Optional[float] = None  # Latitude
-    lng: Optional[float] = None  # Longitude
+    """Geographic location coordinates.
 
-# Data model for electricity unit
+    Attributes:
+        lat: Latitude in decimal degrees.
+        lng: Longitude in decimal degrees.
+    """
+
+    lat: Optional[float] = None
+    lng: Optional[float] = None
+
 class Unit(BaseModel):
-    code: Optional[str] = None  # Unit code
-    name: Optional[str] = None  # Unit name
-    status_id: Optional[str] = Field(None, alias="status")  # Status
-    fueltech_id: Optional[str] = Field(None, alias="fueltech")  # Fuel type
-    dispatch_type: Optional[str] = None  # Dispatch type
-    capacity_mw: Optional[float] = Field(None, alias="capacity")  # Capacity
-    capacity_registered: Optional[float] = None  # Registered capacity
-    capacity_maximum: Optional[float] = None  # Maximum capacity
-    capacity_storage: Optional[float] = None  # Storage capacity
+    """Electricity generation unit within a facility.
 
-    model_config = {"populate_by_name": True, "extra": "allow"} 
+    Attributes:
+        code: Unique unit identifier.
+        name: Human-readable unit name.
+        status_id: Operating status (e.g., 'operating', 'retired').
+        fueltech_id: Fuel technology type (e.g., 'solar_utility').
+        dispatch_type: Dispatch category (e.g., 'GENERATOR', 'LOAD').
+        capacity_mw: Nameplate capacity in megawatts.
+        capacity_registered: Registered capacity in MW.
+        capacity_maximum: Maximum output capacity in MW.
+        capacity_storage: Energy storage capacity in MWh.
+    """
+
+    code: Optional[str] = None
+    name: Optional[str] = None
+    status_id: Optional[str] = Field(None, alias="status")
+    fueltech_id: Optional[str] = Field(None, alias="fueltech")
+    dispatch_type: Optional[str] = None
+    capacity_mw: Optional[float] = Field(None, alias="capacity")
+    capacity_registered: Optional[float] = None
+    capacity_maximum: Optional[float] = None
+    capacity_storage: Optional[float] = None
+
+    model_config = {"populate_by_name": True, "extra": "allow"}
 
     @field_validator("capacity_mw", "capacity_registered", "capacity_maximum", "capacity_storage", mode="before")
-    @classmethod  # Convert value to float
+    @classmethod
     def coerce_float(cls, v: Any) -> Optional[float]:
+        """Convert capacity values to float, handling None and empty strings."""
         if v is None or v == "":
             return None
         try:
@@ -58,104 +77,230 @@ class Unit(BaseModel):
         except (TypeError, ValueError):
             return None
 
-# Data model for facility
 class Facility(BaseModel):
-    code: Optional[str] = None  # Facility code
-    name: Optional[str] = None  # Facility name
-    network_id: Optional[str] = None  # Network ID
-    network_region: Optional[str] = None  # Network region
-    created_at: Optional[str] = None  # Creation date
-    updated_at: Optional[str] = None  # Update date
-    description: Optional[str] = None  # Description
-    location: Optional[Location] = None  # Location
-    units: List[Unit] = Field(default_factory=list)  # List of units
+    """Power generation facility containing multiple units.
+
+    Attributes:
+        code: Unique facility identifier.
+        name: Human-readable facility name.
+        network_id: Network identifier (e.g., 'NEM', 'WEM').
+        network_region: Network region (e.g., 'NSW1', 'VIC1').
+        created_at: ISO timestamp when facility was created.
+        updated_at: ISO timestamp when facility was last updated.
+        description: Optional facility description.
+        location: Geographic coordinates.
+        units: List of generation units within this facility.
+    """
+
+    code: Optional[str] = None
+    name: Optional[str] = None
+    network_id: Optional[str] = None
+    network_region: Optional[str] = None
+    created_at: Optional[str] = None
+    updated_at: Optional[str] = None
+    description: Optional[str] = None
+    location: Optional[Location] = None
+    units: List[Unit] = Field(default_factory=list)
 
     model_config = {"extra": "allow"}
 
-# Data model for facility metadata
 class FacilityMetadata(BaseModel):
-    code: str  # Facility code
-    name: Optional[str] = None  # Facility name
-    network_id: str  # Network ID
-    network_region: Optional[str] = None  # Network region
-    units: List[Dict[str, Any]] = Field(default_factory=list)  # List of units
+    """Lightweight facility metadata for API lookups.
 
-# Data model for facilities response
+    Attributes:
+        code: Unique facility identifier (required).
+        name: Human-readable facility name.
+        network_id: Network identifier (required).
+        network_region: Network region.
+        units: Raw unit data as list of dictionaries.
+    """
+
+    code: str
+    name: Optional[str] = None
+    network_id: str
+    network_region: Optional[str] = None
+    units: List[Dict[str, Any]] = Field(default_factory=list)
+
+
 class FacilitiesResponse(BaseModel):
-    success: bool = False  # Success status
-    data: List[Facility] = Field(default_factory=list)  # List of facilities
-    error: Optional[str] = None  # Error message
+    """API response wrapper for facilities list.
 
-# Data model for timeseries response
+    Attributes:
+        success: Whether the API request succeeded.
+        data: List of facility objects.
+        error: Error message if request failed.
+    """
+
+    success: bool = False
+    data: List[Facility] = Field(default_factory=list)
+    error: Optional[str] = None
+
 class TimeseriesColumns(BaseModel):
-    unit_code: Optional[str] = None  # Unit code
-    facility_code: Optional[str] = None  # Facility code
+    """Column metadata for timeseries data points.
+
+    Attributes:
+        unit_code: The unit code for this data series.
+        facility_code: The facility code for this data series.
+    """
+
+    unit_code: Optional[str] = None
+    facility_code: Optional[str] = None
+
 
 class TimeseriesResult(BaseModel):
-    columns: Optional[TimeseriesColumns] = None  # Columns
-    data: List[List[Any]] = Field(default_factory=list) 
+    """Single result set within a timeseries series.
+
+    Attributes:
+        columns: Metadata identifying the data source.
+        data: List of [timestamp, value] pairs.
+    """
+
+    columns: Optional[TimeseriesColumns] = None
+    data: List[List[Any]] = Field(default_factory=list)
+
+
 class TimeseriesSeries(BaseModel):
-    network_code: Optional[str] = None  # Network code
-    metric: Optional[str] = None  # Metric name
-    interval: Optional[str] = None  # Time interval
-    unit: Optional[str] = None  # Unit of measurement
-    results: List[TimeseriesResult] = Field(default_factory=list) 
+    """Timeseries data series for a specific metric.
+
+    Attributes:
+        network_code: Network identifier.
+        metric: Metric name (e.g., 'power', 'energy').
+        interval: Time interval (e.g., '1h', '5m').
+        unit: Unit of measurement (e.g., 'MW', 'MWh').
+        results: List of result sets.
+    """
+
+    network_code: Optional[str] = None
+    metric: Optional[str] = None
+    interval: Optional[str] = None
+    unit: Optional[str] = None
+    results: List[TimeseriesResult] = Field(default_factory=list)
 
     model_config = {"extra": "allow"}
 
-class TimeseriesResponse(BaseModel):
-    success: bool = False  # Success status
-    data: List[TimeseriesSeries] = Field(default_factory=list) 
-    error: Optional[str] = None  # Error message
 
-# Facility summary model
+class TimeseriesResponse(BaseModel):
+    """API response wrapper for timeseries data.
+
+    Attributes:
+        success: Whether the API request succeeded.
+        data: List of timeseries data series.
+        error: Error message if request failed.
+    """
+
+    success: bool = False
+    data: List[TimeseriesSeries] = Field(default_factory=list)
+    error: Optional[str] = None
+
 class FacilitySummary(BaseModel):
-    facility_code: Optional[str] = None  # Facility code
-    facility_name: Optional[str] = None  # Facility name
-    network_id: Optional[str] = None  # Network ID
-    network_region: Optional[str] = None  # Network region
-    facility_created_at: Optional[str] = None  # Creation date
-    facility_updated_at: Optional[str] = None  # Update date
-    location_lat: Optional[float] = None  # Latitude
-    location_lng: Optional[float] = None  # Longitude
-    unit_count: int = 0  # Number of units
-    total_capacity_mw: Optional[float] = None  # Total capacity
-    total_capacity_registered_mw: Optional[float] = None  # Total registered capacity
-    total_capacity_maximum_mw: Optional[float] = None  # Total maximum capacity
-    total_capacity_storage_mwh: Optional[float] = None  # Total storage capacity
-    unit_fueltech_summary: Optional[str] = None  # Fuel technology summary
-    unit_status_summary: Optional[str] = None  # Status summary
-    unit_dispatch_summary: Optional[str] = None  # Dispatch type summary
-    unit_codes: Optional[str] = None  # Unit codes
-    facility_description: Optional[str] = None  # Description
+    """Flattened facility summary for DataFrame output.
+
+    Contains aggregated data from a facility and its units,
+    suitable for tabular representation.
+
+    Attributes:
+        facility_code: Unique facility identifier.
+        facility_name: Human-readable facility name.
+        network_id: Network identifier.
+        network_region: Network region.
+        facility_created_at: Creation timestamp.
+        facility_updated_at: Last update timestamp.
+        location_lat: Latitude coordinate.
+        location_lng: Longitude coordinate.
+        unit_count: Number of units in facility.
+        total_capacity_mw: Sum of unit capacities in MW.
+        total_capacity_registered_mw: Sum of registered capacities.
+        total_capacity_maximum_mw: Sum of maximum capacities.
+        total_capacity_storage_mwh: Sum of storage capacities.
+        unit_fueltech_summary: Fuel technology breakdown.
+        unit_status_summary: Status breakdown.
+        unit_dispatch_summary: Dispatch type breakdown.
+        unit_codes: Comma-separated list of unit codes.
+        facility_description: Facility description.
+    """
+
+    facility_code: Optional[str] = None
+    facility_name: Optional[str] = None
+    network_id: Optional[str] = None
+    network_region: Optional[str] = None
+    facility_created_at: Optional[str] = None
+    facility_updated_at: Optional[str] = None
+    location_lat: Optional[float] = None
+    location_lng: Optional[float] = None
+    unit_count: int = 0
+    total_capacity_mw: Optional[float] = None
+    total_capacity_registered_mw: Optional[float] = None
+    total_capacity_maximum_mw: Optional[float] = None
+    total_capacity_storage_mwh: Optional[float] = None
+    unit_fueltech_summary: Optional[str] = None
+    unit_status_summary: Optional[str] = None
+    unit_dispatch_summary: Optional[str] = None
+    unit_codes: Optional[str] = None
+    facility_description: Optional[str] = None
 
 class TimeseriesRow(BaseModel):
-    network_code: Optional[str] = None  # Network code
-    network_id: Optional[str] = None  # Network ID
-    network_region: Optional[str] = None  # Network region
-    facility_code: Optional[str] = None  # Facility code
-    facility_name: Optional[str] = None  # Facility name
-    unit_code: Optional[str] = None  # Unit code
-    metric: Optional[str] = None  # Metric name
-    interval: Optional[str] = None  # Time interval
-    value_unit: Optional[str] = None  # Unit of measurement
-    interval_start: Optional[str] = None  # Interval start time
-    value: Optional[float] = None  # Value
+    """Flattened timeseries data row for DataFrame output.
+
+    Attributes:
+        network_code: Network code from API.
+        network_id: Network identifier.
+        network_region: Network region.
+        facility_code: Facility identifier.
+        facility_name: Facility name.
+        unit_code: Unit identifier.
+        metric: Metric name (e.g., 'power').
+        interval: Time interval.
+        value_unit: Unit of measurement.
+        interval_start: Timestamp for this data point.
+        value: Measured value.
+    """
+
+    network_code: Optional[str] = None
+    network_id: Optional[str] = None
+    network_region: Optional[str] = None
+    facility_code: Optional[str] = None
+    facility_name: Optional[str] = None
+    unit_code: Optional[str] = None
+    metric: Optional[str] = None
+    interval: Optional[str] = None
+    value_unit: Optional[str] = None
+    interval_start: Optional[str] = None
+    value: Optional[float] = None
+
 
 class ClientConfig(BaseModel):
+    """Configuration settings for the OpenElectricity client.
+
+    Attributes:
+        base_url: API base URL.
+        timeout: Request timeout in seconds.
+        max_retries: Maximum retry attempts for failed requests.
+        retry_min_wait: Minimum wait between retries in seconds.
+        retry_max_wait: Maximum wait between retries in seconds.
+    """
+
     base_url: str = "https://api.openelectricity.org.au/v4"
     timeout: int = 120
     max_retries: int = 3
-    retry_min_wait: float = 1.0  # seconds
-    retry_max_wait: float = 60.0  # seconds
+    retry_min_wait: float = 1.0
+    retry_max_wait: float = 60.0
+
 
 class DateRange(BaseModel):
+    """Date range with validation.
+
+    Attributes:
+        start: Start datetime.
+        end: End datetime (must be after start).
+    """
+
     start: datetime
     end: datetime
 
     @field_validator("end")
-    @classmethod  # Validate that end must be after start
+    @classmethod
     def end_after_start(cls, v: datetime, info) -> datetime:
+        """Validate that end datetime is after start datetime."""
         if "start" in info.data and v <= info.data["start"]:
             raise ValueError("end must be after start")
         return v
