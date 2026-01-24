@@ -14,20 +14,20 @@ NETWORK_TIMEZONE_IDS = {"NEM": "Australia/Brisbane", "WEM": "Australia/Perth"}
 NETWORK_FALLBACK_OFFSETS = {"NEM": 10, "WEM": 8}
 MAX_RANGE_ERROR_PATTERN = re.compile(r"Maximum range is (\d+) days", re.IGNORECASE)
 
-#trả về giờ offset từ UTC của network
+# Returns the UTC offset hours for the network
 def get_timezone_offset_hours(network_id: str) -> int:
     return NETWORK_FALLBACK_OFFSETS.get(network_id, 10)
-#trả về IANA timezone ID của network
+# Returns the IANA timezone ID for the network
 def get_timezone_id(network_id: str) -> str:
     return NETWORK_TIMEZONE_IDS.get(network_id, "Australia/Brisbane")
-#trả về timezone object của network
+# Returns the timezone object for the network
 def resolve_network_timezone(network_code: str):
     try:
         from zoneinfo import ZoneInfo
     except ImportError:
         ZoneInfo = None
     
-    tz_name = NETWORK_TIMEZONE_IDS.get(network_code) #lấy tên timezone của network
+    tz_name = NETWORK_TIMEZONE_IDS.get(network_code)  # Get timezone name for the network
     if ZoneInfo and tz_name:
         try:
             return ZoneInfo(tz_name)
@@ -37,10 +37,10 @@ def resolve_network_timezone(network_code: str):
     from datetime import timezone, timedelta
     offset_hours = NETWORK_FALLBACK_OFFSETS.get(network_code)
     if offset_hours is not None:
-        return timezone(timedelta(hours=offset_hours)) #ví dụ: timezone(timedelta(hours=10)) trả về UTC +10
+        return timezone(timedelta(hours=offset_hours))  # Example: timezone(timedelta(hours=10)) returns UTC+10
     return timezone.utc
 
-#parse datetime string thành datetime object
+# Parse datetime string into datetime object
 def parse_naive_datetime(value: str) -> dt.datetime:
     try:
         parsed = dt.datetime.fromisoformat(value)
@@ -49,7 +49,7 @@ def parse_naive_datetime(value: str) -> dt.datetime:
     if parsed.tzinfo is not None:
         raise ValueError("Datetime values must be timezone naive (network local time).")
     return parsed
-#format datetime object thành datetime string
+# Format datetime object into datetime string
 def format_naive_datetime(value: dt.datetime) -> str:
     return value.strftime("%Y-%m-%dT%H:%M:%S")
 
@@ -61,14 +61,14 @@ def chunk_date_range(
     if not max_days or max_days <= 0:
         return [(start, end)]
     
-    #list chứa các tuple (start, end)
+    # List containing tuples of (start, end)
     segments: List[Tuple[dt.datetime, dt.datetime]] = []
     delta = dt.timedelta(days=max_days) 
     current = start
     
     while current < end:
-        next_dt = min(current + delta, end) # không vượt quá end
-        segments.append((current, next_dt)) #thêm tuple (current, next_dt) vào list segments
+        next_dt = min(current + delta, end)  # Don't exceed end
+        segments.append((current, next_dt))  # Add tuple (current, next_dt) to segments list
         current = next_dt
     
     return segments
@@ -77,12 +77,12 @@ def extract_max_days_from_error(error_text: str) -> Optional[int]:
     match = MAX_RANGE_ERROR_PATTERN.search(error_text or "")
     if match:
         try:
-            return int(match.group(1)) #group(1) trả về số lượng ngày tối đa
+            return int(match.group(1))  # group(1) returns the maximum number of days
         except ValueError:
             return None
     return None
 
-# đọc danh sách mã trạm từ facilities.js 
+# Read the list of facility codes from facilities.js 
 def load_default_facility_codes(override_path: Optional[Path] = None) -> List[str]:
     js_path = override_path or Path(__file__).resolve().parent / "../../bronze/facilities.js"
     js_path = js_path.resolve()
@@ -98,20 +98,20 @@ def load_default_facility_codes(override_path: Optional[Path] = None) -> List[st
 
     return [code.upper() for code in matches if code.strip()]
 
-# chuyển đổi giá trị sang float, nếu lỗi trả về 0.0
+# Convert value to float, return 0.0 if error
 def safe_float(value: Any) -> float:
     try:
         return float(value)
     except (TypeError, ValueError):
         return 0.0
 
-# chuyển đổi giá trị sang string, nếu lỗi trả về None
+# Convert value to string, return None if error
 def as_str(value: Any) -> Optional[str]:
     if value is None or value == "":
         return None
     return str(value)
 
-#facility parser
+# Facility parser
 def summarize_facility(facility: Dict[str, Any]) -> FacilitySummary:
     units = facility.get("units") or []
     total_capacity = 0.0
@@ -208,14 +208,14 @@ def build_unit_to_facility_map(facilities: Dict[str, FacilityMetadata]) -> Dict[
                 mapping[unit_code] = facility.code
     return mapping
 
-#timeseries parser
+# Timeseries parser
 def flatten_timeseries(
     payload: Dict[str, Any],
     facilities: Dict[str, FacilityMetadata],
     unit_to_facility: Dict[str, str],
 ) -> List[TimeseriesRow]:
     rows: List[TimeseriesRow] = []
-    #lấy data từ payload
+    # Get data from payload
     for series in payload.get("data", []):
         network_code = series.get("network_code")
         metric = series.get("metric")
