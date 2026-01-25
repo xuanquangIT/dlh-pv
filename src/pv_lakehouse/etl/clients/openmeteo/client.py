@@ -3,7 +3,7 @@ import datetime as dt
 import logging
 from abc import ABC, abstractmethod
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import Dict, Iterable, List, Optional, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 import pandas as pd
 import requests
 from .constants import (
@@ -92,7 +92,7 @@ def _augment_http_error(exc: requests.HTTPError) -> OpenMeteoAPIError:
             body = response.json()
             if isinstance(body, dict):
                 detail = body.get("reason") or body.get("error")
-        except Exception:  # noqa: BLE001 - best effort
+        except (ValueError, requests.JSONDecodeError):
             detail = response.text
 
     message = f"{exc}"
@@ -115,7 +115,7 @@ def _request_json(
     retries: int,
     backoff: float,
     timeout: int = DEFAULT_TIMEOUT_SECONDS,
-) -> Dict:
+) -> Dict[str, Any]:
     """
     Make an HTTP GET request with retry logic.
 
@@ -166,7 +166,7 @@ def _request_json(
     raise OpenMeteoAPIError("Open-Meteo request failed without raising an exception")
 
 
-def _parse_hourly(payload: Dict) -> pd.DataFrame:
+def _parse_hourly(payload: Dict[str, Any]) -> pd.DataFrame:
     """Parse the hourly data from an Open-Meteo API response."""
     hourly = payload.get("hourly") or {}
     if not hourly:
@@ -343,13 +343,21 @@ def fetch_weather_dataframe(
             window_start, window_end = futures[future]
             try:
                 frame = future.result()
-            except Exception as exc:  # pragma: no cover - defensive
+            except (OpenMeteoAPIError, requests.RequestException, ValueError) as exc:
                 LOGGER.error(
                     "Weather window task failed for %s (%s -> %s): %s",
                     facility.code,
                     window_start,
                     window_end,
                     exc,
+                )
+                continue
+            except Exception as exc:  # pragma: no cover - unexpected errors
+                LOGGER.exception(
+                    "Unexpected error in weather window task for %s (%s -> %s)",
+                    facility.code,
+                    window_start,
+                    window_end,
                 )
                 continue
             if not frame.empty:
@@ -439,13 +447,21 @@ def fetch_air_quality_dataframe(
             window_start, window_end = futures[future]
             try:
                 frame = future.result()
-            except Exception as exc:  # pragma: no cover - defensive
+            except (OpenMeteoAPIError, requests.RequestException, ValueError) as exc:
                 LOGGER.error(
                     "Air quality window task failed for %s (%s -> %s): %s",
                     facility.code,
                     window_start,
                     window_end,
                     exc,
+                )
+                continue
+            except Exception as exc:  # pragma: no cover - unexpected errors
+                LOGGER.exception(
+                    "Unexpected error in air quality window task for %s (%s -> %s)",
+                    facility.code,
+                    window_start,
+                    window_end,
                 )
                 continue
             if not frame.empty:

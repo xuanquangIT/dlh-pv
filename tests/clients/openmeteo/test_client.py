@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import math
 from unittest.mock import MagicMock, patch
 
 import pandas as pd
@@ -71,8 +72,21 @@ class TestChunkDates:
 
     def test_multiple_chunks_for_large_range(self) -> None:
         """Large date ranges should be split into multiple chunks."""
-        chunks = list(_chunk_dates(dt.date(2025, 1, 1), dt.date(2025, 1, 31), chunk_days=10))
-        assert len(chunks) == 4
+        # Test constants
+        total_days = 31
+        chunk_days = 10
+        expected_chunks = math.ceil(total_days / chunk_days)  # Calculate instead of hardcode
+        
+        chunks = list(_chunk_dates(
+            dt.date(2025, 1, 1),
+            dt.date(2025, 1, total_days),
+            chunk_days=chunk_days
+        ))
+        
+        assert len(chunks) == expected_chunks, \
+            f"Expected {expected_chunks} chunks for {total_days} days with {chunk_days}-day chunks"
+        
+        # Verify chunk boundaries
         assert chunks[0] == (dt.date(2025, 1, 1), dt.date(2025, 1, 10))
         assert chunks[1] == (dt.date(2025, 1, 11), dt.date(2025, 1, 20))
         assert chunks[2] == (dt.date(2025, 1, 21), dt.date(2025, 1, 30))
@@ -125,9 +139,11 @@ class TestFetchWeatherDataframe:
             max_workers=1,
         )
         
-        # Check that archive endpoint was called
-        call_args = mock_request.call_args_list[0]
-        assert WEATHER_ENDPOINTS["archive"] in str(call_args)
+        # Verify archive endpoint was called with proper URL inspection
+        mock_request.assert_called()
+        actual_url = mock_request.call_args[0][0]
+        assert actual_url == WEATHER_ENDPOINTS["archive"], \
+            f"Expected archive endpoint {WEATHER_ENDPOINTS['archive']}, got {actual_url}"
 
     @patch("pv_lakehouse.etl.clients.openmeteo.client._request_json")
     def test_uses_forecast_endpoint_for_recent_dates(
@@ -144,9 +160,11 @@ class TestFetchWeatherDataframe:
             max_workers=1,
         )
         
-        # Check that forecast endpoint was called
-        call_args = mock_request.call_args_list[0]
-        assert WEATHER_ENDPOINTS["forecast"] in str(call_args)
+        # Verify forecast endpoint was called with proper URL inspection
+        mock_request.assert_called()
+        actual_url = mock_request.call_args[0][0]
+        assert actual_url == WEATHER_ENDPOINTS["forecast"], \
+            f"Expected forecast endpoint {WEATHER_ENDPOINTS['forecast']}, got {actual_url}"
 
 
 class TestFetchAirQualityDataframe:
@@ -190,9 +208,11 @@ class TestFetchAirQualityDataframe:
             max_workers=1,
         )
         
-        # Check that air quality endpoint was called
-        call_args = mock_request.call_args_list[0]
-        assert AIR_QUALITY_ENDPOINT in str(call_args)
+        # Verify air quality endpoint was called with proper URL inspection
+        mock_request.assert_called()
+        actual_url = mock_request.call_args[0][0]
+        assert actual_url == AIR_QUALITY_ENDPOINT, \
+            f"Expected air quality endpoint {AIR_QUALITY_ENDPOINT}, got {actual_url}"
 
     @patch("pv_lakehouse.etl.clients.openmeteo.client._request_json")
     def test_chunks_large_date_ranges(
@@ -201,26 +221,45 @@ class TestFetchAirQualityDataframe:
         """Should split large date ranges into chunks."""
         mock_request.return_value = {"hourly": {"time": [], "pm2_5": []}}
         
-        # Request 30 days, which should be split with AIR_QUALITY_MAX_DAYS
-        fetch_air_quality_dataframe(
-            sample_facility,
-            start=dt.date(2025, 1, 1),
-            end=dt.date(2025, 1, 30),
-            chunk_days=AIR_QUALITY_MAX_DAYS,
-            max_workers=1,
-        )
+        start_date = dt.date(2025, 1, 1)
+        end_date = dt.date(2025, 1, 30)
         
-        # Should have made multiple calls (30 days / 14 days = 3 chunks)
-        assert mock_request.call_count >= 2
+        try:
+            result = fetch_air_quality_dataframe(
+                sample_facility,
+                start=start_date,
+                end=end_date,
+                chunk_days=AIR_QUALITY_MAX_DAYS,
+                max_workers=1,
+            )
+            # Validate result is DataFrame, not None or other unexpected type
+            assert isinstance(result, pd.DataFrame), \
+                f"Expected DataFrame, got {type(result)}"
+        except Exception as e:
+            pytest.fail(f"Unexpected exception during chunking: {e}")
+        
+        # Calculate expected number of chunks
+        date_range = (end_date - start_date).days + 1  # 30 days
+        expected_chunks = math.ceil(date_range / AIR_QUALITY_MAX_DAYS)
+        
+        # Verify exact number of API calls matches expected chunks
+        assert mock_request.call_count == expected_chunks, \
+            f"Expected {expected_chunks} chunks for {date_range} days with " \
+            f"chunk_days={AIR_QUALITY_MAX_DAYS}, got {mock_request.call_count} calls"
 
+    @patch("pv_lakehouse.etl.clients.openmeteo.client.LOGGER")
     @patch("pv_lakehouse.etl.clients.openmeteo.client._request_json")
     def test_returns_empty_on_api_error(
-        self, mock_request: MagicMock, sample_facility: FacilityLocation
+        self,
+        mock_request: MagicMock,
+        mock_logger: MagicMock,
+        sample_facility: FacilityLocation,
     ) -> None:
-        """Should return empty DataFrame on API error (logs error)."""
+        """Should return empty DataFrame on API error and log the error."""
         from pv_lakehouse.etl.clients.openmeteo.models import OpenMeteoAPIError
         
-        mock_request.side_effect = OpenMeteoAPIError("API Error", status_code=500)
+        error_msg = "API Error"
+        mock_request.side_effect = OpenMeteoAPIError(error_msg, status_code=500)
         
         result = fetch_air_quality_dataframe(
             sample_facility,
@@ -228,7 +267,13 @@ class TestFetchAirQualityDataframe:
             end=dt.date(2025, 1, 1),
             max_workers=1,
         )
-        assert result.empty
+        
+        assert result.empty, "Expected empty DataFrame on API error"
+        mock_logger.error.assert_called()
+        # Verify specific error was logged with proper structure
+        error_calls = [str(call) for call in mock_logger.error.call_args_list]
+        assert any(error_msg in call for call in error_calls), \
+            f"Expected error log containing '{error_msg}', got: {error_calls}"
 
     @patch("pv_lakehouse.etl.clients.openmeteo.client._request_json")
     def test_respects_rate_limiter(
