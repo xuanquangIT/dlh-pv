@@ -130,19 +130,54 @@ services:
     container_name: spark-master
     command: ["/opt/spark/sbin/start-master.sh", "-p", "7077", "--host", "spark-master"]
     user: root
+    env_file:
+      - .env
     environment:
+      # === Spark Core ===
       SPARK_NO_DAEMONIZE: "true"
-      AWS_ACCESS_KEY_ID: ${MLFLOW_SVC_ACCESS_KEY}
-      AWS_SECRET_ACCESS_KEY: ${MLFLOW_SVC_SECRET_KEY}
-      AWS_REGION: ${S3_REGION}
-      MLFLOW_S3_ENDPOINT_URL: http://minio:9000
-      S3_ENDPOINT: ${MINIO_ENDPOINT}
       PYTHONPATH: /opt/workdir/src:$PYTHONPATH
-      OPEN_NEM_PRIMARY: ${OPEN_NEM_PRIMARY}
+      # === PostgreSQL (Iceberg Catalog) ===
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_HOST: ${POSTGRES_HOST}
+      POSTGRES_PORT: ${POSTGRES_PORT}
+      POSTGRES_DB: ${POSTGRES_DB}
+      ICEBERG_CATALOG_DB: ${ICEBERG_CATALOG_DB}
+      # === MinIO / S3 Storage ===
+      MINIO_ENDPOINT: ${MINIO_ENDPOINT}
+      S3_REGION: ${S3_REGION}
+      S3_WAREHOUSE_BUCKET: ${S3_WAREHOUSE_BUCKET}
+      S3_MLFLOW_BUCKET: ${S3_MLFLOW_BUCKET}
+      # === Service Accounts ===
+      SPARK_SVC_ACCESS_KEY: ${SPARK_SVC_ACCESS_KEY}
+      SPARK_SVC_SECRET_KEY: ${SPARK_SVC_SECRET_KEY}
+      TRINO_SVC_ACCESS_KEY: ${TRINO_SVC_ACCESS_KEY}
+      TRINO_SVC_SECRET_KEY: ${TRINO_SVC_SECRET_KEY}
+      MLFLOW_SVC_ACCESS_KEY: ${MLFLOW_SVC_ACCESS_KEY}
+      MLFLOW_SVC_SECRET_KEY: ${MLFLOW_SVC_SECRET_KEY}
+      # === AWS SDK Compatibility ===
+      AWS_ACCESS_KEY_ID: ${SPARK_SVC_ACCESS_KEY}
+      AWS_SECRET_ACCESS_KEY: ${SPARK_SVC_SECRET_KEY}
+      AWS_REGION: ${S3_REGION}
+      MLFLOW_S3_ENDPOINT_URL: ${MINIO_ENDPOINT}
+      S3_ENDPOINT: ${MINIO_ENDPOINT}
+      # === OpenElectricity API ===
+      OPENELECTRICITY_API_KEY: ${OPENELECTRICITY_API_KEY}
+      OPENELECTRICITY_API_URL: ${OPENELECTRICITY_API_URL}
+      OPEN_NEM_PRIMARY: ${OPENELECTRICITY_API_KEY}
       OPEN_NEM_SECONDARY: ${OPEN_NEM_SECONDARY}
-      OPENELECTRICITY_API_KEY: ${OPEN_NEM_PRIMARY}
-      MLFLOW_TRACKING_URI: http://mlflow:${MLFLOW_PORT}
-      SPARK_SUBMIT_OPTIONS: "--conf spark.mlflow.tracking.uri=http://mlflow:${MLFLOW_PORT}"
+      # === MLflow ===
+      MLFLOW_TRACKING_URI: ${MLFLOW_TRACKING_URI}
+      # === Spark Performance Tuning ===
+      SPARK_WORKER_CORES: ${SPARK_WORKER_CORES}
+      SPARK_WORKER_MEMORY: ${SPARK_WORKER_MEMORY}
+      SPARK_SHUFFLE_PARTITIONS: ${SPARK_SHUFFLE_PARTITIONS}
+      SPARK_MEMORY_FRACTION: ${SPARK_MEMORY_FRACTION}
+      SPARK_MEMORY_STORAGE_FRACTION: ${SPARK_MEMORY_STORAGE_FRACTION}
+      SPARK_DRIVER_MEMORY: ${SPARK_DRIVER_MEMORY}
+      SPARK_EXECUTOR_MEMORY: ${SPARK_EXECUTOR_MEMORY}
+      SPARK_EXECUTOR_CORES: ${SPARK_EXECUTOR_CORES}
+      SPARK_SUBMIT_OPTIONS: "--conf spark.mlflow.tracking.uri=${MLFLOW_TRACKING_URI}"
     volumes:
       - ../:/opt/workdir:ro
       - ./spark/core-site.xml:/opt/spark/conf/core-site.xml:ro
@@ -170,17 +205,48 @@ services:
     depends_on:
       spark-master:
         condition: service_healthy
+    env_file:
+      - .env
     environment:
+      # === Spark Core ===
       SPARK_NO_DAEMONIZE: "true"
       SPARK_WORKER_MEMORY: ${SPARK_WORKER_MEMORY}
       SPARK_WORKER_CORES: ${SPARK_WORKER_CORES}
-      AWS_ACCESS_KEY_ID: ${MLFLOW_SVC_ACCESS_KEY}
-      AWS_SECRET_ACCESS_KEY: ${MLFLOW_SVC_SECRET_KEY}
+      PYTHONPATH: /opt/workdir/src:$PYTHONPATH
+      # === PostgreSQL (Iceberg Catalog) ===
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_HOST: ${POSTGRES_HOST}
+      POSTGRES_PORT: ${POSTGRES_PORT}
+      POSTGRES_DB: ${POSTGRES_DB}
+      ICEBERG_CATALOG_DB: ${ICEBERG_CATALOG_DB}
+      # === MinIO / S3 Storage ===
+      MINIO_ENDPOINT: ${MINIO_ENDPOINT}
+      S3_REGION: ${S3_REGION}
+      S3_WAREHOUSE_BUCKET: ${S3_WAREHOUSE_BUCKET}
+      S3_MLFLOW_BUCKET: ${S3_MLFLOW_BUCKET}
+      # === Service Accounts ===
+      SPARK_SVC_ACCESS_KEY: ${SPARK_SVC_ACCESS_KEY}
+      SPARK_SVC_SECRET_KEY: ${SPARK_SVC_SECRET_KEY}
+      TRINO_SVC_ACCESS_KEY: ${TRINO_SVC_ACCESS_KEY}
+      TRINO_SVC_SECRET_KEY: ${TRINO_SVC_SECRET_KEY}
+      MLFLOW_SVC_ACCESS_KEY: ${MLFLOW_SVC_ACCESS_KEY}
+      MLFLOW_SVC_SECRET_KEY: ${MLFLOW_SVC_SECRET_KEY}
+      # === AWS SDK Compatibility ===
+      AWS_ACCESS_KEY_ID: ${SPARK_SVC_ACCESS_KEY}
+      AWS_SECRET_ACCESS_KEY: ${SPARK_SVC_SECRET_KEY}
       AWS_REGION: ${S3_REGION}
-      MLFLOW_S3_ENDPOINT_URL: http://minio:9000
+      MLFLOW_S3_ENDPOINT_URL: ${MINIO_ENDPOINT}
       S3_ENDPOINT: ${MINIO_ENDPOINT}
-      MLFLOW_TRACKING_URI: http://mlflow:${MLFLOW_PORT}
-      SPARK_SUBMIT_OPTIONS: "--conf spark.mlflow.tracking.uri=http://mlflow:${MLFLOW_PORT}"
+      # === MLflow ===
+      MLFLOW_TRACKING_URI: ${MLFLOW_TRACKING_URI}
+      # === Spark Performance Tuning ===
+      SPARK_SHUFFLE_PARTITIONS: ${SPARK_SHUFFLE_PARTITIONS}
+      SPARK_MEMORY_FRACTION: ${SPARK_MEMORY_FRACTION}
+      SPARK_MEMORY_STORAGE_FRACTION: ${SPARK_MEMORY_STORAGE_FRACTION}
+      SPARK_DRIVER_MEMORY: ${SPARK_DRIVER_MEMORY}
+      SPARK_EXECUTOR_MEMORY: ${SPARK_EXECUTOR_MEMORY}
+      SPARK_EXECUTOR_CORES: ${SPARK_EXECUTOR_CORES}
     volumes:
       - ../:/opt/workdir:ro
       - ./spark/core-site.xml:/opt/spark/conf/core-site.xml:ro

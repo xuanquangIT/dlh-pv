@@ -37,6 +37,7 @@ class GoldDimTimeLoader(BaseGoldLoader):
         result = base.select(
             F.col("hour").cast("int").alias("time_key"),
             F.col("hour"),
+            F.lit(0).cast("int").alias("minute"),  # Hourly granularity, minute always 0
             time_of_day_expr(F.col("hour")).alias("time_of_day"),
         )
 
