@@ -18,17 +18,17 @@ class GoldDimDateLoader(BaseGoldLoader):
     source_tables: Dict[str, SourceTableConfig] = {
         "hourly_weather": SourceTableConfig(
             table_name="lh.silver.clean_hourly_weather",
-            timestamp_column="updated_at",
+            timestamp_column="date_hour",
             required_columns=["date_hour"],
         ),
         "hourly_air_quality": SourceTableConfig(
             table_name="lh.silver.clean_hourly_air_quality",
-            timestamp_column="updated_at",
+            timestamp_column="date_hour",
             required_columns=["date_hour"],
         ),
         "hourly_energy": SourceTableConfig(
             table_name="lh.silver.clean_hourly_energy",
-            timestamp_column="updated_at",
+            timestamp_column="date_hour",
             required_columns=["date_hour"],
         ),
     }

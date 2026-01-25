@@ -1,13 +1,22 @@
 <p align="center">
+  <img src="doc/assets/logo.png" alt="PV Lakehouse Logo" width="120" height="120">
   <h1 align="center">🏠 PV Lakehouse</h1>
   <p align="center">
-    <strong>A production-ready data lakehouse platform for building modern ELT pipelines</strong>
+    <strong>A production-ready data lakehouse platform for solar energy analytics</strong>
   </p>
   <p align="center">
     <a href="#-quick-start">Quick Start</a> •
     <a href="#-features">Features</a> •
     <a href="#-architecture">Architecture</a> •
-    <a href="#-documentation">Documentation</a>
+    <a href="#-documentation">Documentation</a> •
+    <a href="#-contributing">Contributing</a>
+  </p>
+  <p align="center">
+    <img src="https://img.shields.io/badge/python-3.11+-blue.svg" alt="Python">
+    <img src="https://img.shields.io/badge/spark-3.5-orange.svg" alt="Spark">
+    <img src="https://img.shields.io/badge/iceberg-1.5-green.svg" alt="Iceberg">
+    <img src="https://img.shields.io/badge/docker-ready-blue.svg" alt="Docker">
+    <img src="https://img.shields.io/badge/license-MIT-green.svg" alt="License">
   </p>
 </p>
 
@@ -15,110 +24,79 @@
 
 ## 📋 Overview
 
-**PV Lakehouse** is a complete data lakehouse solution designed to run on your laptop or a single VM. Built entirely with open-source components, it provides a robust foundation for evolving data from raw ingestion through normalization to curated analytics.
+**PV Lakehouse** is a complete, open-source data lakehouse solution designed for solar energy analytics. Built with modern data engineering best practices, it provides end-to-end capabilities from raw data ingestion to ML-ready feature stores.
 
 ### ✨ Key Highlights
 
-- 🏗️ **Medallion Architecture** — Bronze → Silver → Gold data layers with clear conventions
-- 🐳 **Docker-native** — One-command deployment with Docker Compose profiles
-- 🔌 **Open Standards** — Apache Iceberg table format for interoperability
-- 📊 **SQL-first** — Query data directly with Trino's ANSI SQL engine
-- 🤖 **ML-ready** — Integrated MLflow for experiment tracking and model management
-- 🔄 **ELT Pattern** — Extract-Load-Transform for data lineage & reproducibility
-
-### 🔄 Why ELT (not ETL)?
-
-This project uses **ELT (Extract-Load-Transform)** pattern:
-
-```
-Extract → Load (Bronze) → Transform (Spark) → Load (Silver/Gold)
-```
-
-| Benefit | Description |
+| Feature | Description |
 |---------|-------------|
-| **Raw Data Preserved** | Bronze layer keeps original data for audit & reprocessing |
-| **Reproducible** | Re-transform from Bronze without re-calling APIs |
-| **Debuggable** | Compare Bronze vs Silver to trace data issues |
-| **Schema Evolution** | Bronze maintains original schema, Silver normalizes |
+| 🏗️ **Medallion Architecture** | Bronze → Silver → Gold data layers with clear data contracts |
+| 🐳 **Docker-native** | One-command deployment with Docker Compose profiles |
+| 🔌 **Open Standards** | Apache Iceberg table format for interoperability |
+| 📊 **SQL-first** | Query data directly with Trino's ANSI SQL engine |
+| 🤖 **ML-ready** | Integrated MLflow for experiment tracking and model management |
+| ⚡ **High Performance** | Optimized Spark configurations for batch processing |
+| 🔄 **ELT Pattern** | Extract-Load-Transform for data lineage & reproducibility |
 
 ---
 
 ## 🛠️ Technology Stack
 
-| Component | Technology | Purpose |
-|-----------|------------|---------|
-| **Object Storage** | MinIO | S3-compatible storage for data lake |
-| **Table Format** | Apache Iceberg v2 | Open table format with ACID transactions |
-| **Batch Processing** | Apache Spark 3.5 | Distributed data processing engine |
-| **Query Engine** | Trino | Fast SQL analytics over lakehouse |
-| **Orchestration** | Prefect | Modern workflow orchestration |
-| **ML Tracking** | MLflow 2.4 | Experiment tracking & model registry |
-| **Metadata Store** | PostgreSQL | Iceberg catalog & application metadata |
-| **Admin UI** | pgAdmin | Database management interface |
+| Layer | Technology | Version | Purpose |
+|-------|------------|---------|---------|
+| **Storage** | MinIO | Latest | S3-compatible object storage |
+| **Table Format** | Apache Iceberg | 1.5 | ACID transactions, schema evolution |
+| **Processing** | Apache Spark | 3.5 | Distributed batch processing |
+| **Query Engine** | Trino | Latest | Interactive SQL analytics |
+| **Orchestration** | Prefect | 2.x | Workflow automation |
+| **ML Tracking** | MLflow | 2.4 | Experiment tracking & model registry |
+| **Catalog** | PostgreSQL | 15 | Iceberg metadata store |
 
 ---
 
 ## 🏛️ Architecture
 
-```
-┌─────────────────────────────────────────────────────────────────────────┐
-│                              MEDALLION LAYERS                           │
-├───────────────────┬───────────────────┬───────────────────────────────┤
-│    🥉 BRONZE      │    🥈 SILVER      │         🥇 GOLD               │
-│    (Raw Data)     │   (Normalized)    │    (Curated/Analytics)        │
-│                   │                   │                               │
-│  • Raw ingestion  │  • Cleaned data   │  • Aggregations               │
-│  • Schema-on-read │  • Validated      │  • Business metrics           │
-│  • Full fidelity  │  • Deduplicated   │  • ML feature tables          │
-└───────────────────┴───────────────────┴───────────────────────────────┘
-                              ▼
-┌─────────────────────────────────────────────────────────────────────────┐
-│                           INFRASTRUCTURE                                │
-│                                                                         │
-│   ┌─────────┐  ┌─────────┐  ┌─────────┐  ┌─────────┐  ┌─────────┐     │
-│   │  MinIO  │  │  Spark  │  │  Trino  │  │ MLflow  │  │Postgres │     │
-│   │   S3    │  │ Cluster │  │  Query  │  │   ML    │  │ Catalog │     │
-│   └─────────┘  └─────────┘  └─────────┘  └─────────┘  └─────────┘     │
-└─────────────────────────────────────────────────────────────────────────┘
-```
-
----
-
-## 📁 Repository Structure
+### Medallion Data Layers
 
 ```
-dlh-pv/
-├── dashboard/                   # 📊 Power BI dashboards
-│   └── pvlakehouse.pbix         # Main analytics dashboard
-│
-├── doc/                         # 📚 Comprehensive documentation
-│   ├── bronze-silver/           # Data layer specifications
-│   ├── schema/                  # Schema definitions
-│   └── power-bi/                # BI integration guides
-│
-├── docker/                      # 🐳 Docker Compose services
-│   ├── docker-compose.yml       # Main compose file with profiles
-│   ├── postgres/                # PostgreSQL initialization scripts
-│   ├── spark/                   # Spark Dockerfile & configuration
-│   ├── trino/                   # Trino catalog configuration
-│   └── scripts/                 # Utility & health-check scripts
-│
-├── infra/                       # 🗄️ Infrastructure configuration
-│   └── minio/policies/          # MinIO bucket policies
-│
-├── src/pv_lakehouse/            # 🐍 Python package
-│   ├── etl/                     # ETL modules (bronze, silver, gold)
-│   │   ├── bronze/              # Raw data ingestion
-│   │   ├── silver/              # Data transformation
-│   │   ├── gold/                # Analytics & aggregations
-│   │   ├── clients/             # External API clients
-│   │   └── notebooks/           # Jupyter notebooks
-│   ├── ml_pipeline/             # Machine learning pipelines
-│   └── mlflow/                  # MLflow integration
-│
-├── pyproject.toml               # Python project configuration
-├── requirements.txt             # Python dependencies
-└── README.md                    # This file
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                           MEDALLION ARCHITECTURE                            │
+├───────────────────────┬───────────────────────┬─────────────────────────────┤
+│      🥉 BRONZE        │      🥈 SILVER        │         🥇 GOLD             │
+│      (Raw Data)       │     (Cleaned)         │      (Analytics)            │
+├───────────────────────┼───────────────────────┼─────────────────────────────┤
+│ • Schema-on-read      │ • Schema enforcement  │ • Star schema               │
+│ • Full fidelity       │ • Deduplication       │ • Pre-aggregated            │
+│ • Append-only         │ • Data validation     │ • Business metrics          │
+│ • Audit trail         │ • Type casting        │ • ML features               │
+├───────────────────────┼───────────────────────┼─────────────────────────────┤
+│ raw_facilities        │ clean_facility_master │ dim_facility                │
+│ raw_facility_         │ clean_hourly_energy   │ dim_date                    │
+│   timeseries          │ clean_hourly_weather  │ dim_time                    │
+│ raw_facility_weather  │ clean_hourly_         │ dim_aqi_category            │
+│ raw_facility_         │   air_quality         │ fact_solar_environmental    │
+│   air_quality         │                       │                             │
+└───────────────────────┴───────────────────────┴─────────────────────────────┘
+```
+
+### Infrastructure Components
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                           INFRASTRUCTURE                                    │
+│                                                                             │
+│   ┌─────────────┐  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐      │
+│   │   MinIO     │  │ PostgreSQL  │  │    Trino    │  │   Spark     │      │
+│   │   (S3)      │  │  (Catalog)  │  │   (Query)   │  │  (Process)  │      │
+│   │  :9000/9001 │  │    :5432    │  │    :8081    │  │    :4040    │      │
+│   └─────────────┘  └─────────────┘  └─────────────┘  └─────────────┘      │
+│                                                                             │
+│   ┌─────────────┐  ┌─────────────┐  ┌─────────────┐                       │
+│   │   MLflow    │  │   Prefect   │  │   pgAdmin   │                       │
+│   │   (ML Ops)  │  │   (Orch)    │  │    (UI)     │                       │
+│   │    :5000    │  │    :4200    │  │    :5050    │                       │
+│   └─────────────┘  └─────────────┘  └─────────────┘                       │
+└─────────────────────────────────────────────────────────────────────────────┘
 ```
 
 ---
@@ -138,11 +116,14 @@ dlh-pv/
 
 ```bash
 # Clone the repository
-git clone https://github.com/xuanquangIT/dlh-pv.git
+git clone https://github.com/yourusername/dlh-pv.git
 cd dlh-pv
 
-# Copy environment template
+# Setup environment configuration
 cp docker/.env.example docker/.env
+
+# Create symlink (optional, for convenience)
+ln -sf docker/.env .env
 ```
 
 ### 2. Start Services
@@ -150,72 +131,119 @@ cp docker/.env.example docker/.env
 ```bash
 cd docker
 
-# Start core services (MinIO, PostgreSQL, Trino, Spark)
+# Start core services
 docker compose --profile core up -d
 
-# Optionally, start ML services (MLflow)
-docker compose --profile ml up -d
-
-# Verify all services are healthy
+# Verify health
 ./scripts/health-check.sh
 ```
 
-### 3. Access Web Interfaces
+### 3. Run Your First Pipeline
+
+```bash
+# Load facility metadata
+docker compose exec spark-master spark-submit \
+  --master spark://spark-master:7077 \
+  --deploy-mode client --driver-memory 3g --executor-memory 4g \
+  /opt/workdir/src/pv_lakehouse/etl/bronze/load_facilities.py
+
+# Query the data
+docker exec -it trino trino --execute \
+  "SELECT * FROM iceberg.bronze.raw_facilities LIMIT 5"
+```
+
+### 4. Access Web Interfaces
 
 | Service | URL | Credentials |
 |---------|-----|-------------|
-| **MinIO Console** | [localhost:9001](http://localhost:9001) | `pvlakehouse` / `pvlakehouse` |
-| **Spark Master UI** | [localhost:8080](http://localhost:8080) | — |
-| **Trino UI** | [localhost:8081](http://localhost:8081) | — |
-| **MLflow UI** | [localhost:5000](http://localhost:5000) | — |
-| **pgAdmin** | [localhost:5050](http://localhost:5050) | `admin@admin.com` / `pvlakehouse` |
+| **MinIO Console** | http://localhost:9001 | `pvlakehouse` / `pvlakehouse` |
+| **Spark Master UI** | http://localhost:4040 | — |
+| **Trino UI** | http://localhost:8081 | — |
+| **MLflow UI** | http://localhost:5000 | — |
+| **pgAdmin** | http://localhost:5050 | `admin@example.com` / `pvlakehouse` |
 
-### 4. Run Your First Query
+---
 
-```bash
-# Connect to Trino CLI
-docker exec -it trino trino --catalog iceberg --schema bronze
+## 📁 Project Structure
 
-# Show available tables
-trino:bronze> SHOW TABLES;
-
-# Query sample data
-trino:bronze> SELECT * FROM your_table LIMIT 10;
+```
+dlh-pv/
+├── 📂 docker/                    # Docker Compose configuration
+│   ├── docker-compose.yml        # Service definitions
+│   ├── .env.example              # Environment template
+│   ├── README-SETUP.md           # Docker setup guide
+│   ├── postgres/                 # PostgreSQL init scripts
+│   ├── spark/                    # Spark Dockerfile & config
+│   └── trino/                    # Trino catalog config
+│
+├── 📂 src/pv_lakehouse/          # Main Python package
+│   ├── config/                   # Configuration management
+│   │   ├── settings.py           # Pydantic settings
+│   │   └── spark_config.yaml     # Spark configuration
+│   ├── etl/                      # ETL modules
+│   │   ├── bronze/               # Raw data ingestion
+│   │   ├── silver/               # Data transformation
+│   │   ├── gold/                 # Analytics layer
+│   │   ├── clients/              # API clients
+│   │   ├── utils/                # Shared utilities
+│   │   └── scripts/              # Helper scripts
+│   └── ml_pipeline/              # ML training pipelines
+│
+├── 📂 tests/                     # Test suite
+│   ├── config/                   # Config tests
+│   ├── etl/                      # ETL tests
+│   └── conftest.py               # Pytest fixtures
+│
+├── 📂 doc/                       # Documentation
+│   ├── schema/                   # Schema definitions
+│   └── power-bi/                 # BI integration guides
+│
+├── 📂 dashboard/                 # Power BI dashboards
+├── 📂 config/                    # ML configuration
+├── pyproject.toml                # Python project config
+├── requirements.txt              # Python dependencies
+└── README.md                     # This file
 ```
 
 ---
 
 ## 📚 Documentation
 
-Comprehensive documentation is available in the [`doc/`](doc/) directory:
-
-### Data Layer Guides
+### Guides
 
 | Document | Description |
 |----------|-------------|
-| [Bronze Layer](doc/bronze-silver/BRONZE_LAYER.md) | Raw data ingestion specifications |
-| [Silver Layer](doc/bronze-silver/SILVER_LAYER.md) | Data transformation & validation |
-| [Silver Validation Rules](doc/bronze-silver/SILVER_VALIDATION_RULES.md) | Data quality checks |
-| [ETL Operations Guide](doc/bronze-silver/ETL_OPERATIONS_GUIDE.md) | Running ETL pipelines |
+| [Docker Setup](docker/README-SETUP.md) | Complete Docker deployment guide |
+| [ETL Operations](src/pv_lakehouse/etl/scripts/CHEATSHEET_GUIDE.md) | ETL pipeline operations |
+| [Gold Layer Design](doc/schema/GOLD_LAYER_DESIGN.md) | Analytics schema design |
+| [Trino Connection](doc/power-bi/TRINO_CONNECTION_GUIDE.md) | BI tool integration |
 
-### Analysis & Troubleshooting
+### Data Layers
 
-| Document | Description |
-|----------|-------------|
-| [Bronze-Silver Analysis](doc/bronze-silver/BRONZE_SILVER_ANALYSIS_README.md) | Data flow analysis |
-| [Anomalies & Filters](doc/bronze-silver/ANOMALIES_AND_SILVER_FILTERS.md) | Data quality patterns |
-| [Timezone Analysis](doc/bronze-silver/TIMEZONE_AND_RECORD_COUNT_ANALYSIS.md) | Temporal data handling |
+| Layer | Table | Description |
+|-------|-------|-------------|
+| **Bronze** | `raw_facilities` | Solar facility metadata |
+| | `raw_facility_timeseries` | Energy generation data |
+| | `raw_facility_weather` | Weather observations |
+| | `raw_facility_air_quality` | Air quality metrics |
+| **Silver** | `clean_facility_master` | Validated facility data |
+| | `clean_hourly_energy` | Hourly energy aggregates |
+| | `clean_hourly_weather` | Hourly weather data |
+| | `clean_hourly_air_quality` | Hourly air quality |
+| **Gold** | `dim_*` | Dimension tables |
+| | `fact_solar_environmental` | Main fact table |
 
 ---
 
 ## 🧪 Development
 
-### Setting Up Local Environment
+### Local Setup
 
 ```bash
 # Create virtual environment
 python -m venv .venv
-source .venv/bin/activate
+source .venv/bin/activate  # Linux/Mac
+# or: .venv\Scripts\activate  # Windows
 
 # Install dependencies
 pip install -e .
@@ -225,69 +253,95 @@ pip install -r requirements.txt
 ### Running Tests
 
 ```bash
-# Run pytest suite
-pytest tests/
+# Run all tests
+pytest tests/ -v
 
-# Run specific test
-pytest tests/test_bronze_tables_complete.py -v
+# Run with coverage
+pytest tests/ --cov=src/pv_lakehouse --cov-report=html
+
+# Run specific test file
+pytest tests/config/test_settings.py -v
 ```
 
-### Project Configuration
-
-The project uses modern Python tooling:
-
-- **Build System**: setuptools with `pyproject.toml`
-- **Linting**: Ruff (line-length: 100, Python 3.11+)
-- **Testing**: pytest
-
----
-
-## 🔧 Docker Compose Profiles
-
-The platform uses Docker Compose profiles for flexible deployment:
-
-| Profile | Services | Use Case |
-|---------|----------|----------|
-| `core` | MinIO, PostgreSQL, Spark, Trino, pgAdmin | Data engineering workloads |
-| `ml` | MLflow | Machine learning workflows |
+### Code Quality
 
 ```bash
-# Start specific profile
-docker compose --profile core up -d
+# Format code
+ruff format src/ tests/
 
-# Start multiple profiles
-docker compose --profile core --profile ml up -d
+# Lint
+ruff check src/ tests/
 
-# Stop all services
-docker compose --profile core --profile ml down
+# Type checking
+mypy src/pv_lakehouse/
 ```
 
 ---
 
-## 📊 Use Cases
+## 🔧 Configuration
 
-PV Lakehouse is designed for:
+### Environment Variables
 
-- 🔬 **Data Engineering Learning** — Hands-on experience with modern lakehouse architecture
-- 🧪 **Prototype Development** — Quickly validate ETL pipelines before production
-- 📈 **Analytics Workloads** — SQL-based analysis with Trino
-- 🤖 **ML Experiments** — Track experiments and models with MLflow
-- 🏠 **Local Development** — Full lakehouse stack on a single machine
+All configuration is managed via `docker/.env`:
+
+| Category | Key Variables |
+|----------|---------------|
+| **Credentials** | `PV_USER`, `PV_PASSWORD` |
+| **PostgreSQL** | `POSTGRES_HOST`, `POSTGRES_PORT` |
+| **MinIO** | `MINIO_ENDPOINT`, `S3_WAREHOUSE_BUCKET` |
+| **Spark** | `SPARK_WORKER_MEMORY`, `SPARK_EXECUTOR_MEMORY` |
+| **API Keys** | `OPENELECTRICITY_API_KEY` |
+
+### Spark Tuning
+
+Adjust in `.env` based on your system:
+
+```env
+# For 16GB RAM system
+SPARK_WORKER_MEMORY=6G
+SPARK_EXECUTOR_MEMORY=4g
+SPARK_DRIVER_MEMORY=3g
+SPARK_SHUFFLE_PARTITIONS=32
+```
 
 ---
 
 ## 🤝 Contributing
 
-Contributions are welcome! Please feel free to submit issues and pull requests.
+Contributions are welcome! Please follow these steps:
+
+1. Fork the repository
+2. Create a feature branch (`git checkout -b feature/amazing-feature`)
+3. Commit your changes (`git commit -m 'Add amazing feature'`)
+4. Push to the branch (`git push origin feature/amazing-feature`)
+5. Open a Pull Request
+
+### Coding Standards
+
+- Follow [PEP 8](https://pep8.org/) style guide
+- Use type hints for all functions
+- Write docstrings (Google style)
+- Maintain test coverage > 80%
+- Use `ruff` for formatting
 
 ---
 
 ## 📄 License
 
-This project is open source. See the repository for license details.
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+
+---
+
+## 🙏 Acknowledgments
+
+- [Apache Iceberg](https://iceberg.apache.org/) - Table format
+- [Apache Spark](https://spark.apache.org/) - Processing engine
+- [Trino](https://trino.io/) - Query engine
+- [MinIO](https://min.io/) - Object storage
+- [OpenElectricity](https://openelectricity.org.au/) - Data source
 
 ---
 
 <p align="center">
-  <sub>Built with ❤️ using open-source technologies</sub>
+  <sub>Built with ❤️ for the solar energy community</sub>
 </p>
