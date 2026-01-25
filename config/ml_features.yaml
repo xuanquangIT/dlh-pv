@@ -1,0 +1,72 @@
+# ML Feature Configuration
+# Defines feature groups and columns for solar energy prediction
+
+# Target variable for regression
+target:
+  column: "energy_mwh"
+  type: "regression"
+
+# Energy data quality features
+energy_features:
+  - "intervals_count"
+  - "completeness_pct"
+
+# Temporal features
+temporal_features:
+  basic:
+    - "hour_of_day"
+    - "day_of_week"
+    - "month"
+    - "is_weekend"
+  
+  cyclical:
+    - "hour_sin"
+    - "hour_cos"
+    - "month_sin"
+    - "month_cos"
+
+# Weather features (critical for regression)
+weather_features:
+  primary:
+    - "temperature_2m"
+    - "cloud_cover"
+    - "shortwave_radiation"
+    - "direct_radiation"
+    - "diffuse_radiation"
+    - "wind_speed_10m"
+  
+  derived:
+    - "radiation_temp_interaction"
+    - "cloud_radiation_ratio"
+    - "hour_radiation_interaction"
+    - "completeness_radiation_interaction"
+    - "wind_temp_interaction"
+    - "direct_diffuse_ratio"
+    - "shortwave_radiation_sq"
+    - "temperature_sq"
+    - "cloud_temp_interaction"
+
+# Lag features (most important for time series)
+lag_features:
+  - "energy_lag_1h"     # Previous hour
+  - "energy_lag_24h"    # Same hour yesterday
+  - "energy_lag_168h"   # Same hour last week
+
+# Production indicators
+production_features:
+  - "is_production_hour"
+  - "is_low_energy_period"
+
+# Air quality features (optional)
+air_quality_features:
+  - "pm2_5"
+  - "pm10"
+  - "ozone"
+  - "nitrogen_dioxide"
+
+# Feature engineering settings
+feature_engineering:
+  min_radiation_threshold: 10.0  # W/m² threshold for production hours
+  low_energy_threshold: 0.1      # MWh threshold for low energy periods
+  noise_magnitude: 0.0           # Disabled for production
+  noise_ratio: 0.0               # Disabled for production
