@@ -359,7 +359,7 @@ def fetch_weather_dataframe(
                     window_start,
                     window_end,
                 )
-                continue
+                raise
             if not frame.empty:
                 frames.append(frame)
 
@@ -463,7 +463,7 @@ def fetch_air_quality_dataframe(
                     window_start,
                     window_end,
                 )
-                continue
+                raise
             if not frame.empty:
                 frames.append(frame)
 
