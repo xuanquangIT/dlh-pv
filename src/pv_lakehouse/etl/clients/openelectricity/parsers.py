@@ -1,8 +1,12 @@
 from __future__ import annotations
 import datetime as dt
+import logging
+import math
 import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
+
+logger = logging.getLogger(__name__)
 from .models import (
     Facility,
     FacilityMetadata,
@@ -176,6 +180,8 @@ def load_default_facility_codes(override_path: Optional[Path] = None) -> List[st
         contents = js_path.read_text(encoding="utf-8")
     except PermissionError as exc:
         raise PermissionError(f"Permission denied reading {js_path}") from exc
+    except UnicodeDecodeError as exc:
+        raise ValueError(f"Invalid UTF-8 encoding in {js_path}") from exc
     except OSError as exc:
         raise OSError(f"Failed to read {js_path}: {exc}") from exc
     
@@ -197,8 +203,13 @@ def safe_float(value: Any) -> float:
         Float value, or 0.0 if conversion fails.
     """
     try:
-        return float(value)
+        result = float(value)
+        if not math.isfinite(result):
+            logger.debug(f"Non-finite float value: {value!r}")
+            return 0.0
+        return result
     except (TypeError, ValueError):
+        logger.debug(f"Failed to convert {type(value).__name__} to float: {value!r}")
         return 0.0
 
 
@@ -212,9 +223,15 @@ def as_str(value: Any) -> Optional[str]:
     Returns:
         String value, or None if value is None or empty.
     """
-    if value is None or value == "":
+    if value is None:
         return None
-    return str(value)
+    if value == "":
+        return None
+    try:
+        return str(value)
+    except (TypeError, ValueError, AttributeError) as exc:
+        logger.warning(f"Failed to convert {type(value).__name__} to string: {exc}")
+        return None
 
 def summarize_facility(facility: Dict[str, Any]) -> FacilitySummary:
     """
@@ -359,23 +376,51 @@ def flatten_timeseries(
         List of TimeseriesRow objects, one per data point.
     """
     rows: List[TimeseriesRow] = []
+    
+    # Validate payload type
+    if not isinstance(payload, dict):
+        logger.warning(f"Invalid payload type: {type(payload).__name__}")
+        return rows
+    
     # Get data from payload
     for series in payload.get("data", []):
+        if not isinstance(series, dict):
+            logger.warning(f"Skipping non-dict series: {type(series).__name__}")
+            continue
         network_code = series.get("network_code")
         metric = series.get("metric")
         interval = series.get("interval")
         value_unit = series.get("unit")
         
         for result in series.get("results", []):
+            if not isinstance(result, dict):
+                logger.debug(f"Skipping non-dict result: {type(result).__name__}")
+                continue
             columns = result.get("columns", {})
+            if not isinstance(columns, dict):
+                logger.debug(f"Skipping non-dict columns: {type(columns).__name__}")
+                continue
             unit_code = columns.get("unit_code")
             facility_code = columns.get("facility_code") or unit_to_facility.get(unit_code)
             facility_meta = facilities.get(facility_code) if facility_code else None
-            facility_name = facility_meta.name if facility_meta else None
-            network_id = facility_meta.network_id if facility_meta else None
-            network_region = facility_meta.network_region if facility_meta else None
+            facility_name = getattr(facility_meta, 'name', None) if facility_meta else None
+            network_id = getattr(facility_meta, 'network_id', None) if facility_meta else None
+            network_region = getattr(facility_meta, 'network_region', None) if facility_meta else None
             
-            for timestamp, value in result.get("data", []):
+            data_points = result.get("data", [])
+            if not isinstance(data_points, list):
+                logger.debug(f"Skipping non-list data: {type(data_points).__name__}")
+                continue
+            
+            for item in data_points:
+                if not isinstance(item, (list, tuple)) or len(item) < 2:
+                    logger.debug(f"Skipping invalid data point structure: {item!r}")
+                    continue
+                timestamp, value = item[0], item[1]
+                # Validate timestamp type
+                if not isinstance(timestamp, (str, int, float)):
+                    logger.debug(f"Skipping invalid timestamp type: {type(timestamp).__name__}")
+                    continue
                 rows.append(
                     TimeseriesRow(
                         network_code=network_code,
