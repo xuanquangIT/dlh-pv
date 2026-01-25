@@ -1,10 +1,14 @@
 from __future__ import annotations
 import datetime as dt
+import json
+import logging
 import os
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, List, Optional, Protocol, Sequence, Tuple
 import pandas as pd
 import requests
+
+logger = logging.getLogger(__name__)
 from tenacity import (
     retry,
     retry_if_exception_type,
@@ -116,13 +120,28 @@ class RequestsHTTPClient:
                 raise RuntimeError("401 Unauthorized: check your OpenElectricity credentials.")
             
             response.raise_for_status()
-            return response.json()
+            try:
+                return response.json()
+            except json.JSONDecodeError as json_exc:
+                logger.error(
+                    "Invalid JSON response",
+                    extra={"url": url, "error": str(json_exc)}
+                )
+                raise ValueError(f"Failed to parse JSON response from {url}: {json_exc}") from json_exc
             
         except requests.exceptions.Timeout as exc:
+            logger.error(
+                "Request timeout",
+                extra={"url": url, "timeout": timeout, "error": str(exc)}
+            )
             raise requests.exceptions.Timeout(
                 f"Request timed out after {timeout} seconds while connecting to {url}"
             ) from exc
         except requests.exceptions.ConnectionError as exc:
+            logger.error(
+                "Connection failed",
+                extra={"url": url, "error": str(exc)}
+            )
             raise requests.exceptions.ConnectionError(
                 f"Failed to establish connection to {url}: {exc}"
             ) from exc
@@ -131,15 +150,26 @@ class RequestsHTTPClient:
             if response is not None:
                 try:
                     error_text = response.text[:200]
-                except Exception:
-                    pass
+                except (AttributeError, UnicodeDecodeError, IOError) as e:
+                    logger.debug("Failed to read error response text", exc_info=e)
+            logger.error(
+                "HTTP error",
+                extra={
+                    "url": url,
+                    "status_code": response.status_code if response else "unknown",
+                    "error_preview": error_text
+                }
+            )
             raise requests.exceptions.HTTPError(
                 f"HTTP {response.status_code if response else 'unknown'} error for {url}: {error_text}"
             ) from exc
         finally:
             # Ensure response is properly closed to release connection back to pool
             if response is not None:
-                response.close()
+                try:
+                    response.close()
+                except (OSError, IOError) as close_exc:
+                    logger.warning(f"Failed to close response: {close_exc}")
 
 def _read_env_file(env_path: Path) -> Dict[str, str]:
     """
@@ -176,6 +206,7 @@ def load_api_key(cli_key: Optional[str] = None) -> str:
         RuntimeError: If no API key is found.
     """
     if cli_key:
+        logger.debug("Using API key from CLI parameter")
         return cli_key
     # Check environment variables
     for key in CANDIDATE_ENV_KEYS:
@@ -183,6 +214,7 @@ def load_api_key(cli_key: Optional[str] = None) -> str:
         if value:
             if key != "OPENELECTRICITY_API_KEY":
                 os.environ.setdefault("OPENELECTRICITY_API_KEY", value)
+            logger.debug(f"Using API key from environment variable: {key}")
             return value
     # Check .env file
     env_values = _read_env_file(Path.cwd() / ".env")
@@ -192,7 +224,9 @@ def load_api_key(cli_key: Optional[str] = None) -> str:
             os.environ.setdefault(key, value)
             if key != "OPENELECTRICITY_API_KEY":
                 os.environ.setdefault("OPENELECTRICITY_API_KEY", value)
+            logger.debug(f"Using API key from .env file: {key}")
             return value
+    logger.error("No API key found in any source")
     raise RuntimeError(
         "Missing API key. Provide via parameter, environment variable, or .env file."
     )
@@ -225,7 +259,9 @@ class OpenElectricityClient:
             config: Optional client configuration for timeouts and retries.
             http_client: Optional HTTP client for dependency injection (testing).
         """
+        logger.info("Initializing OpenElectricity client")
         self._api_key = load_api_key(api_key)
+        logger.debug("API key loaded successfully")
         self._config = config or ClientConfig()
         self._owns_http_client = http_client is None
         self._http_client = http_client or RequestsHTTPClient()
@@ -417,7 +453,19 @@ class OpenElectricityClient:
         if not facility_codes:
             raise ValueError("facility_codes must not be empty")
 
-        params = [("facility_code", code) for code in facility_codes]
+        # Validate facility codes
+        validated_codes = []
+        for code in facility_codes:
+            if not isinstance(code, str):
+                raise ValueError(f"facility_code must be string, got {type(code).__name__}")
+            code_stripped = code.strip()
+            if not code_stripped:
+                raise ValueError("facility_code cannot be empty or whitespace")
+            if len(code_stripped) > 100:  # Reasonable limit
+                raise ValueError(f"facility_code too long: {len(code_stripped)} characters")
+            validated_codes.append(code_stripped)
+
+        params = [("facility_code", code) for code in validated_codes]
         payload = self._request_json(self._facilities_endpoint, params)
 
         facilities: Dict[str, FacilityMetadata] = {}
@@ -508,7 +556,7 @@ class OpenElectricityClient:
                 if exc.response is not None:
                     try:
                         response_text = exc.response.text
-                    except Exception:
+                    except (AttributeError, UnicodeDecodeError, IOError):
                         response_text = ""
                 # Get max_days from error
                 max_days = extract_max_days_from_error(response_text)
@@ -551,12 +599,27 @@ class OpenElectricityClient:
         Raises:
             ValueError: If interval is invalid or date range is malformed.
         """
+        # Validate numeric parameters
+        if not isinstance(target_window_days, int) or target_window_days <= 0:
+            raise ValueError(f"target_window_days must be positive integer, got {target_window_days}")
+        if not isinstance(max_lookback_windows, int) or max_lookback_windows <= 0:
+            raise ValueError(f"max_lookback_windows must be positive integer, got {max_lookback_windows}")
+        if target_window_days > 365:
+            raise ValueError(f"target_window_days too large: {target_window_days} (max: 365)")
+        if max_lookback_windows > 100:
+            raise ValueError(f"max_lookback_windows too large: {max_lookback_windows} (max: 100)")
+
+        # Validate facility_codes
+        if not facility_codes:
+            raise ValueError("facility_codes must not be empty")
+        if len(facility_codes) > 50:  # Reasonable batch limit
+            raise ValueError(f"Too many facility_codes: {len(facility_codes)} (max: 50)")
+
         # Validate interval
         if interval not in SUPPORTED_INTERVALS:
             raise ValueError(
                 f"Invalid interval '{interval}'. Supported values: {', '.join(sorted(SUPPORTED_INTERVALS))}."
             )
-
 
         # Parse date range
         manual_start = parse_naive_datetime(date_start) if date_start else None
