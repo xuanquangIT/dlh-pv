@@ -45,6 +45,17 @@ SUPPORTED_INTERVALS = {"5m", "1h", "1d", "7d", "1M", "3M", "season", "1y", "fy"}
 INTERVAL_MAX_DAYS: Dict[str, int] = {"1h": 30}
 TARGET_WINDOW_DAYS = 7
 MAX_LOOKBACK_WINDOWS = 52
+MAX_CHUNK_RETRIES = 10  # Maximum retries for date range chunking
+
+# Validation limits
+MAX_FACILITY_CODE_LENGTH = 100
+MAX_TARGET_WINDOW_DAYS = 365
+MAX_LOOKBACK_WINDOWS_LIMIT = 100
+MAX_FACILITY_CODES_PER_REQUEST = 50
+
+# Chunking constants
+MIN_CHUNK_DAYS = 1
+ERROR_MESSAGE_PREVIEW_LENGTH = 200
 
 # HTTP Client Protocol
 class HTTPClient(Protocol):
@@ -75,6 +86,17 @@ class RequestsHTTPClient:
         if self._session is not None:
             self._session.close()
             self._session = None
+
+    def __del__(self) -> None:
+        """Destructor to ensure session cleanup as a safety net."""
+        try:
+            self.close()
+        except (OSError, RuntimeError) as exc:
+            # In destructor context, only log at debug level to avoid issues during interpreter shutdown
+            try:
+                logger.debug("Failed to close session during cleanup: %s", exc)
+            except Exception:
+                pass  # Truly silent fallback for destructor
     
     def __enter__(self) -> "RequestsHTTPClient":
         """Enter context manager."""
@@ -117,7 +139,11 @@ class RequestsHTTPClient:
             response = session.get(url, headers=headers, params=params, timeout=timeout)
             
             if response.status_code == 401:
-                raise RuntimeError("401 Unauthorized: check your OpenElectricity credentials.")
+                try:
+                    raise RuntimeError("401 Unauthorized: check your OpenElectricity credentials.")
+                finally:
+                    if response is not None:
+                        response.close()
             
             response.raise_for_status()
             try:
@@ -125,9 +151,14 @@ class RequestsHTTPClient:
             except json.JSONDecodeError as json_exc:
                 logger.error(
                     "Invalid JSON response",
-                    extra={"url": url, "error": str(json_exc)}
+                    extra={"url": url},
+                    exc_info=json_exc
                 )
-                raise ValueError(f"Failed to parse JSON response from {url}: {json_exc}") from json_exc
+                try:
+                    raise ValueError(f"Failed to parse JSON response from {url}: {json_exc}") from json_exc
+                finally:
+                    if response is not None:
+                        response.close()
             
         except requests.exceptions.Timeout as exc:
             logger.error(
@@ -147,11 +178,11 @@ class RequestsHTTPClient:
             ) from exc
         except requests.exceptions.HTTPError as exc:
             error_text = ""
-            if response is not None:
+            if response is not None and hasattr(response, 'text'):
                 try:
                     error_text = response.text[:200]
-                except (AttributeError, UnicodeDecodeError, IOError) as e:
-                    logger.debug("Failed to read error response text", exc_info=e)
+                except (AttributeError, UnicodeDecodeError, IOError) as text_exc:
+                    logger.debug("Failed to read error response text", exc_info=text_exc)
             logger.error(
                 "HTTP error",
                 extra={
@@ -169,7 +200,8 @@ class RequestsHTTPClient:
                 try:
                     response.close()
                 except (OSError, IOError) as close_exc:
-                    logger.warning(f"Failed to close response: {close_exc}")
+                    # Don't re-raise during cleanup - best effort only
+                    logger.debug("Failed to close response during cleanup: %s", close_exc)
 
 def _read_env_file(env_path: Path) -> Dict[str, str]:
     """
@@ -461,8 +493,8 @@ class OpenElectricityClient:
             code_stripped = code.strip()
             if not code_stripped:
                 raise ValueError("facility_code cannot be empty or whitespace")
-            if len(code_stripped) > 100:  # Reasonable limit
-                raise ValueError(f"facility_code too long: {len(code_stripped)} characters")
+            if len(code_stripped) > MAX_FACILITY_CODE_LENGTH:
+                raise ValueError(f"facility_code too long: {len(code_stripped)} characters (max: {MAX_FACILITY_CODE_LENGTH})")
             validated_codes.append(code_stripped)
 
         params = [("facility_code", code) for code in validated_codes]
@@ -534,8 +566,9 @@ class OpenElectricityClient:
         # Create URL
         url = self._data_endpoint_template.format(network_code=network_code)
         max_chunk_days = INTERVAL_MAX_DAYS.get(interval)
+        chunk_retry_count = 0
 
-        while True:
+        while chunk_retry_count < MAX_CHUNK_RETRIES:
             # Create payload list
             payloads: List[Dict[str, Any]] = []
             # Split date range into segments
@@ -552,6 +585,7 @@ class OpenElectricityClient:
                 return payloads
                 
             except requests.HTTPError as exc:
+                chunk_retry_count += 1
                 response_text = ""
                 if exc.response is not None:
                     try:
@@ -562,13 +596,31 @@ class OpenElectricityClient:
                 max_days = extract_max_days_from_error(response_text)
                 if not max_days:
                     raise
-                # If max_days is less than max_chunk_days
-                if max_chunk_days and max_chunk_days <= max_days:
-                    if max_days <= 1:
-                        raise
-                    max_chunk_days = max_days - 1
-                else:
-                    max_chunk_days = max_days
+                # Check if we can reduce chunk size further
+                if max_days <= MIN_CHUNK_DAYS:
+                    raise RuntimeError(
+                        f"Cannot reduce chunk size further (max_days={max_days}). "
+                        f"API error: {response_text[:ERROR_MESSAGE_PREVIEW_LENGTH]}"
+                    ) from exc
+                # Calculate new chunk size - always reduce by MIN_CHUNK_DAYS
+                new_chunk_days = max_days - MIN_CHUNK_DAYS
+                # Ensure we're actually making progress
+                if max_chunk_days is not None and new_chunk_days >= max_chunk_days:
+                    raise RuntimeError(
+                        f"Cannot make progress: new_chunk_days ({new_chunk_days}) >= max_chunk_days ({max_chunk_days}). "
+                        f"API error: {response_text[:ERROR_MESSAGE_PREVIEW_LENGTH]}"
+                    ) from exc
+                max_chunk_days = new_chunk_days
+                logger.warning(
+                    "Reducing chunk size to %d days (retry %d/%d)",
+                    max_chunk_days, chunk_retry_count, MAX_CHUNK_RETRIES
+                )
+
+        # If we exhausted retries, raise an error
+        raise RuntimeError(
+            f"Exhausted maximum chunk retries ({MAX_CHUNK_RETRIES}) for timeseries fetch. "
+            f"Last chunk_days: {max_chunk_days}"
+        )
 
     def fetch_timeseries(
         self,
@@ -604,16 +656,16 @@ class OpenElectricityClient:
             raise ValueError(f"target_window_days must be positive integer, got {target_window_days}")
         if not isinstance(max_lookback_windows, int) or max_lookback_windows <= 0:
             raise ValueError(f"max_lookback_windows must be positive integer, got {max_lookback_windows}")
-        if target_window_days > 365:
-            raise ValueError(f"target_window_days too large: {target_window_days} (max: 365)")
-        if max_lookback_windows > 100:
-            raise ValueError(f"max_lookback_windows too large: {max_lookback_windows} (max: 100)")
+        if target_window_days > MAX_TARGET_WINDOW_DAYS:
+            raise ValueError(f"target_window_days too large: {target_window_days} (max: {MAX_TARGET_WINDOW_DAYS})")
+        if max_lookback_windows > MAX_LOOKBACK_WINDOWS_LIMIT:
+            raise ValueError(f"max_lookback_windows too large: {max_lookback_windows} (max: {MAX_LOOKBACK_WINDOWS_LIMIT})")
 
         # Validate facility_codes
         if not facility_codes:
             raise ValueError("facility_codes must not be empty")
-        if len(facility_codes) > 50:  # Reasonable batch limit
-            raise ValueError(f"Too many facility_codes: {len(facility_codes)} (max: 50)")
+        if len(facility_codes) > MAX_FACILITY_CODES_PER_REQUEST:
+            raise ValueError(f"Too many facility_codes: {len(facility_codes)} (max: {MAX_FACILITY_CODES_PER_REQUEST})")
 
         # Validate interval
         if interval not in SUPPORTED_INTERVALS:
@@ -686,8 +738,9 @@ class OpenElectricityClient:
         if dataframe.empty:
             return dataframe
 
+        # Keep null values at the end during sort
         dataframe = dataframe.sort_values(
-            ["network_id", "network_region", "facility_name"], na_position="last"  # Keep null values at the end
+            ["network_id", "network_region", "facility_name"], na_position="last"
         ).reset_index(drop=True)
         
         return dataframe
@@ -785,4 +838,13 @@ __all__ = [
     "INTERVAL_MAX_DAYS",
     "TARGET_WINDOW_DAYS",
     "MAX_LOOKBACK_WINDOWS",
+    "MAX_CHUNK_RETRIES",
+    # Validation limits
+    "MAX_FACILITY_CODE_LENGTH",
+    "MAX_TARGET_WINDOW_DAYS",
+    "MAX_LOOKBACK_WINDOWS_LIMIT",
+    "MAX_FACILITY_CODES_PER_REQUEST",
+    # Chunking constants
+    "MIN_CHUNK_DAYS",
+    "ERROR_MESSAGE_PREVIEW_LENGTH",
 ]
