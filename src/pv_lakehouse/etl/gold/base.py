@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import datetime as dt
+import logging
 from dataclasses import dataclass, field
-from typing import Dict, Iterable, Optional
+from typing import Dict, Iterable, List, Optional
 
 from pyspark.sql import DataFrame, SparkSession
 from pyspark.sql import functions as F
 from pyspark.sql.utils import AnalysisException
+
+LOGGER = logging.getLogger(__name__)
 
 from ..utils.spark_utils import cleanup_spark_staging, create_spark_session, write_iceberg_table
 
@@ -33,15 +36,37 @@ class GoldTableConfig:
 
 @dataclass
 class GoldLoadOptions:
-    """Parameters controlling a gold load execution."""
+    """Parameters controlling a gold load execution.
 
-    mode: str = "incremental"  # "full" or "incremental"
+    Attributes:
+        mode: Load mode - 'full' for complete reload, 'incremental' for delta.
+        start: Start datetime for incremental filtering.
+        end: End datetime for incremental filtering.
+        load_strategy: Write strategy - 'overwrite' or 'merge'.
+        app_name: Spark application name for job identification.
+        target_file_size_mb: Target Iceberg file size in megabytes.
+        max_records_per_file: Maximum records per output file.
+        broadcast_threshold_mb: Threshold for auto-broadcast joins (MB).
+        enable_aqe: Enable Spark Adaptive Query Execution.
+        partition_pruning: Enable partition filter pushdown.
+        merge_keys: Keys for MERGE INTO operation.
+        explain_plan: Enable query plan logging for debugging.
+        explain_mode: Plan verbosity - 'simple', 'extended', 'codegen', 'cost'.
+    """
+
+    mode: str = "incremental"
     start: Optional[dt.datetime] = None
     end: Optional[dt.datetime] = None
-    load_strategy: str = "merge"  # "overwrite" or "merge"
+    load_strategy: str = "merge"
     app_name: str = "gold-loader"
     target_file_size_mb: int = 128
     max_records_per_file: int = 250_000
+    broadcast_threshold_mb: int = 10
+    enable_aqe: bool = True
+    partition_pruning: bool = True
+    merge_keys: Optional[List[str]] = None
+    explain_plan: bool = False
+    explain_mode: str = "simple"
 
 
 class BaseGoldLoader:
@@ -60,22 +85,51 @@ class BaseGoldLoader:
     # ------------------------------------------------------------------
     @property
     def spark(self) -> SparkSession:
+        """Get or create SparkSession with optimized Gold layer configuration."""
         if self._spark is None:
             self._spark = create_spark_session(self.options.app_name)
-            # Optimize for Gold layer: smaller datasets, many small dimension joins
-            # Reduce shuffle partitions from default 200 to 8 for better performance
-            self._maybe_set_conf("spark.sql.shuffle.partitions", "8")
-            # Enable broadcast join auto-detection for tables < 10MB
-            self._maybe_set_conf("spark.sql.autoBroadcastJoinThreshold", "10485760")
+            self._configure_spark_optimizations()
         return self._spark
 
+    def _configure_spark_optimizations(self) -> None:
+        """Apply Spark configurations for Gold layer workloads.
+
+        Configures shuffle partitions, broadcast thresholds, and Adaptive
+        Query Execution (AQE) settings based on GoldLoadOptions.
+        """
+        # Reduce shuffle partitions for smaller Gold layer datasets
+        self._maybe_set_conf("spark.sql.shuffle.partitions", "8")
+
+        # Configure broadcast join threshold from options
+        threshold_bytes = str(self.options.broadcast_threshold_mb * 1024 * 1024)
+        self._maybe_set_conf("spark.sql.autoBroadcastJoinThreshold", threshold_bytes)
+
+        # Enable Adaptive Query Execution for runtime optimization
+        if self.options.enable_aqe:
+            self._maybe_set_conf("spark.sql.adaptive.enabled", "true")
+            self._maybe_set_conf("spark.sql.adaptive.coalescePartitions.enabled", "true")
+            self._maybe_set_conf("spark.sql.adaptive.localShuffleReader.enabled", "true")
+            self._maybe_set_conf("spark.sql.adaptive.skewJoin.enabled", "true")
+
+        LOGGER.info(
+            "Gold layer Spark config: broadcast_threshold=%dMB, aqe=%s, partitions=8",
+            self.options.broadcast_threshold_mb,
+            self.options.enable_aqe,
+        )
+
     def close(self) -> None:
+        """Stop SparkSession and cleanup staging directories."""
         if self._spark is not None:
             self._spark.stop()
             self._spark = None
             cleanup_spark_staging()
 
     def run(self) -> int:
+        """Execute the full ETL pipeline: read, transform, write.
+
+        Returns:
+            Total number of rows written across all output tables.
+        """
         try:
             source_frames = self._read_sources()
             if not source_frames and getattr(self, "source_tables", None):
@@ -90,6 +144,10 @@ class BaseGoldLoader:
             for name, dataframe in outputs.items():
                 if dataframe is None:
                     continue
+
+                # Log explain plan before materialization if enabled
+                self._log_explain_plan(dataframe, f"pre_write_{name}")
+
                 row_count = dataframe.count()
                 if row_count == 0:
                     continue
@@ -105,9 +163,80 @@ class BaseGoldLoader:
             self.close()
 
     # ------------------------------------------------------------------
+    # Explain plan and debugging utilities
+    # ------------------------------------------------------------------
+    def _log_explain_plan(self, df: DataFrame, stage: str) -> None:
+        """Log DataFrame query execution plan for debugging.
+
+        Args:
+            df: DataFrame to explain.
+            stage: Descriptive name for the transformation stage.
+        """
+        if not self.options.explain_plan:
+            return
+
+        try:
+            explain_mode = self.options.explain_mode.lower()
+            if explain_mode == "extended":
+                explain_str = df._jdf.queryExecution().toString()
+            elif explain_mode == "codegen":
+                explain_str = df._jdf.queryExecution().debug().codegen()
+            elif explain_mode == "cost":
+                explain_str = df._jdf.queryExecution().optimizedPlan().stats().toString()
+            else:
+                explain_str = df._jdf.queryExecution().simpleString()
+
+            LOGGER.info("[EXPLAIN] Stage: %s\n%s", stage, explain_str)
+        except Exception as e:
+            LOGGER.warning("Failed to generate explain plan for stage %s: %s", stage, e)
+
+    def _log_join_strategy(self, df: DataFrame, join_name: str) -> None:
+        """Log the join strategy used by Spark optimizer.
+
+        Args:
+            df: DataFrame result of a join operation.
+            join_name: Descriptive name for the join being analyzed.
+        """
+        if not self.options.explain_plan:
+            return
+
+        try:
+            plan_str = df._jdf.queryExecution().simpleString()
+            join_types = ["BroadcastHashJoin", "SortMergeJoin", "BroadcastNestedLoopJoin"]
+            detected = [jt for jt in join_types if jt in plan_str]
+            if detected:
+                LOGGER.info("[JOIN] %s uses: %s", join_name, ", ".join(detected))
+        except Exception as e:
+            LOGGER.debug("Failed to detect join strategy for %s: %s", join_name, e)
+
+    def _log_transformation_metrics(self, df: DataFrame, stage: str) -> None:
+        """Log DataFrame metrics for performance monitoring.
+
+        Args:
+            df: DataFrame to analyze.
+            stage: Descriptive name for the transformation stage.
+        """
+        if not self.options.explain_plan:
+            return
+
+        try:
+            partition_count = df.rdd.getNumPartitions()
+            LOGGER.info("[METRICS] %s: partitions=%d", stage, partition_count)
+        except Exception as e:
+            LOGGER.debug("Failed to collect metrics for %s: %s", stage, e)
+
+    # ------------------------------------------------------------------
     # Abstract hooks
     # ------------------------------------------------------------------
     def transform(self, sources: Dict[str, DataFrame]) -> Optional[Dict[str, DataFrame]]:  # pragma: no cover - abstract
+        """Transform source DataFrames into Gold layer outputs.
+
+        Args:
+            sources: Dictionary mapping source names to DataFrames.
+
+        Returns:
+            Dictionary mapping output names to transformed DataFrames.
+        """
         raise NotImplementedError
 
     # ------------------------------------------------------------------
@@ -195,36 +324,47 @@ class BaseGoldLoader:
             print("[GOLD INCREMENTAL] No existing Silver data found, will process all Silver data", flush=True)
 
     def _read_sources(self) -> Dict[str, DataFrame]:
+        """Read source tables with optional partition pruning.
+
+        Applies timestamp filters and partition pruning based on
+        GoldLoadOptions configuration for efficient data retrieval.
+
+        Returns:
+            Dictionary mapping source names to filtered DataFrames.
+        """
         # Auto-detect start time before reading sources
         self._auto_detect_start_time()
         
         frames: Dict[str, DataFrame] = {}
         for name, config in self.source_tables.items():
-            dataframe = self._read_table(config)
+            dataframe = self._read_table_with_pruning(config)
             if dataframe is None:
                 continue
             frames[name] = dataframe
         return frames
 
-    def _read_table(self, config: SourceTableConfig) -> Optional[DataFrame]:
+    def _read_table_with_pruning(self, config: SourceTableConfig) -> Optional[DataFrame]:
+        """Read table with partition pruning and timestamp filtering.
+
+        Applies partition filter pushdown when date_key column exists,
+        otherwise falls back to timestamp column filtering.
+
+        Args:
+            config: Source table configuration.
+
+        Returns:
+            Filtered DataFrame or None if table doesn't exist.
+        """
         try:
             dataframe = self.spark.table(config.table_name)
         except AnalysisException:
             return None
 
-        timestamp_column = config.timestamp_column
-        if timestamp_column:
-            if timestamp_column not in dataframe.columns:
-                raise ValueError(
-                    f"Timestamp column '{timestamp_column}' missing from table {config.table_name}"
-                )
-            start_literal = self._normalise_datetime(self.options.start)
-            end_literal = self._normalise_datetime(self.options.end)
-            timestamp_col = F.col(timestamp_column)
-            if start_literal:
-                dataframe = dataframe.filter(timestamp_col >= F.to_timestamp(F.lit(start_literal)))
-            if end_literal:
-                dataframe = dataframe.filter(timestamp_col <= F.to_timestamp(F.lit(end_literal)))
+        # Apply partition pruning if enabled and date_key column exists
+        if self.options.partition_pruning and "date_key" in dataframe.columns:
+            dataframe = self._apply_partition_pruning(dataframe, config)
+        elif config.timestamp_column:
+            dataframe = self._apply_timestamp_filter(dataframe, config)
 
         required_columns = set(config.required_columns or [])
         missing = required_columns - set(dataframe.columns)
@@ -233,6 +373,96 @@ class BaseGoldLoader:
                 f"Missing expected columns {sorted(missing)} in table {config.table_name}"
             )
         return dataframe
+
+    def _apply_partition_pruning(
+        self, dataframe: DataFrame, config: SourceTableConfig
+    ) -> DataFrame:
+        """Apply date_key partition filter for efficient data scanning.
+
+        Converts datetime options to date_key format (YYYYMMDD) and applies
+        filter predicates that Spark can push down to partition pruning.
+
+        Args:
+            dataframe: Source DataFrame with date_key column.
+            config: Source table configuration.
+
+        Returns:
+            DataFrame with partition filters applied.
+        """
+        if self.options.start:
+            start_date = (
+                self.options.start.date()
+                if isinstance(self.options.start, dt.datetime)
+                else self.options.start
+            )
+            start_key = int(start_date.strftime("%Y%m%d"))
+            dataframe = dataframe.filter(F.col("date_key") >= start_key)
+            LOGGER.debug(
+                "Applied partition pruning: date_key >= %d for %s",
+                start_key,
+                config.table_name,
+            )
+
+        if self.options.end:
+            end_date = (
+                self.options.end.date()
+                if isinstance(self.options.end, dt.datetime)
+                else self.options.end
+            )
+            end_key = int(end_date.strftime("%Y%m%d"))
+            dataframe = dataframe.filter(F.col("date_key") <= end_key)
+            LOGGER.debug(
+                "Applied partition pruning: date_key <= %d for %s",
+                end_key,
+                config.table_name,
+            )
+
+        return dataframe
+
+    def _apply_timestamp_filter(
+        self, dataframe: DataFrame, config: SourceTableConfig
+    ) -> DataFrame:
+        """Apply timestamp column filter for incremental loading.
+
+        Args:
+            dataframe: Source DataFrame.
+            config: Source table configuration with timestamp_column.
+
+        Returns:
+            DataFrame with timestamp filters applied.
+        """
+        timestamp_column = config.timestamp_column
+        if not timestamp_column:
+            return dataframe
+
+        if timestamp_column not in dataframe.columns:
+            raise ValueError(
+                f"Timestamp column '{timestamp_column}' missing from table {config.table_name}"
+            )
+
+        start_literal = self._normalise_datetime(self.options.start)
+        end_literal = self._normalise_datetime(self.options.end)
+        timestamp_col = F.col(timestamp_column)
+
+        if start_literal:
+            dataframe = dataframe.filter(timestamp_col >= F.to_timestamp(F.lit(start_literal)))
+        if end_literal:
+            dataframe = dataframe.filter(timestamp_col <= F.to_timestamp(F.lit(end_literal)))
+
+        return dataframe
+
+    def _read_table(self, config: SourceTableConfig) -> Optional[DataFrame]:
+        """Read table with timestamp filtering (legacy method).
+
+        Deprecated: Use _read_table_with_pruning instead.
+
+        Args:
+            config: Source table configuration.
+
+        Returns:
+            Filtered DataFrame or None if table doesn't exist.
+        """
+        return self._read_table_with_pruning(config)
 
     def _normalise_datetime(self, value: Optional[dt.datetime | dt.date | str]) -> Optional[str]:
         if value is None:
@@ -307,15 +537,31 @@ class BaseGoldLoader:
         return dt.date.today().isoformat()
 
     def _maybe_set_conf(self, key: str, value: str) -> None:
+        """Set Spark configuration if not already defined.
+
+        Args:
+            key: Configuration key name.
+            value: Configuration value to set.
+        """
         current = self.spark.conf.get(key, None)
         if current is None:
             self.spark.conf.set(key, value)
 
     def _validate_options(self) -> None:
+        """Validate GoldLoadOptions configuration.
+
+        Raises:
+            ValueError: If any option value is invalid.
+        """
         if self.options.mode not in {"full", "incremental"}:
             raise ValueError("GoldLoadOptions.mode must be 'full' or 'incremental'")
         if self.options.load_strategy not in {"overwrite", "merge"}:
             raise ValueError("GoldLoadOptions.load_strategy must be 'overwrite' or 'merge'")
+        if self.options.explain_mode not in {"simple", "extended", "codegen", "cost"}:
+            raise ValueError("GoldLoadOptions.explain_mode must be 'simple', 'extended', 'codegen', or 'cost'")
+        if self.options.broadcast_threshold_mb < 0:
+            raise ValueError("GoldLoadOptions.broadcast_threshold_mb must be non-negative")
+
         start = self.options.start
         end = self.options.end
         start_iso = self._normalise_datetime(start) if start else None

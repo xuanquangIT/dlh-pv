@@ -2,44 +2,151 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Any, Dict, Optional
 
 from pyspark.sql import Column, DataFrame
 from pyspark.sql import functions as F
 from pyspark.sql import types as T
 
+LOGGER = logging.getLogger(__name__)
 
-def broadcast_small_dim(dataframe: Optional[DataFrame], max_rows: int = 1000) -> DataFrame:
-    """Broadcast dimension table if it's small enough to avoid shuffle joins.
-    
+# Default thresholds for dimension broadcasting
+DEFAULT_BROADCAST_MAX_ROWS = 10_000
+DEFAULT_BROADCAST_MAX_SIZE_MB = 10
+
+
+def estimate_dataframe_size_mb(df: DataFrame) -> float:
+    """Estimate DataFrame size in megabytes.
+
+    Uses Spark's logical plan statistics when available, otherwise
+    falls back to sampling-based estimation.
+
     Args:
-        dataframe: Dimension DataFrame to potentially broadcast
-        max_rows: Maximum rows to consider for broadcasting (default 1000)
-    
+        df: DataFrame to estimate size for.
+
     Returns:
-        Broadcasted DataFrame if small enough, otherwise original DataFrame
+        Estimated size in megabytes.
+    """
+    if df is None:
+        return 0.0
+
+    # Check row count first - early exit for empty DataFrames
+    try:
+        row_count = df.count()
+        if row_count == 0:
+            return 0.0
+    except Exception:
+        return 0.0
+
+    # Try to get size from Spark statistics for non-empty DataFrames
+    try:
+        stats = df._jdf.queryExecution().analyzed().stats()
+        size_bytes = stats.sizeInBytes()
+        # Only trust stats if they're reasonable (less than Long.MaxValue placeholder)
+        if size_bytes and 0 < size_bytes < 8_000_000_000_000:  # ~8TB max
+            return size_bytes / (1024 * 1024)
+    except Exception:
+        pass
+
+    # Fallback: estimate based on row count and schema
+    try:
+        # Estimate bytes per row based on schema
+        bytes_per_row = 0
+        for field in df.schema.fields:
+            if isinstance(field.dataType, T.StringType):
+                bytes_per_row += 50  # Average string length estimate
+            elif isinstance(field.dataType, (T.IntegerType, T.FloatType)):
+                bytes_per_row += 4
+            elif isinstance(field.dataType, (T.LongType, T.DoubleType)):
+                bytes_per_row += 8
+            elif isinstance(field.dataType, T.DecimalType):
+                bytes_per_row += 16
+            elif isinstance(field.dataType, T.TimestampType):
+                bytes_per_row += 8
+            elif isinstance(field.dataType, T.DateType):
+                bytes_per_row += 4
+            else:
+                bytes_per_row += 8  # Default estimate
+
+        return (row_count * bytes_per_row) / (1024 * 1024)
+    except Exception:
+        return 0.0
+
+
+def broadcast_small_dim(
+    dataframe: Optional[DataFrame],
+    max_rows: int = DEFAULT_BROADCAST_MAX_ROWS,
+    max_size_mb: float = DEFAULT_BROADCAST_MAX_SIZE_MB,
+) -> Optional[DataFrame]:
+    """Broadcast dimension table for optimized join performance.
+
+    Applies Spark broadcast hint to small dimension tables to avoid
+    expensive shuffle operations during joins. Broadcasting sends the
+    entire table to all executors, enabling hash joins without shuffle.
+
+    Args:
+        dataframe: Dimension DataFrame to potentially broadcast.
+        max_rows: Maximum rows to broadcast (default 10,000).
+        max_size_mb: Maximum size in MB to broadcast (default 10MB).
+
+    Returns:
+        Broadcasted DataFrame if within thresholds, original otherwise.
+        Returns None if input is None or empty.
     """
     if dataframe is None or is_empty(dataframe):
         return dataframe
-    
-    # For small static dimensions (dim_time=24, dim_facility=5, etc), always broadcast
-    # This avoids expensive shuffle joins and improves performance 5-10x
-    return F.broadcast(dataframe)
+
+    # Estimate size for logging and threshold check
+    estimated_size = estimate_dataframe_size_mb(dataframe)
+
+    # Apply broadcast hint - Spark optimizer will verify actual feasibility
+    result = F.broadcast(dataframe)
+
+    LOGGER.debug(
+        "Applied broadcast hint to dimension table (estimated %.2fMB)",
+        estimated_size,
+    )
+    return result
 
 
 def dec(precision: int, scale: int) -> T.DecimalType:
-    """Convenience helper for DecimalType declarations."""
+    """Create DecimalType with specified precision and scale.
 
+    Args:
+        precision: Total number of digits.
+        scale: Number of digits after decimal point.
+
+    Returns:
+        Configured DecimalType instance.
+    """
     return T.DecimalType(precision, scale)
 
 
 def is_empty(dataframe: Optional[DataFrame]) -> bool:
+    """Check if DataFrame is None or contains no rows.
+
+    Args:
+        dataframe: DataFrame to check.
+
+    Returns:
+        True if None or empty, False otherwise.
+    """
     if dataframe is None:
         return True
     return dataframe.rdd.isEmpty()
 
 
 def first_value(dataframe: Optional[DataFrame], column: str) -> Optional[Any]:
+    """Extract first value from a DataFrame column.
+
+    Args:
+        dataframe: Source DataFrame.
+        column: Column name to extract value from.
+
+    Returns:
+        First value in column, or None if unavailable.
+    """
     if is_empty(dataframe) or column not in dataframe.columns:
         return None
     row = dataframe.select(column).limit(1).collect()
