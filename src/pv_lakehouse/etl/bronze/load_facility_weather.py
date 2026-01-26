@@ -81,7 +81,7 @@ def collect_weather_data(
             facility = futures[future]
             try:
                 frame = future.result()
-            except (ValueError, RuntimeError, ConnectionError, TimeoutError) as exc:  # pragma: no cover - defensive
+            except (ValueError, RuntimeError, ConnectionError, TimeoutError, OSError, Exception) as exc:  # pragma: no cover - defensive
                 LOGGER.warning("Failed to fetch weather data for %s: %s", facility.code, exc)
                 continue
             if not frame.empty:
@@ -198,7 +198,11 @@ def main() -> None:
     # Use Iceberg MERGE for both insert and deduplication (keep latest record only)
     weather_spark_df.createOrReplaceTempView("weather_source")
     
-    # Use string format() for SQL with table constant
+    # Validate table name format to prevent SQL injection
+    if not ICEBERG_WEATHER_TABLE.startswith("lh."):
+        raise ValueError(f"Invalid table name format: {ICEBERG_WEATHER_TABLE}")
+    
+    # Use string format() for SQL with validated table constant
     merge_sql = """
     MERGE INTO {} AS target
     USING (

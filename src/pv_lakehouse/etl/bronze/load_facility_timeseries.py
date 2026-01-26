@@ -91,7 +91,7 @@ def main() -> None:
             else:
                 LOGGER.info("No data returned for %s", facility_code)
                 
-        except Exception as e:
+        except (ValueError, RuntimeError, ConnectionError, TimeoutError, OSError) as e:
             error_msg = str(e)
             # Skip facility if API returns 403 (Forbidden/No permissions) or 416 (no data available)
             if "403" in error_msg or "Forbidden" in error_msg:

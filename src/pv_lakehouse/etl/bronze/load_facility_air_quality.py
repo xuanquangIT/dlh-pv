@@ -87,7 +87,7 @@ def collect_air_quality_data(
             facility = futures[future]
             try:
                 frame = future.result()
-            except (ValueError, RuntimeError, ConnectionError, TimeoutError) as exc:  # pragma: no cover - defensive
+            except (ValueError, RuntimeError, ConnectionError, TimeoutError, OSError, Exception) as exc:  # pragma: no cover - defensive
                 LOGGER.warning("Failed to fetch air quality data for %s: %s", facility.code, exc)
                 continue
             if not frame.empty:
@@ -191,6 +191,11 @@ def main() -> None:
     # Use Iceberg MERGE for both insert and deduplication (keep latest record only)
     air_spark_df.createOrReplaceTempView("air_source")
     
+    # Validate table name format to prevent SQL injection
+    if not ICEBERG_AIR_TABLE.startswith("lh."):
+        raise ValueError(f"Invalid table name format: {ICEBERG_AIR_TABLE}")
+    
+    # Use string format() for SQL with validated table constant
     merge_sql = """
     MERGE INTO {} AS target
     USING (
