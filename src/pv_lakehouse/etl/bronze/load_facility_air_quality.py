@@ -8,6 +8,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import List, Optional
 import pandas as pd
 from pyspark.sql import functions as F
+from pyspark.sql.utils import AnalysisException, ParseException
 from pv_lakehouse.etl.bronze import openmeteo_common
 from pv_lakehouse.etl.bronze.facility_timezones import get_facility_timezone
 from pv_lakehouse.etl.clients import openmeteo
@@ -87,7 +88,8 @@ def collect_air_quality_data(
             facility = futures[future]
             try:
                 frame = future.result()
-            except (ValueError, RuntimeError, ConnectionError, TimeoutError, OSError) as exc:  # pragma: no cover - defensive
+            except (ConnectionError, TimeoutError, OSError) as exc:  # pragma: no cover - defensive
+                # Network/IO errors only - let other exceptions propagate
                 LOGGER.warning("Failed to fetch air quality data for %s: %s", facility.code, exc)
                 continue
             if not frame.empty:
@@ -103,23 +105,34 @@ def _get_max_timestamp_from_table(spark, table_name: str) -> Optional[dt.datetim
     
     Args:
         spark: SparkSession instance.
-        table_name: Fully qualified table name (constant, not user input).
+        table_name: Fully qualified table name (must be from ALLOWED_TABLES).
         
     Returns:
         Max timestamp or None if table is empty or doesn't exist.
     """
+    # Whitelist of allowed table names to prevent SQL injection
+    ALLOWED_TABLES = {
+        "lh.bronze.raw_facility_air_quality",
+        "lh.bronze.raw_facility_weather",
+        "lh.bronze.raw_facility_timeseries",
+    }
+    
+    if table_name not in ALLOWED_TABLES:
+        raise ValueError(f"Table name not in allowed list: {table_name}")
+    
     try:
-        # Validate table name format to prevent SQL injection
-        if not table_name.startswith("lh."):
-            raise ValueError(f"Invalid table name format: {table_name}")
-        
-        # Use string format() instead of f-string for clarity that this is a constant
+        # Safe to use format() here since table_name is validated against whitelist
         query = "SELECT MAX(air_timestamp) FROM {}".format(table_name)
         result = spark.sql(query).collect()
         if result and len(result) > 0 and result[0][0] is not None:
             return result[0][0]
         return None
+    except (AnalysisException, ParseException) as e:
+        # Spark SQL errors (table doesn't exist, syntax errors)
+        LOGGER.warning("Spark SQL error querying %s: %s", table_name, e)
+        return None
     except (ValueError, RuntimeError) as e:
+        # Data conversion or runtime errors
         LOGGER.warning("Could not query max timestamp from %s: %s", table_name, e)
         return None
 
@@ -191,11 +204,16 @@ def main() -> None:
     # Use Iceberg MERGE for both insert and deduplication (keep latest record only)
     air_spark_df.createOrReplaceTempView("air_source")
     
-    # Validate table name format to prevent SQL injection
-    if not ICEBERG_AIR_TABLE.startswith("lh."):
-        raise ValueError(f"Invalid table name format: {ICEBERG_AIR_TABLE}")
+    # Whitelist validation to prevent SQL injection
+    ALLOWED_TABLES = {
+        "lh.bronze.raw_facility_air_quality",
+        "lh.bronze.raw_facility_weather",
+        "lh.bronze.raw_facility_timeseries",
+    }
+    if ICEBERG_AIR_TABLE not in ALLOWED_TABLES:
+        raise ValueError(f"Table name not in allowed list: {ICEBERG_AIR_TABLE}")
     
-    # Use string format() for SQL with validated table constant
+    # Safe to use format() since table name is validated against whitelist
     merge_sql = """
     MERGE INTO {} AS target
     USING (
@@ -213,7 +231,17 @@ def main() -> None:
     try:
         spark.sql(merge_sql)
         LOGGER.info("MERGE completed for %s", ICEBERG_AIR_TABLE)
+    except (AnalysisException, ParseException) as e:
+        # Spark SQL errors (table doesn't exist, MERGE syntax errors)
+        LOGGER.warning("Spark SQL error during MERGE: %s. Falling back to append...", e)
+        openmeteo_common.write_dataset(
+            air_spark_df,
+            iceberg_table=ICEBERG_AIR_TABLE,
+            mode="append",
+            label="air-quality",
+        )
     except (ValueError, RuntimeError) as e:
+        # Data validation or runtime errors
         LOGGER.warning("MERGE failed: %s. Falling back to append...", e)
         openmeteo_common.write_dataset(
             air_spark_df,

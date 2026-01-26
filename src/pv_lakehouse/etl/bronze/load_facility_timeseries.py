@@ -6,6 +6,7 @@ import datetime as dt
 import logging
 from typing import List
 from pyspark.sql import functions as F
+from pyspark.sql.utils import AnalysisException, ParseException
 from pv_lakehouse.etl.clients import openelectricity
 from pv_lakehouse.etl.utils import resolve_facility_codes
 from pv_lakehouse.etl.utils.spark_utils import (
@@ -44,11 +45,16 @@ def main() -> None:
     if args.mode == "incremental" and args.date_start is None:
         spark = create_spark_session(args.app_name)
         try:
-            # Validate table name format to prevent SQL injection
-            if not ICEBERG_TABLE.startswith("lh."):
-                raise ValueError(f"Invalid table name format: {ICEBERG_TABLE}")
+            # Whitelist validation to prevent SQL injection
+            ALLOWED_TABLES = {
+                "lh.bronze.raw_facility_air_quality",
+                "lh.bronze.raw_facility_weather",
+                "lh.bronze.raw_facility_timeseries",
+            }
+            if ICEBERG_TABLE not in ALLOWED_TABLES:
+                raise ValueError(f"Table name not in allowed list: {ICEBERG_TABLE}")
             
-            # Use string format() instead of f-string for SQL with validated constant
+            # Safe to use format() since table name is validated against whitelist
             query = "SELECT MAX(interval_ts) FROM {}".format(ICEBERG_TABLE)
             max_ts = spark.sql(query).collect()[0][0]
             if max_ts:
@@ -59,7 +65,11 @@ def main() -> None:
                 print(f"Incremental mode: Loading from {args.date_start} (last loaded: {max_ts})")
             else:
                 print("Incremental mode: No existing data, using default lookback")
-        except Exception as e:
+        except (AnalysisException, ParseException) as e:
+            # Spark SQL errors (table doesn't exist, syntax errors)
+            print(f"Warning: Spark SQL error detecting timestamp: {e}")
+        except (ValueError, RuntimeError) as e:
+            # Data conversion or runtime errors
             print(f"Warning: Could not detect last loaded timestamp: {e}")
         finally:
             spark.stop()
@@ -97,7 +107,7 @@ def main() -> None:
             else:
                 LOGGER.info("No data returned for %s", facility_code)
                 
-        except (ValueError, RuntimeError, ConnectionError, TimeoutError, OSError) as e:
+        except (ConnectionError, TimeoutError, OSError) as e:
             error_msg = str(e)
             # Skip facility if API returns 403 (Forbidden/No permissions) or 416 (no data available)
             if "403" in error_msg or "Forbidden" in error_msg:
@@ -109,9 +119,9 @@ def main() -> None:
                 skipped_facilities.append((facility_code, "416 No data"))
                 last_error = e
             else:
-                LOGGER.error("API call failed for facility %s: %s", facility_code, error_msg, exc_info=True)
+                LOGGER.error("Network error for facility %s: %s", facility_code, error_msg, exc_info=True)
                 last_error = e
-                # Re-raise original exception to preserve full stack trace
+                # Re-raise network errors that aren't 403/416
                 raise
     
     # Log summary of skipped facilities
