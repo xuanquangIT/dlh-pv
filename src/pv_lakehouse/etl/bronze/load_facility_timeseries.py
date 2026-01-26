@@ -1,31 +1,33 @@
 #!/usr/bin/env python3
 """Bronze ingestion job for OpenElectricity facility timeseries."""
-
 from __future__ import annotations
-
 import argparse
 import datetime as dt
-from typing import List, Optional
-
+import logging
+from typing import List
 from pyspark.sql import functions as F
-
+from pyspark.sql.utils import AnalysisException, ParseException
 from pv_lakehouse.etl.clients import openelectricity
+from pv_lakehouse.etl.utils import resolve_facility_codes
 from pv_lakehouse.etl.utils.spark_utils import (
     create_spark_session,
     write_iceberg_table,
 )
 
+LOGGER = logging.getLogger(__name__)
 ICEBERG_TABLE = "lh.bronze.raw_facility_timeseries"
 
 
-def parse_csv(value: Optional[str]) -> List[str]:
-    return [item.strip() for item in (value or "").split(",") if item.strip()]
-
-
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Load OpenElectricity facility timeseries into Bronze zone")
+    """Parse command-line arguments for timeseries loader."""
+    parser = argparse.ArgumentParser(
+        description="Load OpenElectricity facility timeseries into Bronze zone"
+    )
     parser.add_argument("--mode", choices=["backfill", "incremental"], default="incremental")
-    parser.add_argument("--facility-codes", help="Comma-separated facility codes (default: all solar facilities)")
+    parser.add_argument(
+        "--facility-codes",
+        help="Comma-separated facility codes (default: all solar facilities)",
+    )
     parser.add_argument("--date-start", help="Start timestamp (YYYY-MM-DDTHH:MM:SS)")
     parser.add_argument("--date-end", help="End timestamp (YYYY-MM-DDTHH:MM:SS)")
     parser.add_argument("--api-key", help="Override API key")
@@ -33,23 +35,28 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def resolve_facility_codes(args: argparse.Namespace) -> List[str]:
-    codes = parse_csv(args.facility_codes)
-    if codes:
-        return [code.upper() for code in codes]
-    return openelectricity.load_default_facility_codes()
-
-
 def main() -> None:
+    """Main entry point for timeseries loader."""
     args = parse_args()
 
-    facility_codes = resolve_facility_codes(args)
+    facility_codes = resolve_facility_codes(args.facility_codes)
 
     # Auto-detect start datetime for incremental mode
     if args.mode == "incremental" and args.date_start is None:
         spark = create_spark_session(args.app_name)
         try:
-            max_ts = spark.sql(f"SELECT MAX(interval_ts) FROM {ICEBERG_TABLE}").collect()[0][0]
+            # Whitelist validation to prevent SQL injection
+            ALLOWED_TABLES = {
+                "lh.bronze.raw_facility_air_quality",
+                "lh.bronze.raw_facility_weather",
+                "lh.bronze.raw_facility_timeseries",
+            }
+            if ICEBERG_TABLE not in ALLOWED_TABLES:
+                raise ValueError(f"Table name not in allowed list: {ICEBERG_TABLE}")
+            
+            # Safe to use format() since table name is validated against whitelist
+            query = "SELECT MAX(interval_ts) FROM {}".format(ICEBERG_TABLE)
+            max_ts = spark.sql(query).collect()[0][0]
             if max_ts:
                 # Start from 1 hour after last loaded data
                 next_hour = max_ts + dt.timedelta(hours=1)
@@ -58,7 +65,11 @@ def main() -> None:
                 print(f"Incremental mode: Loading from {args.date_start} (last loaded: {max_ts})")
             else:
                 print("Incremental mode: No existing data, using default lookback")
-        except Exception as e:
+        except (AnalysisException, ParseException) as e:
+            # Spark SQL errors (table doesn't exist, syntax errors)
+            print(f"Warning: Spark SQL error detecting timestamp: {e}")
+        except (ValueError, RuntimeError) as e:
+            # Data conversion or runtime errors
             print(f"Warning: Could not detect last loaded timestamp: {e}")
         finally:
             spark.stop()
@@ -92,38 +103,37 @@ def main() -> None:
                     dataframe = facility_df
                 else:
                     dataframe = __import__('pandas').concat([dataframe, facility_df], ignore_index=True)
-                print(f"Loaded {len(facility_df)} records for {facility_code}")
+                LOGGER.info("Loaded %d records for %s", len(facility_df), facility_code)
             else:
-                print(f"No data returned for {facility_code}")
+                LOGGER.info("No data returned for %s", facility_code)
                 
-        except Exception as e:
+        except (ConnectionError, TimeoutError, OSError) as e:
             error_msg = str(e)
             # Skip facility if API returns 403 (Forbidden/No permissions) or 416 (no data available)
             if "403" in error_msg or "Forbidden" in error_msg:
-                print(f"No access to {facility_code} (403 Forbidden). Skipping...")
+                LOGGER.warning("No access to %s (403 Forbidden). Skipping...", facility_code)
                 skipped_facilities.append((facility_code, "403 Forbidden"))
                 last_error = e
             elif "416" in error_msg or "Range Not Satisfiable" in error_msg:
-                print(f"No data available for {facility_code} in this date range (416). Skipping...")
+                LOGGER.warning("No data available for %s in date range (416). Skipping...", facility_code)
                 skipped_facilities.append((facility_code, "416 No data"))
                 last_error = e
             else:
-                print(f"Error fetching {facility_code}: {error_msg}")
+                LOGGER.error("Network error for facility %s: %s", facility_code, error_msg, exc_info=True)
                 last_error = e
-                # Re-raise other errors as they might indicate real problems (network, API down, etc.)
+                # Re-raise network errors that aren't 403/416
                 raise
     
-    # Print summary of skipped facilities
+    # Log summary of skipped facilities
     if skipped_facilities:
-        print(f"\nSkipped {len(skipped_facilities)} facilities:")
+        LOGGER.warning("Skipped %d facilities:", len(skipped_facilities))
         for code, reason in skipped_facilities:
-            print(f"  - {code}: {reason}")
+            LOGGER.warning("  - %s: %s", code, reason)
 
     if dataframe is None or dataframe.empty:
-
-        print("No timeseries records returned for any facility; skipping writes.")
+        LOGGER.warning("No timeseries records returned for any facility; skipping writes.")
         if last_error:
-            print(f"Last error: {last_error}")
+            LOGGER.warning("Last error: %s", last_error)
         return
 
     spark = create_spark_session(args.app_name)

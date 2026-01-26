@@ -1,43 +1,70 @@
 #!/usr/bin/env python3
 """Bronze ingestion job for facility-level Open-Meteo air quality data."""
-
 from __future__ import annotations
-
 import argparse
 import datetime as dt
+import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import List
-
+from typing import List, Optional
 import pandas as pd
 from pyspark.sql import functions as F
-
+from pyspark.sql.utils import AnalysisException, ParseException
 from pv_lakehouse.etl.bronze import openmeteo_common
 from pv_lakehouse.etl.bronze.facility_timezones import get_facility_timezone
 from pv_lakehouse.etl.clients import openmeteo
 from pv_lakehouse.etl.clients.openmeteo import FacilityLocation, RateLimiter
+from pv_lakehouse.etl.utils import (
+    load_facility_locations,
+    parse_date_argparse,
+    resolve_facility_codes,
+)
 from pv_lakehouse.etl.utils.spark_utils import create_spark_session
 
+LOGGER = logging.getLogger(__name__)
 ICEBERG_AIR_TABLE = "lh.bronze.raw_facility_air_quality"
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Load facility air quality data into Bronze zone")
+    """Parse command-line arguments for air quality loader."""
+    parser = argparse.ArgumentParser(
+        description="Load facility air quality data into Bronze zone"
+    )
     parser.add_argument("--mode", choices=["backfill", "incremental"], default="incremental")
-    parser.add_argument("--facility-codes", help="Comma-separated facility codes (default: all solar facilities)")
-    parser.add_argument("--start", type=openmeteo_common.parse_date, help="Start date YYYY-MM-DD (default: yesterday)")
-    parser.add_argument("--end", type=openmeteo_common.parse_date, help="End date YYYY-MM-DD (default: today)")
+    parser.add_argument(
+        "--facility-codes",
+        help="Comma-separated facility codes (default: all solar facilities)",
+    )
+    parser.add_argument(
+        "--start",
+        type=parse_date_argparse,
+        help="Start date YYYY-MM-DD (default: yesterday)",
+    )
+    parser.add_argument(
+        "--end",
+        type=parse_date_argparse,
+        help="End date YYYY-MM-DD (default: today)",
+    )
     parser.add_argument("--api-key", help="Override OpenElectricity API key")
-    parser.add_argument("--max-workers", type=int, default=4, help="Concurrent threads (default: 4)")
+    parser.add_argument(
+        "--max-workers",
+        type=int,
+        default=4,
+        help="Concurrent threads (default: 4)",
+    )
     parser.add_argument("--app-name", default="bronze-air-quality")
     return parser.parse_args()
 
 
-def collect_air_quality_data(facilities: List[FacilityLocation], args: argparse.Namespace) -> pd.DataFrame:
+def collect_air_quality_data(
+    facilities: List[FacilityLocation],
+    args: argparse.Namespace,
+) -> pd.DataFrame:
+    """Collect air quality data for all facilities using concurrent API calls."""
     limiter = RateLimiter(30.0)  # 30 requests/minute for free API
     frames: List[pd.DataFrame] = []
 
     def fetch_for_facility(facility: FacilityLocation) -> pd.DataFrame:
-        print(f"Fetching air quality: {facility.code} ({facility.name})")
+        LOGGER.info("Fetching air quality: %s (%s)", facility.code, facility.name)
         facility_tz = get_facility_timezone(facility.code)
         return openmeteo.fetch_air_quality_dataframe(
             facility,
@@ -53,13 +80,17 @@ def collect_air_quality_data(facilities: List[FacilityLocation], args: argparse.
         )
 
     with ThreadPoolExecutor(max_workers=args.max_workers) as executor:
-        futures = {executor.submit(fetch_for_facility, facility): facility for facility in facilities}
+        futures = {
+            executor.submit(fetch_for_facility, facility): facility
+            for facility in facilities
+        }
         for future in as_completed(futures):
             facility = futures[future]
             try:
                 frame = future.result()
-            except Exception as exc:  # pragma: no cover - defensive
-                print(f"Failed to fetch air quality data for facility {facility.code}: {exc}")
+            except (ConnectionError, TimeoutError, OSError) as exc:  # pragma: no cover - defensive
+                # Network/IO errors only - let other exceptions propagate
+                LOGGER.warning("Failed to fetch air quality data for %s: %s", facility.code, exc)
                 continue
             if not frame.empty:
                 frames.append(frame)
@@ -69,43 +100,88 @@ def collect_air_quality_data(facilities: List[FacilityLocation], args: argparse.
     return pd.concat(frames, ignore_index=True)
 
 
+def _get_max_timestamp_from_table(spark, table_name: str) -> Optional[dt.datetime]:
+    """Safely get max timestamp from Iceberg table with bounds checking.
+    
+    Args:
+        spark: SparkSession instance.
+        table_name: Fully qualified table name (must be from ALLOWED_TABLES).
+        
+    Returns:
+        Max timestamp or None if table is empty or doesn't exist.
+    """
+    # Whitelist of allowed table names to prevent SQL injection
+    ALLOWED_TABLES = {
+        "lh.bronze.raw_facility_air_quality",
+        "lh.bronze.raw_facility_weather",
+        "lh.bronze.raw_facility_timeseries",
+    }
+    
+    if table_name not in ALLOWED_TABLES:
+        raise ValueError(f"Table name not in allowed list: {table_name}")
+    
+    try:
+        # Safe to use format() here since table_name is validated against whitelist
+        query = "SELECT MAX(air_timestamp) FROM {}".format(table_name)
+        result = spark.sql(query).collect()
+        if result and len(result) > 0 and result[0][0] is not None:
+            return result[0][0]
+        return None
+    except (AnalysisException, ParseException) as e:
+        # Spark SQL errors (table doesn't exist, syntax errors)
+        LOGGER.warning("Spark SQL error querying %s: %s", table_name, e)
+        return None
+    except (ValueError, RuntimeError) as e:
+        # Data conversion or runtime errors
+        LOGGER.warning("Could not query max timestamp from %s: %s", table_name, e)
+        return None
+
+
 def main() -> None:
+    """Main entry point for air quality loader."""
     args = parse_args()
 
     today = dt.date.today()
-    now = dt.datetime.now(dt.timezone.utc)
-    
+
     # Auto-detect start date for incremental mode (hour-level granularity)
     if args.mode == "incremental" and args.start is None:
         spark = create_spark_session(args.app_name)
         try:
-            max_ts = spark.sql(f"SELECT MAX(air_timestamp) FROM {ICEBERG_AIR_TABLE}").collect()[0][0]
+            max_ts = _get_max_timestamp_from_table(spark, ICEBERG_AIR_TABLE)
             if max_ts:
                 args.start = max_ts.date()
-                print(f"Incremental mode: Reloading from {args.start} to catch new hours (last loaded: {max_ts})")
+                LOGGER.info(
+                    "Incremental mode: Reloading from %s to catch new hours (last loaded: %s)",
+                    args.start, max_ts
+                )
             else:
                 args.start = today - dt.timedelta(days=1)
-                print(f"Incremental mode: No existing data, loading from {args.start}")
-        except Exception as e:
-            print(f"Warning: Could not detect last loaded timestamp: {e}")
+                LOGGER.info("Incremental mode: No existing data, loading from %s", args.start)
+        except (ValueError, RuntimeError) as e:
+            LOGGER.warning("Could not detect last loaded timestamp: %s", e)
             args.start = today - dt.timedelta(days=1)
         finally:
             spark.stop()
             spark = None  # Will recreate later
     else:
         args.start = args.start or (today - dt.timedelta(days=1))
-    
+
     args.end = args.end or today
 
     if args.end < args.start:
         raise SystemExit("End date must not be before start date")
 
-    facility_codes = openmeteo_common.resolve_facility_codes(args.facility_codes)
-    facilities = openmeteo_common.load_facility_locations(facility_codes, args.api_key)
+    # Load facility metadata with proper error handling
+    try:
+        facility_codes = resolve_facility_codes(args.facility_codes)
+        facilities = load_facility_locations(facility_codes, args.api_key)
+    except (ValueError, RuntimeError) as e:
+        LOGGER.error("Failed to load facility metadata: %s", e)
+        raise SystemExit(f"Failed to load facility metadata: {e}") from e
 
     air_df = collect_air_quality_data(facilities, args)
     if air_df.empty:
-        print("No Open-Meteo air quality data retrieved; nothing to write.")
+        LOGGER.info("No Open-Meteo air quality data retrieved; nothing to write.")
         return
 
     spark = create_spark_session(args.app_name)
@@ -128,8 +204,18 @@ def main() -> None:
     # Use Iceberg MERGE for both insert and deduplication (keep latest record only)
     air_spark_df.createOrReplaceTempView("air_source")
     
-    merge_sql = f"""
-    MERGE INTO {ICEBERG_AIR_TABLE} AS target
+    # Whitelist validation to prevent SQL injection
+    ALLOWED_TABLES = {
+        "lh.bronze.raw_facility_air_quality",
+        "lh.bronze.raw_facility_weather",
+        "lh.bronze.raw_facility_timeseries",
+    }
+    if ICEBERG_AIR_TABLE not in ALLOWED_TABLES:
+        raise ValueError(f"Table name not in allowed list: {ICEBERG_AIR_TABLE}")
+    
+    # Safe to use format() since table name is validated against whitelist
+    merge_sql = """
+    MERGE INTO {} AS target
     USING (
         SELECT * FROM (
             SELECT *,
@@ -140,13 +226,23 @@ def main() -> None:
     ON target.facility_code = source.facility_code AND target.air_timestamp = source.air_timestamp
     WHEN MATCHED THEN UPDATE SET *
     WHEN NOT MATCHED THEN INSERT *
-    """
+    """.format(ICEBERG_AIR_TABLE)
     
     try:
         spark.sql(merge_sql)
-        print(f"MERGE completed for {ICEBERG_AIR_TABLE}")
-    except Exception as e:
-        print(f"MERGE failed: {e}. Falling back to append...")
+        LOGGER.info("MERGE completed for %s", ICEBERG_AIR_TABLE)
+    except (AnalysisException, ParseException) as e:
+        # Spark SQL errors (table doesn't exist, MERGE syntax errors)
+        LOGGER.warning("Spark SQL error during MERGE: %s. Falling back to append...", e)
+        openmeteo_common.write_dataset(
+            air_spark_df,
+            iceberg_table=ICEBERG_AIR_TABLE,
+            mode="append",
+            label="air-quality",
+        )
+    except (ValueError, RuntimeError) as e:
+        # Data validation or runtime errors
+        LOGGER.warning("MERGE failed: %s. Falling back to append...", e)
         openmeteo_common.write_dataset(
             air_spark_df,
             iceberg_table=ICEBERG_AIR_TABLE,
