@@ -210,3 +210,21 @@ class TestLoadFacilityLocations:
 
         call_kwargs = mock_oe.fetch_facilities_dataframe.call_args.kwargs
         assert call_kwargs["selected_codes"] == ["YARRANL1"]
+
+    @patch("pv_lakehouse.etl.utils.facility_utils.openelectricity")
+    def test_load_api_error_raises_runtime_error(self, mock_oe: MagicMock) -> None:
+        """Test API error raises RuntimeError with context."""
+        mock_oe.fetch_facilities_dataframe.side_effect = Exception("Connection refused")
+
+        with pytest.raises(RuntimeError, match="OpenElectricity API call failed"):
+            load_facility_locations(["YARRANL1"])
+
+    @patch("pv_lakehouse.etl.utils.facility_utils.openelectricity")
+    def test_load_api_error_logs_error(self, mock_oe: MagicMock, caplog) -> None:
+        """Test API error is logged with context."""
+        mock_oe.fetch_facilities_dataframe.side_effect = Exception("Network timeout")
+
+        with pytest.raises(RuntimeError):
+            load_facility_locations(["YARRANL1"])
+
+        assert "Failed to fetch facilities" in caplog.text

@@ -3,8 +3,9 @@
 from __future__ import annotations
 import argparse
 import datetime as dt
+import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import List
+from typing import List, Optional
 import pandas as pd
 from pyspark.sql import functions as F
 from pv_lakehouse.etl.bronze import openmeteo_common
@@ -18,6 +19,7 @@ from pv_lakehouse.etl.utils import (
 )
 from pv_lakehouse.etl.utils.spark_utils import create_spark_session
 
+LOGGER = logging.getLogger(__name__)
 ICEBERG_WEATHER_TABLE = "lh.bronze.raw_facility_weather"
 
 
@@ -80,6 +82,7 @@ def collect_weather_data(
             try:
                 frame = future.result()
             except Exception as exc:  # pragma: no cover - defensive
+                LOGGER.warning("Failed to fetch weather data for %s: %s", facility.code, exc)
                 print(f"Failed to fetch weather data for facility {facility.code}: {exc}")
                 continue
             if not frame.empty:
@@ -88,6 +91,27 @@ def collect_weather_data(
     if not frames:
         return pd.DataFrame()
     return pd.concat(frames, ignore_index=True)
+
+
+def _get_max_timestamp_from_table(spark, table_name: str) -> Optional[dt.datetime]:
+    """Safely get max timestamp from Iceberg table with bounds checking.
+    
+    Args:
+        spark: SparkSession instance.
+        table_name: Fully qualified table name (constant, not user input).
+        
+    Returns:
+        Max timestamp or None if table is empty or doesn't exist.
+    """
+    try:
+        # Note: table_name is a module constant, not user input
+        result = spark.sql(f"SELECT MAX(weather_timestamp) FROM {table_name}").collect()
+        if result and len(result) > 0 and result[0][0] is not None:
+            return result[0][0]
+        return None
+    except Exception as e:
+        LOGGER.warning("Could not query max timestamp from %s: %s", table_name, e)
+        return None
 
 
 def main() -> None:
@@ -100,9 +124,7 @@ def main() -> None:
     if args.mode == "incremental" and args.start is None:
         spark = create_spark_session(args.app_name)
         try:
-            max_ts = spark.sql(
-                f"SELECT MAX(weather_timestamp) FROM {ICEBERG_WEATHER_TABLE}"
-            ).collect()[0][0]
+            max_ts = _get_max_timestamp_from_table(spark, ICEBERG_WEATHER_TABLE)
             if max_ts:
                 args.start = max_ts.date()
                 print(
@@ -113,6 +135,7 @@ def main() -> None:
                 args.start = today - dt.timedelta(days=1)
                 print(f"Incremental mode: No existing data, loading from {args.start}")
         except Exception as e:
+            LOGGER.warning("Could not detect last loaded timestamp: %s", e)
             print(f"Warning: Could not detect last loaded timestamp: {e}")
             args.start = today - dt.timedelta(days=1)
         finally:
@@ -126,8 +149,13 @@ def main() -> None:
     if args.end < args.start:
         raise SystemExit("End date must not be before start date")
 
-    facility_codes = resolve_facility_codes(args.facility_codes)
-    facilities = load_facility_locations(facility_codes, args.api_key)
+    # Load facility metadata with proper error handling
+    try:
+        facility_codes = resolve_facility_codes(args.facility_codes)
+        facilities = load_facility_locations(facility_codes, args.api_key)
+    except (ValueError, RuntimeError) as e:
+        LOGGER.error("Failed to load facility metadata: %s", e)
+        raise SystemExit(f"Failed to load facility metadata: {e}") from e
 
     weather_df = collect_weather_data(facilities, args)
     if weather_df.empty:

@@ -1,8 +1,11 @@
 from __future__ import annotations
+import logging
 from typing import Iterable, List, Optional
 from pv_lakehouse.etl.clients import openelectricity
 from pv_lakehouse.etl.clients.openmeteo import FacilityLocation
 from pv_lakehouse.etl.utils.parsing import parse_csv_list
+
+LOGGER = logging.getLogger(__name__)
 
 def resolve_facility_codes(
     facility_codes: Optional[str] = None,
@@ -64,6 +67,7 @@ def load_facility_locations(
 
     Raises:
         ValueError: If no facilities returned or missing coordinates.
+        RuntimeError: If API call fails due to network or service issues.
 
     Examples:
         >>> locations = load_facility_locations(["YARRANL1", "GULLRWF1"])
@@ -75,13 +79,21 @@ def load_facility_locations(
     fueltechs = fueltechs or ["solar_utility"]
 
     selected_codes = [code.strip().upper() for code in facility_codes if code.strip()]
-    facilities_df = openelectricity.fetch_facilities_dataframe(
-        api_key=api_key,
-        selected_codes=selected_codes or None,
-        networks=networks,
-        statuses=statuses,
-        fueltechs=fueltechs,
-    )
+    
+    try:
+        facilities_df = openelectricity.fetch_facilities_dataframe(
+            api_key=api_key,
+            selected_codes=selected_codes or None,
+            networks=networks,
+            statuses=statuses,
+            fueltechs=fueltechs,
+        )
+    except Exception as e:
+        LOGGER.error("Failed to fetch facilities from OpenElectricity API: %s", e)
+        raise RuntimeError(
+            f"OpenElectricity API call failed: {e}. "
+            "Check network connectivity and API credentials."
+        ) from e
 
     if facilities_df.empty:
         raise ValueError("No facilities returned from OpenElectricity metadata API")

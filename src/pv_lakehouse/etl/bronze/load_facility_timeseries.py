@@ -3,6 +3,7 @@
 from __future__ import annotations
 import argparse
 import datetime as dt
+import logging
 from typing import List
 from pyspark.sql import functions as F
 from pv_lakehouse.etl.clients import openelectricity
@@ -12,6 +13,7 @@ from pv_lakehouse.etl.utils.spark_utils import (
     write_iceberg_table,
 )
 
+LOGGER = logging.getLogger(__name__)
 ICEBERG_TABLE = "lh.bronze.raw_facility_timeseries"
 
 
@@ -93,18 +95,24 @@ def main() -> None:
             error_msg = str(e)
             # Skip facility if API returns 403 (Forbidden/No permissions) or 416 (no data available)
             if "403" in error_msg or "Forbidden" in error_msg:
+                LOGGER.warning("No access to %s (403 Forbidden). Skipping...", facility_code)
                 print(f"No access to {facility_code} (403 Forbidden). Skipping...")
                 skipped_facilities.append((facility_code, "403 Forbidden"))
                 last_error = e
             elif "416" in error_msg or "Range Not Satisfiable" in error_msg:
+                LOGGER.warning("No data available for %s in date range (416). Skipping...", facility_code)
                 print(f"No data available for {facility_code} in this date range (416). Skipping...")
                 skipped_facilities.append((facility_code, "416 No data"))
                 last_error = e
             else:
+                LOGGER.error("API call failed for facility %s: %s", facility_code, error_msg, exc_info=True)
                 print(f"Error fetching {facility_code}: {error_msg}")
                 last_error = e
                 # Re-raise other errors as they might indicate real problems (network, API down, etc.)
-                raise
+                raise RuntimeError(
+                    f"OpenElectricity API call failed for {facility_code}: {error_msg}. "
+                    "Check network connectivity and API credentials."
+                ) from e
     
     # Print summary of skipped facilities
     if skipped_facilities:
