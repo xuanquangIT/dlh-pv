@@ -1,11 +1,15 @@
 from __future__ import annotations
 
-import os
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Optional
 
 import yaml
+
+# Named constants for magic numbers
+DEFAULT_MIN_RADIATION_THRESHOLD = 10.0
+DEFAULT_LOW_ENERGY_THRESHOLD = 0.1
+DEFAULT_NOISE_MAGNITUDE = 0.0
+DEFAULT_NOISE_RATIO = 0.0
 
 
 @dataclass
@@ -21,10 +25,10 @@ class FeatureConfig:
     production_features: list[str] = field(default_factory=list)
     air_quality_features: list[str] = field(default_factory=list)
     
-    min_radiation_threshold: float = 10.0
-    low_energy_threshold: float = 0.1
-    noise_magnitude: float = 0.0
-    noise_ratio: float = 0.0
+    min_radiation_threshold: float = DEFAULT_MIN_RADIATION_THRESHOLD
+    low_energy_threshold: float = DEFAULT_LOW_ENERGY_THRESHOLD
+    noise_magnitude: float = DEFAULT_NOISE_MAGNITUDE
+    noise_ratio: float = DEFAULT_NOISE_RATIO
     
     def get_all_features(self, include_air_quality: bool = False) -> list[str]:
         features = (
@@ -104,11 +108,46 @@ class MLConfig:
     
     @classmethod
     def from_yaml(cls, features_path: str, hyperparams_path: str) -> MLConfig:
-        with open(features_path) as f:
-            features_data = yaml.safe_load(f)
+        """Load ML configuration from YAML files.
         
-        with open(hyperparams_path) as f:
-            hyperparams_data = yaml.safe_load(f)
+        Args:
+            features_path: Path to features configuration YAML file
+            hyperparams_path: Path to hyperparameters configuration YAML file
+            
+        Returns:
+            MLConfig instance with loaded configuration
+            
+        Raises:
+            FileNotFoundError: If configuration files don't exist
+            yaml.YAMLError: If YAML parsing fails
+            KeyError: If required configuration keys are missing
+        """
+        # Validate file existence first
+        features_path_obj = Path(features_path)
+        hyperparams_path_obj = Path(hyperparams_path)
+        
+        if not features_path_obj.exists():
+            raise FileNotFoundError(f"Features configuration file not found: {features_path}")
+        if not hyperparams_path_obj.exists():
+            raise FileNotFoundError(f"Hyperparameters configuration file not found: {hyperparams_path}")
+        
+        # Load features configuration
+        try:
+            with features_path_obj.open('r', encoding='utf-8') as f:
+                features_data = yaml.safe_load(f)
+        except yaml.YAMLError as e:
+            raise yaml.YAMLError(f"Failed to parse features YAML file {features_path}: {e}") from e
+        except Exception as e:
+            raise RuntimeError(f"Unexpected error loading features config {features_path}: {e}") from e
+        
+        # Load hyperparameters configuration
+        try:
+            with hyperparams_path_obj.open('r', encoding='utf-8') as f:
+                hyperparams_data = yaml.safe_load(f)
+        except yaml.YAMLError as e:
+            raise yaml.YAMLError(f"Failed to parse hyperparameters YAML file {hyperparams_path}: {e}") from e
+        except Exception as e:
+            raise RuntimeError(f"Unexpected error loading hyperparams config {hyperparams_path}: {e}") from e
         
         # Parse features config
         features = FeatureConfig(
