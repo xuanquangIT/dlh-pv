@@ -1,122 +1,173 @@
-"""Client helpers for fetching Open-Meteo datasets into pandas DataFrames."""
-
 from __future__ import annotations
-
 import datetime as dt
 import logging
-import threading
+from abc import ABC, abstractmethod
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from dataclasses import dataclass
-from typing import Dict, Iterable, List, Optional, Tuple
-
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 import pandas as pd
 import requests
+from .constants import (
+    AIR_QUALITY_ENDPOINT,
+    AIR_QUALITY_MAX_DAYS,
+    DEFAULT_AIR_VARS,
+    DEFAULT_MAX_RETRIES,
+    DEFAULT_RETRY_BACKOFF,
+    DEFAULT_TIMEOUT_SECONDS,
+    DEFAULT_WEATHER_VARS,
+    FORECAST_MAX_DAYS,
+    RETRYABLE_STATUS_CODES,
+    WEATHER_ENDPOINTS,
+)
+from .models import (
+    FacilityLocation,
+    OpenMeteoAPIError,
+    OpenMeteoConfigError,
+    OpenMeteoRateLimitError,
+)
+from .rate_limiter import RateLimiter
 
 LOGGER = logging.getLogger(__name__)
+class EndpointStrategy(ABC):
+    """Abstract base class for weather endpoint selection strategies."""
+    @abstractmethod
+    def select_endpoint(self, current_date: dt.date, archive_cutoff: dt.date) -> str:
+        """
+        Select the appropriate endpoint for a given date.
 
-WEATHER_ENDPOINTS = {
-    "archive": "https://archive-api.open-meteo.com/v1/archive",
-    "forecast": "https://api.open-meteo.com/v1/forecast",
-}
-FORECAST_MAX_DAYS = 16
-AIR_QUALITY_MAX_DAYS = 14
-AIR_QUALITY_ENDPOINT = "https://air-quality-api.open-meteo.com/v1/air-quality"
-DEFAULT_WEATHER_VARS = (
-    "shortwave_radiation,direct_radiation,diffuse_radiation,direct_normal_irradiance," \
-    "terrestrial_radiation,temperature_2m,dew_point_2m,cloud_cover,cloud_cover_low," \
-    "cloud_cover_mid,cloud_cover_high,precipitation,is_day,sunshine_duration," \
-    "total_column_integrated_water_vapour,boundary_layer_height,wind_gusts_10m," \
-    "wet_bulb_temperature_2m,wind_speed_10m,wind_direction_10m,pressure_msl"
-)
-DEFAULT_AIR_VARS = (
-    "pm2_5,pm10,dust,nitrogen_dioxide,ozone,sulphur_dioxide,carbon_monoxide,uv_index,uv_index_clear_sky"
-)
-DEFAULT_MAX_RETRIES = 5
-DEFAULT_RETRY_BACKOFF = 2.0
+        Args:
+            current_date: The date for which data is being requested.
+            archive_cutoff: The cutoff date separating archive from forecast.
 
+        Returns:
+            Endpoint name: either "archive" or "forecast".
+        """
+        pass
 
-@dataclass
-class FacilityLocation:
-    """Minimal facility metadata for location-based requests."""
+class AutoEndpointStrategy(EndpointStrategy):
+    """Automatically select archive vs forecast based on date relative to cutoff."""
 
-    code: str
-    name: str
-    latitude: float
-    longitude: float
+    def select_endpoint(self, current_date: dt.date, archive_cutoff: dt.date) -> str:
+        if current_date <= archive_cutoff:
+            return "archive"
+        return "forecast"
 
+class FixedEndpointStrategy(EndpointStrategy):
+    """Always use a fixed endpoint regardless of date."""
 
-class RateLimiter:
-    def __init__(self, max_requests_per_minute: float) -> None:
-        self._interval = 0.0
-        if max_requests_per_minute > 0:
-            self._interval = 60.0 / max_requests_per_minute
-        self._last_request: Optional[float] = None
-        self._lock = threading.Lock()
+    def __init__(self, endpoint: str) -> None:
+        if endpoint not in WEATHER_ENDPOINTS:
+            raise OpenMeteoConfigError(f"Unknown endpoint: {endpoint}")
+        self._endpoint = endpoint
 
-    def wait(self) -> None:
-        if self._interval <= 0:
-            return
-        import time
+    def select_endpoint(self, current_date: dt.date, archive_cutoff: dt.date) -> str:
+        return self._endpoint
 
-        with self._lock:
-            now = time.monotonic()
-            if self._last_request is not None:
-                delay = self._last_request + self._interval - now
-                if delay > 0:
-                    time.sleep(delay)
-                    now = time.monotonic()
-            self._last_request = now
+def create_endpoint_strategy(preference: str) -> EndpointStrategy:
+    """
+    Factory function to create an endpoint selection strategy.
 
+    Args:
+        preference: One of "auto", "archive", or "forecast".
 
-def _augment_http_error(exc: requests.HTTPError) -> requests.HTTPError:
+    Returns:
+        An EndpointStrategy instance.
+
+    Raises:
+        OpenMeteoConfigError: If preference is not recognized.
+    """
+    if preference == "auto":
+        return AutoEndpointStrategy()
+    if preference in WEATHER_ENDPOINTS:
+        return FixedEndpointStrategy(preference)
+    raise OpenMeteoConfigError(f"Unsupported weather endpoint preference: {preference}")
+
+def _augment_http_error(exc: requests.HTTPError) -> OpenMeteoAPIError:
+    """Convert requests.HTTPError to OpenMeteoAPIError with additional details."""
     response = exc.response
+    status_code = response.status_code if response is not None else None
     detail: Optional[str] = None
+
     if response is not None:
         try:
             body = response.json()
             if isinstance(body, dict):
                 detail = body.get("reason") or body.get("error")
-        except Exception:  # noqa: BLE001 - best effort
+        except (ValueError, requests.JSONDecodeError):
             detail = response.text
+
     message = f"{exc}"
     if detail:
         message = f"{message} (details: {detail})"
-    return requests.HTTPError(message, response=response)
 
+    if status_code == 429:
+        return OpenMeteoRateLimitError(
+            message, status_code=status_code, detail=detail, response=response
+        )
 
-def _request_json(url: str, params: Dict[str, str], *, retries: int, backoff: float) -> Dict:
+    return OpenMeteoAPIError(
+        message, status_code=status_code, detail=detail, response=response
+    )
+
+def _request_json(
+    url: str,
+    params: Dict[str, str],
+    *,
+    retries: int,
+    backoff: float,
+    timeout: int = DEFAULT_TIMEOUT_SECONDS,
+) -> Dict[str, Any]:
+    """
+    Make an HTTP GET request with retry logic.
+
+    Args:
+        url: The API endpoint URL.
+        params: Query parameters for the request.
+        retries: Maximum number of retry attempts.
+        backoff: Initial backoff delay in seconds (doubles on each retry).
+        timeout: Request timeout in seconds.
+
+    Returns:
+        Parsed JSON response as a dictionary.
+
+    Raises:
+        OpenMeteoAPIError: If the request fails after all retries.
+    """
+    import time
+
     attempt = 0
     delay = max(backoff, 0.0)
-    last_exc: Optional[requests.RequestException] = None
+    last_exc: Optional[Exception] = None
+
     while attempt < max(1, retries):
         attempt += 1
         try:
-            response = requests.get(url, params=params, timeout=120)
+            response = requests.get(url, params=params, timeout=timeout)
             response.raise_for_status()
             return response.json()
-        except requests.HTTPError as exc:  # pragma: no cover - network / API dependency
+        except requests.HTTPError as exc:
             formatted = _augment_http_error(exc)
             status = exc.response.status_code if exc.response is not None else None
+
+            # Don't retry client errors (except 408 timeout and 429 rate limit)
             if status is not None and status < 500 and status not in {408, 429}:
-                raise formatted
+                raise formatted from exc
             last_exc = formatted
-        except requests.RequestException as exc:  # pragma: no cover - network / API dependency
-            last_exc = exc
+        except requests.RequestException as exc:
+            last_exc = OpenMeteoAPIError(str(exc))
 
         if attempt >= max(1, retries):
             break
         if delay > 0:
-            import time
-
             time.sleep(delay)
             delay *= 2
 
     if last_exc is not None:
         raise last_exc
-    raise RuntimeError("Open-Meteo request failed without raising an exception")
+    raise OpenMeteoAPIError("Open-Meteo request failed without raising an exception")
 
 
-def _parse_hourly(payload: Dict) -> pd.DataFrame:
+def _parse_hourly(payload: Dict[str, Any]) -> pd.DataFrame:
+    """Parse the hourly data from an Open-Meteo API response."""
     hourly = payload.get("hourly") or {}
     if not hourly:
         return pd.DataFrame()
@@ -126,7 +177,10 @@ def _parse_hourly(payload: Dict) -> pd.DataFrame:
     return frame
 
 
-def _chunk_dates(start: dt.date, end: dt.date, chunk_days: int) -> Iterable[tuple[dt.date, dt.date]]:
+def _chunk_dates(
+    start: dt.date, end: dt.date, chunk_days: int
+) -> Iterable[Tuple[dt.date, dt.date]]:
+    """Split a date range into smaller chunks."""
     cursor = start
     delta = dt.timedelta(days=max(chunk_days, 1))
     while cursor <= end:
@@ -149,17 +203,46 @@ def fetch_weather_dataframe(
     retry_backoff: float = DEFAULT_RETRY_BACKOFF,
     max_workers: int = 4,
 ) -> pd.DataFrame:
+    """
+    Fetch hourly weather data for a facility from the Open-Meteo API.
+
+    Automatically selects between archive and forecast endpoints based on
+    the date range unless a specific endpoint preference is provided.
+
+    Args:
+        facility: Location metadata for the facility.
+        start: Start date for the data range.
+        end: End date for the data range.
+        chunk_days: Maximum days per API request (default: 30).
+        hourly_variables: Comma-separated list of weather variables.
+        endpoint_preference: "auto", "archive", or "forecast".
+        timezone: Timezone for the returned data (default: "UTC").
+        limiter: Optional rate limiter for API requests.
+        max_retries: Maximum retry attempts for failed requests.
+        retry_backoff: Initial backoff delay in seconds.
+        max_workers: Maximum concurrent request threads.
+
+    Returns:
+        DataFrame with hourly weather data, or empty DataFrame on failure.
+
+    Raises:
+        OpenMeteoConfigError: If endpoint_preference is invalid.
+    """
     limiter = limiter or RateLimiter(0)
     max_workers = max(1, max_workers)
     today = dt.date.today()
     archive_cutoff = today - dt.timedelta(days=FORECAST_MAX_DAYS)
 
+    strategy = create_endpoint_strategy(endpoint_preference)
+
+    # Build request windows
     windows: List[Tuple[dt.date, dt.date]] = []
     cursor = start
     while cursor <= end:
-        endpoint_name = _resolve_weather_endpoint(endpoint_preference, cursor, archive_cutoff)
+        endpoint_name = strategy.select_endpoint(cursor, archive_cutoff)
         max_span = chunk_days if endpoint_name == "archive" else min(chunk_days, FORECAST_MAX_DAYS)
         window_end = min(cursor + dt.timedelta(days=max_span) - dt.timedelta(days=1), end)
+
         if endpoint_name == "archive":
             window_end = min(window_end, archive_cutoff)
             if window_end < cursor:
@@ -173,6 +256,7 @@ def fetch_weather_dataframe(
                     break
                 cursor = archive_cutoff + dt.timedelta(days=1)
                 continue
+
         windows.append((cursor, window_end))
         cursor = window_end + dt.timedelta(days=1)
 
@@ -183,7 +267,7 @@ def fetch_weather_dataframe(
 
     def process_window(window: Tuple[dt.date, dt.date]) -> pd.DataFrame:
         window_start, window_end = window
-        endpoint_name = _resolve_weather_endpoint(endpoint_preference, window_start, archive_cutoff)
+        endpoint_name = strategy.select_endpoint(window_start, archive_cutoff)
         params = {
             "latitude": f"{facility.latitude:.5f}",
             "longitude": f"{facility.longitude:.5f}",
@@ -195,9 +279,11 @@ def fetch_weather_dataframe(
 
         limiter.wait()
         url = WEATHER_ENDPOINTS[endpoint_name]
+
         try:
             payload = _request_json(url, params, retries=max_retries, backoff=retry_backoff)
-        except requests.HTTPError as exc:
+        except OpenMeteoAPIError as exc:
+            # Fallback to forecast if archive fails in auto mode
             if endpoint_name == "archive" and endpoint_preference == "auto":
                 LOGGER.info(
                     "Archive request failed for %s (%s -> %s); retrying forecast. Reason: %s",
@@ -217,9 +303,12 @@ def fetch_weather_dataframe(
                 limiter.wait()
                 try:
                     payload = _request_json(
-                        WEATHER_ENDPOINTS["forecast"], params, retries=max_retries, backoff=retry_backoff
+                        WEATHER_ENDPOINTS["forecast"],
+                        params,
+                        retries=max_retries,
+                        backoff=retry_backoff,
                     )
-                except requests.RequestException as inner_exc:
+                except OpenMeteoAPIError as inner_exc:
                     LOGGER.error(
                         "Weather fallback request failed for %s (%s -> %s): %s",
                         facility.code,
@@ -238,16 +327,6 @@ def fetch_weather_dataframe(
                     exc,
                 )
                 return pd.DataFrame()
-        except requests.RequestException as exc:
-            LOGGER.error(
-                "Weather request failed for %s (%s -> %s) via %s: %s",
-                facility.code,
-                params["start_date"],
-                params["end_date"],
-                endpoint_name,
-                exc,
-            )
-            return pd.DataFrame()
 
         frame = _parse_hourly(payload)
         if frame.empty:
@@ -264,7 +343,7 @@ def fetch_weather_dataframe(
             window_start, window_end = futures[future]
             try:
                 frame = future.result()
-            except Exception as exc:  # pragma: no cover - defensive
+            except (OpenMeteoAPIError, requests.RequestException, ValueError) as exc:
                 LOGGER.error(
                     "Weather window task failed for %s (%s -> %s): %s",
                     facility.code,
@@ -273,6 +352,14 @@ def fetch_weather_dataframe(
                     exc,
                 )
                 continue
+            except Exception as exc:  # pragma: no cover - unexpected errors
+                LOGGER.exception(
+                    "Unexpected error in weather window task for %s (%s -> %s)",
+                    facility.code,
+                    window_start,
+                    window_end,
+                )
+                raise
             if not frame.empty:
                 frames.append(frame)
 
@@ -294,6 +381,24 @@ def fetch_air_quality_dataframe(
     retry_backoff: float = DEFAULT_RETRY_BACKOFF,
     max_workers: int = 4,
 ) -> pd.DataFrame:
+    """
+    Fetch hourly air quality data for a facility from the Open-Meteo API.
+
+    Args:
+        facility: Location metadata for the facility.
+        start: Start date for the data range.
+        end: End date for the data range.
+        chunk_days: Maximum days per API request (default: AIR_QUALITY_MAX_DAYS).
+        hourly_variables: Comma-separated list of air quality variables.
+        timezone: Timezone for the returned data (default: "UTC").
+        limiter: Optional rate limiter for API requests.
+        max_retries: Maximum retry attempts for failed requests.
+        retry_backoff: Initial backoff delay in seconds.
+        max_workers: Maximum concurrent request threads.
+
+    Returns:
+        DataFrame with hourly air quality data, or empty DataFrame on failure.
+    """
     limiter = limiter or RateLimiter(0)
     max_workers = max(1, max_workers)
 
@@ -315,8 +420,10 @@ def fetch_air_quality_dataframe(
         }
         limiter.wait()
         try:
-            payload = _request_json(AIR_QUALITY_ENDPOINT, params, retries=max_retries, backoff=retry_backoff)
-        except requests.RequestException as exc:
+            payload = _request_json(
+                AIR_QUALITY_ENDPOINT, params, retries=max_retries, backoff=retry_backoff
+            )
+        except OpenMeteoAPIError as exc:
             LOGGER.error(
                 "Air quality request failed for %s (%s -> %s): %s",
                 facility.code,
@@ -340,7 +447,7 @@ def fetch_air_quality_dataframe(
             window_start, window_end = futures[future]
             try:
                 frame = future.result()
-            except Exception as exc:  # pragma: no cover - defensive
+            except (OpenMeteoAPIError, requests.RequestException, ValueError) as exc:
                 LOGGER.error(
                     "Air quality window task failed for %s (%s -> %s): %s",
                     facility.code,
@@ -349,6 +456,14 @@ def fetch_air_quality_dataframe(
                     exc,
                 )
                 continue
+            except Exception as exc:  # pragma: no cover - unexpected errors
+                LOGGER.exception(
+                    "Unexpected error in air quality window task for %s (%s -> %s)",
+                    facility.code,
+                    window_start,
+                    window_end,
+                )
+                raise
             if not frame.empty:
                 frames.append(frame)
 
@@ -357,19 +472,11 @@ def fetch_air_quality_dataframe(
     return pd.concat(frames, ignore_index=True)
 
 
-def _resolve_weather_endpoint(preference: str, current_date: dt.date, archive_cutoff: dt.date) -> str:
-    if preference in WEATHER_ENDPOINTS:
-        return preference
-    if preference != "auto":
-        raise ValueError(f"Unsupported weather endpoint preference: {preference}")
-    if current_date <= archive_cutoff:
-        return "archive"
-    return "forecast"
-
-
 __all__ = [
-    "FacilityLocation",
-    "RateLimiter",
+    "EndpointStrategy",
+    "AutoEndpointStrategy",
+    "FixedEndpointStrategy",
+    "create_endpoint_strategy",
     "fetch_weather_dataframe",
     "fetch_air_quality_dataframe",
 ]
