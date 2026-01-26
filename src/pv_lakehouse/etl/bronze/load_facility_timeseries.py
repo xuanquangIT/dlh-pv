@@ -44,7 +44,13 @@ def main() -> None:
     if args.mode == "incremental" and args.date_start is None:
         spark = create_spark_session(args.app_name)
         try:
-            max_ts = spark.sql(f"SELECT MAX(interval_ts) FROM {ICEBERG_TABLE}").collect()[0][0]
+            # Validate table name format to prevent SQL injection
+            if not ICEBERG_TABLE.startswith("lh."):
+                raise ValueError(f"Invalid table name format: {ICEBERG_TABLE}")
+            
+            # Use string format() instead of f-string for SQL with validated constant
+            query = "SELECT MAX(interval_ts) FROM {}".format(ICEBERG_TABLE)
+            max_ts = spark.sql(query).collect()[0][0]
             if max_ts:
                 # Start from 1 hour after last loaded data
                 next_hour = max_ts + dt.timedelta(hours=1)

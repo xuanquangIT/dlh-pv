@@ -87,7 +87,7 @@ def collect_air_quality_data(
             facility = futures[future]
             try:
                 frame = future.result()
-            except (ValueError, RuntimeError, ConnectionError, TimeoutError, OSError, Exception) as exc:  # pragma: no cover - defensive
+            except (ValueError, RuntimeError, ConnectionError, TimeoutError, OSError) as exc:  # pragma: no cover - defensive
                 LOGGER.warning("Failed to fetch air quality data for %s: %s", facility.code, exc)
                 continue
             if not frame.empty:
