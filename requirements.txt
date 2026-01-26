@@ -12,6 +12,9 @@ trino==0.336.0
 requests>=2.32.4,<3
 tenacity>=8.2.0
 
+# Validation
+pydantic>=2.0.0
+
 # Data
 pandas==2.0.3
 # pyarrow pin
