@@ -1,15 +1,12 @@
 #!/usr/bin/env python3
 """Bronze ingestion job for OpenElectricity facility timeseries."""
-
 from __future__ import annotations
-
 import argparse
 import datetime as dt
-from typing import List, Optional
-
+from typing import List
 from pyspark.sql import functions as F
-
 from pv_lakehouse.etl.clients import openelectricity
+from pv_lakehouse.etl.utils import resolve_facility_codes
 from pv_lakehouse.etl.utils.spark_utils import (
     create_spark_session,
     write_iceberg_table,
@@ -18,14 +15,16 @@ from pv_lakehouse.etl.utils.spark_utils import (
 ICEBERG_TABLE = "lh.bronze.raw_facility_timeseries"
 
 
-def parse_csv(value: Optional[str]) -> List[str]:
-    return [item.strip() for item in (value or "").split(",") if item.strip()]
-
-
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Load OpenElectricity facility timeseries into Bronze zone")
+    """Parse command-line arguments for timeseries loader."""
+    parser = argparse.ArgumentParser(
+        description="Load OpenElectricity facility timeseries into Bronze zone"
+    )
     parser.add_argument("--mode", choices=["backfill", "incremental"], default="incremental")
-    parser.add_argument("--facility-codes", help="Comma-separated facility codes (default: all solar facilities)")
+    parser.add_argument(
+        "--facility-codes",
+        help="Comma-separated facility codes (default: all solar facilities)",
+    )
     parser.add_argument("--date-start", help="Start timestamp (YYYY-MM-DDTHH:MM:SS)")
     parser.add_argument("--date-end", help="End timestamp (YYYY-MM-DDTHH:MM:SS)")
     parser.add_argument("--api-key", help="Override API key")
@@ -33,17 +32,11 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def resolve_facility_codes(args: argparse.Namespace) -> List[str]:
-    codes = parse_csv(args.facility_codes)
-    if codes:
-        return [code.upper() for code in codes]
-    return openelectricity.load_default_facility_codes()
-
-
 def main() -> None:
+    """Main entry point for timeseries loader."""
     args = parse_args()
 
-    facility_codes = resolve_facility_codes(args)
+    facility_codes = resolve_facility_codes(args.facility_codes)
 
     # Auto-detect start datetime for incremental mode
     if args.mode == "incremental" and args.date_start is None:

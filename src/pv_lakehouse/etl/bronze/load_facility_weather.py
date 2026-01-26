@@ -1,38 +1,55 @@
 #!/usr/bin/env python3
 """Bronze ingestion job for facility-level Open-Meteo weather data."""
-
 from __future__ import annotations
-
 import argparse
 import datetime as dt
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import List
-
 import pandas as pd
 from pyspark.sql import functions as F
-
 from pv_lakehouse.etl.bronze import openmeteo_common
 from pv_lakehouse.etl.bronze.facility_timezones import get_facility_timezone
 from pv_lakehouse.etl.clients import openmeteo
 from pv_lakehouse.etl.clients.openmeteo import FacilityLocation, RateLimiter
+from pv_lakehouse.etl.utils import (
+    load_facility_locations,
+    parse_date_argparse,
+    resolve_facility_codes,
+)
 from pv_lakehouse.etl.utils.spark_utils import create_spark_session
 
 ICEBERG_WEATHER_TABLE = "lh.bronze.raw_facility_weather"
 
 
 def parse_args() -> argparse.Namespace:
+    """Parse command-line arguments for weather loader."""
     parser = argparse.ArgumentParser(description="Load facility weather data into Bronze zone")
     parser.add_argument("--mode", choices=["backfill", "incremental"], default="incremental")
-    parser.add_argument("--facility-codes", help="Comma-separated facility codes (default: all solar facilities)")
-    parser.add_argument("--start", type=openmeteo_common.parse_date, help="Start date YYYY-MM-DD (default: yesterday)")
-    parser.add_argument("--end", type=openmeteo_common.parse_date, help="End date YYYY-MM-DD (default: today)")
+    parser.add_argument(
+        "--facility-codes",
+        help="Comma-separated facility codes (default: all solar facilities)",
+    )
+    parser.add_argument(
+        "--start",
+        type=parse_date_argparse,
+        help="Start date YYYY-MM-DD (default: yesterday)",
+    )
+    parser.add_argument(
+        "--end",
+        type=parse_date_argparse,
+        help="End date YYYY-MM-DD (default: today)",
+    )
     parser.add_argument("--api-key", help="Override OpenElectricity API key")
     parser.add_argument("--max-workers", type=int, default=4, help="Concurrent threads (default: 4)")
     parser.add_argument("--app-name", default="bronze-weather")
     return parser.parse_args()
 
 
-def collect_weather_data(facilities: List[FacilityLocation], args: argparse.Namespace) -> pd.DataFrame:
+def collect_weather_data(
+    facilities: List[FacilityLocation],
+    args: argparse.Namespace,
+) -> pd.DataFrame:
+    """Collect weather data for all facilities using concurrent API calls."""
     limiter = RateLimiter(30.0)  # 30 requests/minute for free API
     frames: List[pd.DataFrame] = []
 
@@ -54,7 +71,10 @@ def collect_weather_data(facilities: List[FacilityLocation], args: argparse.Name
         )
 
     with ThreadPoolExecutor(max_workers=args.max_workers) as executor:
-        futures = {executor.submit(fetch_for_facility, facility): facility for facility in facilities}
+        futures = {
+            executor.submit(fetch_for_facility, facility): facility
+            for facility in facilities
+        }
         for future in as_completed(futures):
             facility = futures[future]
             try:
@@ -71,19 +91,24 @@ def collect_weather_data(facilities: List[FacilityLocation], args: argparse.Name
 
 
 def main() -> None:
+    """Main entry point for weather loader."""
     args = parse_args()
 
     today = dt.date.today()
-    now = dt.datetime.now(dt.timezone.utc)
-    
+
     # Auto-detect start date for incremental mode (hour-level granularity)
     if args.mode == "incremental" and args.start is None:
         spark = create_spark_session(args.app_name)
         try:
-            max_ts = spark.sql(f"SELECT MAX(weather_timestamp) FROM {ICEBERG_WEATHER_TABLE}").collect()[0][0]
+            max_ts = spark.sql(
+                f"SELECT MAX(weather_timestamp) FROM {ICEBERG_WEATHER_TABLE}"
+            ).collect()[0][0]
             if max_ts:
                 args.start = max_ts.date()
-                print(f"Incremental mode: Reloading from {args.start} to catch new hours (last loaded: {max_ts})")
+                print(
+                    f"Incremental mode: Reloading from {args.start} "
+                    f"to catch new hours (last loaded: {max_ts})"
+                )
             else:
                 args.start = today - dt.timedelta(days=1)
                 print(f"Incremental mode: No existing data, loading from {args.start}")
@@ -95,14 +120,14 @@ def main() -> None:
             spark = None  # Will recreate later
     else:
         args.start = args.start or (today - dt.timedelta(days=1))
-    
+
     args.end = args.end or today
 
     if args.end < args.start:
         raise SystemExit("End date must not be before start date")
 
-    facility_codes = openmeteo_common.resolve_facility_codes(args.facility_codes)
-    facilities = openmeteo_common.load_facility_locations(facility_codes, args.api_key)
+    facility_codes = resolve_facility_codes(args.facility_codes)
+    facilities = load_facility_locations(facility_codes, args.api_key)
 
     weather_df = collect_weather_data(facilities, args)
     if weather_df.empty:

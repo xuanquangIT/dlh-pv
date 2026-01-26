@@ -1,74 +1,21 @@
-"""Shared helpers for Open-Meteo bronze ingestion jobs."""
-
 from __future__ import annotations
-
-import argparse
-import datetime as dt
 from typing import Iterable, List, Optional
-
-from pv_lakehouse.etl.clients import openelectricity
 from pv_lakehouse.etl.clients.openmeteo import FacilityLocation
+from pv_lakehouse.etl.utils.date_utils import parse_date_argparse as parse_date
+from pv_lakehouse.etl.utils.facility_utils import (
+    load_facility_locations,
+    resolve_facility_codes,
+)
+from pv_lakehouse.etl.utils.parsing import parse_csv_list
 from pv_lakehouse.etl.utils.spark_utils import write_iceberg_table
 
-
+# Re-export for backward compatibility
 def parse_csv(value: Optional[str]) -> List[str]:
-    """Split a comma separated string into cleaned tokens."""
-    return [token.strip() for token in (value or "").split(",") if token.strip()]
+    """Split a comma separated string into cleaned tokens.
 
-
-def parse_date(value: str) -> dt.date:
-    """Parse a YYYY-MM-DD string into a date, raising argparse errors on failure."""
-    try:
-        return dt.date.fromisoformat(value)
-    except ValueError as exc:  # pragma: no cover - invalid user input
-        raise argparse.ArgumentTypeError(f"Invalid date '{value}'. Expected YYYY-MM-DD") from exc
-
-
-def resolve_facility_codes(facility_codes: Optional[str]) -> List[str]:
-    """Return facility codes from CLI input or fall back to OpenElectricity defaults."""
-    codes = parse_csv(facility_codes)
-    if codes:
-        return [code.upper() for code in codes]
-    return openelectricity.load_default_facility_codes()
-
-
-def load_facility_locations(
-    facility_codes: Iterable[str],
-    api_key: Optional[str],
-) -> List[FacilityLocation]:
-    """Resolve facility metadata (with coordinates) required for Open-Meteo calls."""
-    selected_codes = [code.upper() for code in facility_codes if code]
-    facilities_df = openelectricity.fetch_facilities_dataframe(
-        api_key=api_key,
-        selected_codes=selected_codes or None,
-        networks=["NEM", "WEM"],
-        statuses=["operating"],
-        fueltechs=["solar_utility"],
-    )
-
-    if facilities_df.empty:
-        raise ValueError("No facilities returned from OpenElectricity metadata API")
-
-    facilities_df = facilities_df.dropna(subset=["location_lat", "location_lng"])
-    if selected_codes:
-        facilities_df = facilities_df[
-            facilities_df["facility_code"].str.upper().isin(selected_codes)
-        ]
-
-    if facilities_df.empty:
-        raise ValueError("Requested facilities missing latitude/longitude data")
-
-    facilities: List[FacilityLocation] = []
-    for row in facilities_df.itertuples(index=False):
-        facilities.append(
-            FacilityLocation(
-                code=str(row.facility_code),
-                name=str(row.facility_name or row.facility_code),
-                latitude=float(row.location_lat),
-                longitude=float(row.location_lng),
-            )
-        )
-    return facilities
+    Deprecated: Use parse_csv_list from pv_lakehouse.etl.utils.parsing instead.
+    """
+    return parse_csv_list(value)
 
 
 def write_dataset(
