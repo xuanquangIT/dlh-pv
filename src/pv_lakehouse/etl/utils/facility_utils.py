@@ -1,6 +1,7 @@
 from __future__ import annotations
 import logging
 from typing import Iterable, List, Optional
+import requests
 from pv_lakehouse.etl.clients import openelectricity
 from pv_lakehouse.etl.clients.openmeteo import FacilityLocation
 from pv_lakehouse.etl.utils.parsing import parse_csv_list
@@ -88,11 +89,25 @@ def load_facility_locations(
             statuses=statuses,
             fueltechs=fueltechs,
         )
-    except Exception as e:
-        LOGGER.error("Failed to fetch facilities from OpenElectricity API: %s", e)
+    except requests.RequestException as e:
+        # Network/HTTP errors (timeout, connection, HTTP status errors)
+        LOGGER.error("Network error fetching facilities from OpenElectricity API: %s", e)
         raise RuntimeError(
-            f"OpenElectricity API call failed: {e}. "
-            "Check network connectivity and API credentials."
+            f"OpenElectricity API network error: {e}. "
+            "Check network connectivity."
+        ) from e
+    except RuntimeError as e:
+        # API authentication or server errors (401, 500, etc.)
+        LOGGER.error("API error fetching facilities from OpenElectricity: %s", e)
+        raise RuntimeError(
+            f"OpenElectricity API error: {e}. "
+            "Check API credentials and service status."
+        ) from e
+    except ValueError as e:
+        # JSON parsing or validation errors
+        LOGGER.error("Data parsing error from OpenElectricity API: %s", e)
+        raise RuntimeError(
+            f"OpenElectricity API returned invalid data: {e}."
         ) from e
 
     if facilities_df.empty:

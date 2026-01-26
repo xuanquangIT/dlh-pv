@@ -87,44 +87,37 @@ def main() -> None:
                     dataframe = facility_df
                 else:
                     dataframe = __import__('pandas').concat([dataframe, facility_df], ignore_index=True)
-                print(f"Loaded {len(facility_df)} records for {facility_code}")
+                LOGGER.info("Loaded %d records for %s", len(facility_df), facility_code)
             else:
-                print(f"No data returned for {facility_code}")
+                LOGGER.info("No data returned for %s", facility_code)
                 
         except Exception as e:
             error_msg = str(e)
             # Skip facility if API returns 403 (Forbidden/No permissions) or 416 (no data available)
             if "403" in error_msg or "Forbidden" in error_msg:
                 LOGGER.warning("No access to %s (403 Forbidden). Skipping...", facility_code)
-                print(f"No access to {facility_code} (403 Forbidden). Skipping...")
                 skipped_facilities.append((facility_code, "403 Forbidden"))
                 last_error = e
             elif "416" in error_msg or "Range Not Satisfiable" in error_msg:
                 LOGGER.warning("No data available for %s in date range (416). Skipping...", facility_code)
-                print(f"No data available for {facility_code} in this date range (416). Skipping...")
                 skipped_facilities.append((facility_code, "416 No data"))
                 last_error = e
             else:
                 LOGGER.error("API call failed for facility %s: %s", facility_code, error_msg, exc_info=True)
-                print(f"Error fetching {facility_code}: {error_msg}")
                 last_error = e
-                # Re-raise other errors as they might indicate real problems (network, API down, etc.)
-                raise RuntimeError(
-                    f"OpenElectricity API call failed for {facility_code}: {error_msg}. "
-                    "Check network connectivity and API credentials."
-                ) from e
+                # Re-raise original exception to preserve full stack trace
+                raise
     
-    # Print summary of skipped facilities
+    # Log summary of skipped facilities
     if skipped_facilities:
-        print(f"\nSkipped {len(skipped_facilities)} facilities:")
+        LOGGER.warning("Skipped %d facilities:", len(skipped_facilities))
         for code, reason in skipped_facilities:
-            print(f"  - {code}: {reason}")
+            LOGGER.warning("  - %s: %s", code, reason)
 
     if dataframe is None or dataframe.empty:
-
-        print("No timeseries records returned for any facility; skipping writes.")
+        LOGGER.warning("No timeseries records returned for any facility; skipping writes.")
         if last_error:
-            print(f"Last error: {last_error}")
+            LOGGER.warning("Last error: %s", last_error)
         return
 
     spark = create_spark_session(args.app_name)

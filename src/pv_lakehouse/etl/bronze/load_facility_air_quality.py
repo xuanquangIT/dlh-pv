@@ -63,7 +63,7 @@ def collect_air_quality_data(
     frames: List[pd.DataFrame] = []
 
     def fetch_for_facility(facility: FacilityLocation) -> pd.DataFrame:
-        print(f"Fetching air quality: {facility.code} ({facility.name})")
+        LOGGER.info("Fetching air quality: %s (%s)", facility.code, facility.name)
         facility_tz = get_facility_timezone(facility.code)
         return openmeteo.fetch_air_quality_dataframe(
             facility,
@@ -87,9 +87,8 @@ def collect_air_quality_data(
             facility = futures[future]
             try:
                 frame = future.result()
-            except Exception as exc:  # pragma: no cover - defensive
+            except (ValueError, RuntimeError, ConnectionError, TimeoutError) as exc:  # pragma: no cover - defensive
                 LOGGER.warning("Failed to fetch air quality data for %s: %s", facility.code, exc)
-                print(f"Failed to fetch air quality data for facility {facility.code}: {exc}")
                 continue
             if not frame.empty:
                 frames.append(frame)
@@ -110,12 +109,17 @@ def _get_max_timestamp_from_table(spark, table_name: str) -> Optional[dt.datetim
         Max timestamp or None if table is empty or doesn't exist.
     """
     try:
-        # Note: table_name is a module constant, not user input
-        result = spark.sql(f"SELECT MAX(air_timestamp) FROM {table_name}").collect()
+        # Validate table name format to prevent SQL injection
+        if not table_name.startswith("lh."):
+            raise ValueError(f"Invalid table name format: {table_name}")
+        
+        # Use string format() instead of f-string for clarity that this is a constant
+        query = "SELECT MAX(air_timestamp) FROM {}".format(table_name)
+        result = spark.sql(query).collect()
         if result and len(result) > 0 and result[0][0] is not None:
             return result[0][0]
         return None
-    except Exception as e:
+    except (ValueError, RuntimeError) as e:
         LOGGER.warning("Could not query max timestamp from %s: %s", table_name, e)
         return None
 
@@ -133,16 +137,15 @@ def main() -> None:
             max_ts = _get_max_timestamp_from_table(spark, ICEBERG_AIR_TABLE)
             if max_ts:
                 args.start = max_ts.date()
-                print(
-                    f"Incremental mode: Reloading from {args.start} "
-                    f"to catch new hours (last loaded: {max_ts})"
+                LOGGER.info(
+                    "Incremental mode: Reloading from %s to catch new hours (last loaded: %s)",
+                    args.start, max_ts
                 )
             else:
                 args.start = today - dt.timedelta(days=1)
-                print(f"Incremental mode: No existing data, loading from {args.start}")
-        except Exception as e:
+                LOGGER.info("Incremental mode: No existing data, loading from %s", args.start)
+        except (ValueError, RuntimeError) as e:
             LOGGER.warning("Could not detect last loaded timestamp: %s", e)
-            print(f"Warning: Could not detect last loaded timestamp: {e}")
             args.start = today - dt.timedelta(days=1)
         finally:
             spark.stop()
@@ -165,7 +168,7 @@ def main() -> None:
 
     air_df = collect_air_quality_data(facilities, args)
     if air_df.empty:
-        print("No Open-Meteo air quality data retrieved; nothing to write.")
+        LOGGER.info("No Open-Meteo air quality data retrieved; nothing to write.")
         return
 
     spark = create_spark_session(args.app_name)
@@ -188,8 +191,8 @@ def main() -> None:
     # Use Iceberg MERGE for both insert and deduplication (keep latest record only)
     air_spark_df.createOrReplaceTempView("air_source")
     
-    merge_sql = f"""
-    MERGE INTO {ICEBERG_AIR_TABLE} AS target
+    merge_sql = """
+    MERGE INTO {} AS target
     USING (
         SELECT * FROM (
             SELECT *,
@@ -200,13 +203,13 @@ def main() -> None:
     ON target.facility_code = source.facility_code AND target.air_timestamp = source.air_timestamp
     WHEN MATCHED THEN UPDATE SET *
     WHEN NOT MATCHED THEN INSERT *
-    """
+    """.format(ICEBERG_AIR_TABLE)
     
     try:
         spark.sql(merge_sql)
-        print(f"MERGE completed for {ICEBERG_AIR_TABLE}")
-    except Exception as e:
-        print(f"MERGE failed: {e}. Falling back to append...")
+        LOGGER.info("MERGE completed for %s", ICEBERG_AIR_TABLE)
+    except (ValueError, RuntimeError) as e:
+        LOGGER.warning("MERGE failed: %s. Falling back to append...", e)
         openmeteo_common.write_dataset(
             air_spark_df,
             iceberg_table=ICEBERG_AIR_TABLE,

@@ -213,18 +213,36 @@ class TestLoadFacilityLocations:
 
     @patch("pv_lakehouse.etl.utils.facility_utils.openelectricity")
     def test_load_api_error_raises_runtime_error(self, mock_oe: MagicMock) -> None:
-        """Test API error raises RuntimeError with context."""
-        mock_oe.fetch_facilities_dataframe.side_effect = Exception("Connection refused")
+        """Test API network error raises RuntimeError with context."""
+        import requests
+        mock_oe.fetch_facilities_dataframe.side_effect = requests.RequestException("Connection refused")
 
-        with pytest.raises(RuntimeError, match="OpenElectricity API call failed"):
+        with pytest.raises(RuntimeError, match="OpenElectricity API network error"):
             load_facility_locations(["YARRANL1"])
 
     @patch("pv_lakehouse.etl.utils.facility_utils.openelectricity")
     def test_load_api_error_logs_error(self, mock_oe: MagicMock, caplog) -> None:
         """Test API error is logged with context."""
-        mock_oe.fetch_facilities_dataframe.side_effect = Exception("Network timeout")
+        import requests
+        mock_oe.fetch_facilities_dataframe.side_effect = requests.RequestException("Network timeout")
 
         with pytest.raises(RuntimeError):
             load_facility_locations(["YARRANL1"])
 
-        assert "Failed to fetch facilities" in caplog.text
+        assert "Network error fetching facilities" in caplog.text
+
+    @patch("pv_lakehouse.etl.utils.facility_utils.openelectricity")
+    def test_load_api_auth_error_raises_runtime_error(self, mock_oe: MagicMock) -> None:
+        """Test API authentication error raises RuntimeError with context."""
+        mock_oe.fetch_facilities_dataframe.side_effect = RuntimeError("401 Unauthorized")
+
+        with pytest.raises(RuntimeError, match="OpenElectricity API error"):
+            load_facility_locations(["YARRANL1"])
+
+    @patch("pv_lakehouse.etl.utils.facility_utils.openelectricity")
+    def test_load_api_parse_error_raises_runtime_error(self, mock_oe: MagicMock) -> None:
+        """Test API parsing error raises RuntimeError with context."""
+        mock_oe.fetch_facilities_dataframe.side_effect = ValueError("Invalid JSON")
+
+        with pytest.raises(RuntimeError, match="OpenElectricity API returned invalid data"):
+            load_facility_locations(["YARRANL1"])
