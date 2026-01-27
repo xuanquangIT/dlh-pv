@@ -3,14 +3,11 @@
 
 from __future__ import annotations
 
-import argparse
-from typing import Optional
-
 import pandas as pd
 from pyspark.sql import DataFrame
 from pyspark.sql import functions as F
 
-from pv_lakehouse.etl.bronze.base import BaseBronzeLoader, BronzeLoadOptions
+from pv_lakehouse.etl.bronze.base import BaseBronzeLoader
 from pv_lakehouse.etl.clients import openelectricity
 
 
@@ -59,35 +56,7 @@ class FacilitiesLoader(BaseBronzeLoader):
             self.close()
 
 
-def parse_args() -> argparse.Namespace:
-    """Parse command-line arguments for facility metadata loader."""
-    parser = argparse.ArgumentParser(
-        description="Load facility metadata into Bronze zone"
-    )
-    parser.add_argument(
-        "--mode", choices=["backfill", "incremental"], default="incremental"
-    )
-    parser.add_argument(
-        "--facility-codes",
-        help="Comma-separated facility codes (default: all solar facilities)",
-    )
-    parser.add_argument("--api-key", help="Override API key")
-    parser.add_argument("--app-name", default="bronze-facilities")
-    return parser.parse_args()
-
-
-def main() -> None:
-    """Main entry point for facility metadata loader."""
-    args = parse_args()
-    options = BronzeLoadOptions(
-        mode=args.mode,
-        facility_codes=args.facility_codes,
-        api_key=args.api_key,
-        app_name=args.app_name,
-    )
-    loader = FacilitiesLoader(options)
-    loader.run()
-
-
 if __name__ == "__main__":
-    main()
+    from pv_lakehouse.etl.bronze.cli import run_cli
+    run_cli()
+

@@ -74,6 +74,7 @@ class BaseBronzeLoader(ABC):
         self.options = options or BronzeLoadOptions()
         self._spark: Optional[SparkSession] = None
         self._validate_table()
+        self._initialize_date_range()
 
     def _validate_table(self) -> None:
         """Validate iceberg_table is in allowed list."""
@@ -81,6 +82,10 @@ class BaseBronzeLoader(ABC):
             raise ValueError(
                 f"Table '{self.iceberg_table}' not in allowed list: {ALLOWED_BRONZE_TABLES}"
             )
+
+    def _initialize_date_range(self) -> None:
+        """Initialize date range for incremental loads. Override if needed."""
+        pass
 
     @property
     def spark(self) -> SparkSession:

@@ -16,7 +16,7 @@ LOGGER = logging.getLogger(__name__)
 # Define all tables to export
 BRONZE_TABLES = [
     "lh.bronze.raw_facilities",
-    "lh.bronze.raw_facility_timeseries",
+    "lh.bronze.raw_facility_energy",
     "lh.bronze.raw_facility_weather",
     "lh.bronze.raw_facility_air_quality",
 ]
