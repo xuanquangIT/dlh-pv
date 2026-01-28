@@ -133,9 +133,22 @@ def run_cli(argv: Optional[list[str]] = None) -> int:
     )
 
     loader = loader_cls(options)
-    row_count = loader.run()
-    print(f"Loader '{args.dataset}' wrote {row_count} rows")
-    return row_count
+    try:
+        row_count = loader.run()
+        print(f"Loader '{args.dataset}' wrote {row_count} rows")
+        return row_count
+    except ConnectionError as e:
+        print(f"ERROR: API connection failed for '{args.dataset}': {e}")
+        raise
+    except ValueError as e:
+        print(f"ERROR: Data validation failed for '{args.dataset}': {e}")
+        raise
+    except RuntimeError as e:
+        print(f"ERROR: Loader execution failed for '{args.dataset}': {e}")
+        raise
+    except Exception as e:
+        print(f"ERROR: Unexpected error in loader '{args.dataset}': {e}")
+        raise
 
 
 def main() -> None:  # pragma: no cover - CLI entrypoint

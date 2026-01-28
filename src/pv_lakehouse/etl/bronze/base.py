@@ -143,6 +143,9 @@ class BaseBronzeLoader(ABC):
         Args:
             df: DataFrame to write.
             source_view: Temp view name for MERGE source.
+
+        Raises:
+            RuntimeError: If both MERGE and append fallback fail.
         """
         df.createOrReplaceTempView(source_view)
         merge_sql = build_merge_query(
@@ -155,11 +158,43 @@ class BaseBronzeLoader(ABC):
             self.spark.sql(merge_sql)
             LOGGER.info("MERGE completed for %s", self.iceberg_table)
         except (AnalysisException, ParseException) as e:
-            LOGGER.warning("MERGE failed: %s. Falling back to append...", e)
-            write_iceberg_table(df, self.iceberg_table, mode="append")
+            LOGGER.warning(
+                "MERGE failed for %s: %s. Falling back to append...",
+                self.iceberg_table,
+                e,
+            )
+            try:
+                write_iceberg_table(df, self.iceberg_table, mode="append")
+                LOGGER.info("Append fallback succeeded for %s", self.iceberg_table)
+            except Exception as append_error:
+                LOGGER.error(
+                    "Append fallback also failed for %s: %s",
+                    self.iceberg_table,
+                    append_error,
+                )
+                raise RuntimeError(
+                    f"Failed to write to {self.iceberg_table}: "
+                    f"MERGE error: {e}, Append error: {append_error}"
+                ) from append_error
         except (ValueError, RuntimeError) as e:
-            LOGGER.warning("MERGE failed: %s. Falling back to append...", e)
-            write_iceberg_table(df, self.iceberg_table, mode="append")
+            LOGGER.warning(
+                "MERGE failed for %s: %s. Falling back to append...",
+                self.iceberg_table,
+                e,
+            )
+            try:
+                write_iceberg_table(df, self.iceberg_table, mode="append")
+                LOGGER.info("Append fallback succeeded for %s", self.iceberg_table)
+            except Exception as append_error:
+                LOGGER.error(
+                    "Append fallback also failed for %s: %s",
+                    self.iceberg_table,
+                    append_error,
+                )
+                raise RuntimeError(
+                    f"Failed to write to {self.iceberg_table}: "
+                    f"MERGE error: {e}, Append error: {append_error}"
+                ) from append_error
 
     def write_overwrite(self, df: DataFrame) -> None:
         """Write DataFrame with full table overwrite.
@@ -197,24 +232,64 @@ class BaseBronzeLoader(ABC):
 
         Returns:
             Number of rows written.
+
+        Raises:
+            ConnectionError: If API connection fails.
+            ValueError: If data validation or transformation fails.
+            RuntimeError: If Spark operations or write operations fail.
         """
         try:
             # Fetch data from API
-            pandas_df = self.fetch_data()
+            try:
+                pandas_df = self.fetch_data()
+            except (ConnectionError, TimeoutError, OSError) as e:
+                LOGGER.error(
+                    "API connection failed for %s: %s", self.iceberg_table, e
+                )
+                raise ConnectionError(
+                    f"Failed to fetch data from API: {e}"
+                ) from e
+            except (ValueError, KeyError) as e:
+                LOGGER.error("Data validation failed for %s: %s", self.iceberg_table, e)
+                raise ValueError(f"Invalid data received from API: {e}") from e
+
             if pandas_df is None or pandas_df.empty:
                 LOGGER.info("No data fetched; skipping writes.")
                 return 0
 
             # Convert to Spark and transform
-            spark_df = self.spark.createDataFrame(pandas_df)
-            spark_df = self.transform(spark_df)
-            spark_df = self.add_ingest_columns(spark_df)
+            try:
+                spark_df = self.spark.createDataFrame(pandas_df)
+                spark_df = self.transform(spark_df)
+                spark_df = self.add_ingest_columns(spark_df)
+            except (AnalysisException, ParseException) as e:
+                LOGGER.error(
+                    "Spark transformation failed for %s: %s", self.iceberg_table, e
+                )
+                raise RuntimeError(
+                    f"Failed to transform data in Spark: {e}"
+                ) from e
+            except (ValueError, TypeError) as e:
+                LOGGER.error(
+                    "Data transformation logic failed for %s: %s",
+                    self.iceberg_table,
+                    e,
+                )
+                raise ValueError(f"Transformation error: {e}") from e
 
             # Write based on mode
-            if self.options.mode == "backfill":
-                self.write_overwrite(spark_df)
-            else:
-                self.write_merge(spark_df)
+            try:
+                if self.options.mode == "backfill":
+                    self.write_overwrite(spark_df)
+                else:
+                    self.write_merge(spark_df)
+            except Exception as e:
+                LOGGER.error(
+                    "Write operation failed for %s: %s", self.iceberg_table, e
+                )
+                raise RuntimeError(
+                    f"Failed to write to {self.iceberg_table}: {e}"
+                ) from e
 
             row_count = spark_df.count()
             LOGGER.info("Loader completed: %d rows written to %s", row_count, self.iceberg_table)
