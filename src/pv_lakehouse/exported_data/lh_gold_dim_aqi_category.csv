@@ -1,0 +1,7 @@
+aqi_category_key,aqi_category,aqi_range_min,aqi_range_max,pm2_5_min_ug_m3,pm2_5_max_ug_m3,created_at
+1,Good,0,50,0.000,12.000,2025-11-18T16:21:31.659Z
+2,Moderate,51,100,12.100,35.000,2025-11-18T16:21:31.659Z
+3,Unhealthy for Sensitive,101,150,35.100,55.000,2025-11-18T16:21:31.659Z
+4,Unhealthy,151,200,55.100,150.000,2025-11-18T16:21:31.659Z
+5,Very Unhealthy,201,300,150.100,250.000,2025-11-18T16:21:31.659Z
+6,Hazardous,301,500,250.100,500.000,2025-11-18T16:21:31.659Z
