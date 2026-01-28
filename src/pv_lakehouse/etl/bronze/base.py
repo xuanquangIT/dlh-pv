@@ -1,19 +1,15 @@
 #!/usr/bin/env python3
 """Shared base classes and options for Bronze-zone loaders."""
-
 from __future__ import annotations
-
 import datetime as dt
 import logging
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import List, Optional, Sequence
-
 import pandas as pd
 from pyspark.sql import DataFrame, SparkSession
 from pyspark.sql import functions as F
 from pyspark.sql.utils import AnalysisException, ParseException
-
 from pv_lakehouse.etl.bronze.sql_templates import (
     ALLOWED_BRONZE_TABLES,
     build_merge_query,
@@ -26,7 +22,6 @@ from pv_lakehouse.etl.utils.spark_utils import (
 )
 
 LOGGER = logging.getLogger(__name__)
-
 
 @dataclass
 class BronzeLoadOptions:
@@ -93,8 +88,9 @@ class BaseBronzeLoader(ABC):
         import re
         
         # Regex for valid UNQUALIFIED SQL identifiers (columns, views)
+        # Uses re.ASCII flag to prevent unicode bypass attacks
         # Qualified table names (with dots) are validated via whitelist in _validate_table()
-        sql_pattern = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*$")
+        sql_pattern = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*$", re.ASCII)
         
         # Validate timestamp_column
         if not self.timestamp_column:
@@ -216,7 +212,7 @@ class BaseBronzeLoader(ABC):
             try:
                 write_iceberg_table(df, self.iceberg_table, mode="append")
                 LOGGER.info("Append fallback succeeded for %s", self.iceberg_table)
-            except Exception as append_error:
+            except (AnalysisException, ParseException, IOError, OSError) as append_error:
                 LOGGER.error(
                     "Append fallback also failed for %s: %s",
                     self.iceberg_table,
@@ -235,7 +231,7 @@ class BaseBronzeLoader(ABC):
             try:
                 write_iceberg_table(df, self.iceberg_table, mode="append")
                 LOGGER.info("Append fallback succeeded for %s", self.iceberg_table)
-            except Exception as append_error:
+            except (AnalysisException, ParseException, IOError, OSError) as append_error:
                 LOGGER.error(
                     "Append fallback also failed for %s: %s",
                     self.iceberg_table,
@@ -346,6 +342,8 @@ class BaseBronzeLoader(ABC):
             return row_count
 
         finally:
+            # Note: finally block ALWAYS executes regardless of exceptions in try block
+            # This ensures SparkSession is properly closed even if exceptions occur
             self.close()
 
 

@@ -1,11 +1,8 @@
 #!/usr/bin/env python3
 """SQL query templates for Bronze layer with table whitelist validation."""
-
 from __future__ import annotations
-
 import re
 from typing import Sequence
-
 # Whitelist of allowed Bronze table names to prevent SQL injection
 # Table names can be qualified (e.g., schema.table) and are validated via whitelist only
 ALLOWED_BRONZE_TABLES = frozenset({
@@ -16,11 +13,9 @@ ALLOWED_BRONZE_TABLES = frozenset({
 })
 
 # Regex pattern for valid UNQUALIFIED SQL identifiers (column names, view names)
-# Allows: alphanumeric, underscore, starts with letter/underscore
-# Does NOT allow: dots, spaces, quotes, or special characters that could enable SQL injection
-# Note: Qualified table names (with dots) are validated via ALLOWED_BRONZE_TABLES whitelist
-_SQL_IDENTIFIER_PATTERN = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*$")
-
+# Allows: ASCII alphanumeric, underscore, starts with ASCII letter/underscore
+# Does NOT allow: dots, spaces, quotes, unicode, or special characters that could enable SQL injection
+_SQL_IDENTIFIER_PATTERN = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*$", re.ASCII)
 
 def _validate_table(table: str) -> None:
     """Validate table name is in whitelist.
@@ -51,7 +46,7 @@ def _validate_sql_identifier(identifier: str, param_name: str) -> None:
         param_name: Name of the parameter for error messages.
 
     Raises:
-        ValueError: If identifier is empty, None, or contains unsafe characters.
+        ValueError: If identifier is empty, None, contains unsafe characters, or is a SQL keyword.
     """
     if not identifier:
         raise ValueError(f"{param_name} cannot be empty or None")
@@ -62,7 +57,7 @@ def _validate_sql_identifier(identifier: str, param_name: str) -> None:
     if not _SQL_IDENTIFIER_PATTERN.match(identifier):
         raise ValueError(
             f"Invalid SQL identifier for {param_name}: '{identifier}'. "
-            f"Must contain only alphanumeric characters and underscores, "
+            f"Must contain only ASCII alphanumeric characters and underscores, "
             f"and start with a letter or underscore."
         )
 
