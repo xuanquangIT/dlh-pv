@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import logging
 from typing import Optional
 
 from pyspark.sql import DataFrame
@@ -10,6 +11,8 @@ from pyspark.sql import functions as F
 
 from .base import BaseSilverLoader, LoadOptions
 from pv_lakehouse.etl.bronze.facility_timezones import FACILITY_TIMEZONES, DEFAULT_TIMEZONE
+
+LOGGER = logging.getLogger(__name__)
 
 
 class SilverHourlyEnergyLoader(BaseSilverLoader):
@@ -33,153 +36,184 @@ class SilverHourlyEnergyLoader(BaseSilverLoader):
 
     def run(self) -> int:
         """Process bronze energy data in 7-day chunks to limit memory usage."""
+        LOGGER.info("Starting energy Silver ETL for table %s", self.silver_table)
         bronze_df = self._read_bronze()
         if bronze_df is None or not bronze_df.columns:
+            LOGGER.warning("No bronze data found for energy loader")
             return 0
         return self._process_in_chunks(bronze_df, chunk_days=7)
 
     def transform(self, bronze_df: DataFrame) -> Optional[DataFrame]:
+        """Transform bronze energy data to Silver layer with validation and quality checks.
+        
+        Args:
+            bronze_df: Bronze layer energy DataFrame.
+            
+        Returns:
+            Transformed Silver DataFrame with quality flags, or None if input is invalid.
+        """
+        # Validation: Check input DataFrame
         if bronze_df is None or not bronze_df.columns:
+            LOGGER.warning("Empty bronze DataFrame provided to energy transform()")
             return None
 
         required_columns = {
-            "facility_code",
-            "facility_name",
-            "network_code",
-            "network_region",
-            "metric",
-            "value",
-            "interval_ts",
+            "facility_code", "facility_name", "network_code",
+            "network_region", "metric", "value", "interval_ts"
         }
         missing = required_columns - set(bronze_df.columns)
         if missing:
             raise ValueError(f"Missing expected columns in bronze timeseries source: {sorted(missing)}")
 
-        filtered = (
-            bronze_df.select(
-                "facility_code",
-                "facility_name",
-                "network_code",
-                "network_region",
-                "metric",
-                F.col("value").cast("double").alias("metric_value"),
-                F.col("interval_ts").cast("timestamp").alias("interval_ts"),
-            )
-            .where(F.col("facility_code").isNotNull())
-            .where(F.col("interval_ts").isNotNull())
-            .where(F.col("metric").isin("energy", "power"))
-        )
+        # Load configuration and validators
+        quality_thresholds = self._get_quality_thresholds("energy")
+        numeric_validator = self._get_numeric_validator("energy")
+        logic_validator = self._get_logic_validator()
+        quality_assigner = self._get_quality_assigner()
         
-        # Aggregate energy by hour (local time)
-        # Convert `interval_ts` (assumed UTC) to facility local timestamp before truncating to hour.
-        # Use the facility timezone map to perform a per-facility conversion. Default to DEFAULT_TIMEZONE.
+        LOGGER.debug("Loaded validation config for energy domain")
+
+        # Step 1: Filter and cast bronze data
+        filtered = bronze_df.select(
+            "facility_code",
+            "facility_name",
+            "network_code",
+            "network_region",
+            "metric",
+            F.col("value").cast("double").alias("metric_value"),
+            F.col("interval_ts").cast("timestamp").alias("interval_ts"),
+        ).where(
+            F.col("facility_code").isNotNull()
+            & F.col("interval_ts").isNotNull()
+            & F.col("metric").isin("energy", "power")
+        )
+
+        # Step 2: Convert to local time and aggregate by hour
+        # Convert UTC to facility-specific timezone
         default_local = F.from_utc_timestamp(F.col("interval_ts"), DEFAULT_TIMEZONE)
         tz_expr = default_local
-        # Wrap mapping entries as conditional expressions: when(facility_code==code, from_utc_timestamp(...)).otherwise(prev)
         for code, tz in FACILITY_TIMEZONES.items():
-            tz_expr = F.when(F.col("facility_code") == code, F.from_utc_timestamp(F.col("interval_ts"), tz)).otherwise(tz_expr)
+            tz_expr = F.when(
+                F.col("facility_code") == code,
+                F.from_utc_timestamp(F.col("interval_ts"), tz)
+            ).otherwise(tz_expr)
 
-        hourly = (
-            filtered
-            .withColumn("timestamp_local", tz_expr)
-            # Shift interval_start (which represents the start of the hour) by +1 hour
-            # so the energy measured over [t, t+1) is labelled at the hour-end (t+1).
-            .withColumn("date_hour", F.date_trunc("hour", F.expr("timestamp_local + INTERVAL 1 HOUR")))
-            .groupBy("facility_code", "facility_name", "network_code", "network_region", "date_hour")
-            .agg(
-                F.sum(F.when(F.col("metric") == "energy", F.col("metric_value"))).alias("energy_mwh"),
-                F.count(F.when(F.col("metric") == "energy", F.lit(1))).alias("intervals_count")
-            )
-            .filter(F.col("intervals_count") > 0)
-        )
-        
-        # Physical bounds for energy
-        ENERGY_LOWER = 0.0      
-        PEAK_REFERENCE_MWH = 186.0  
-        
-        # Build intermediate columns in single pass to avoid multiple scans
-        result = (
-            hourly
-            .withColumn("completeness_pct", F.lit(100.0))
-        )
-        
-        # Extract hour from localized date_hour (already in facility local time)
-        hour_col = F.hour(F.col("date_hour"))
+        # Shift by +1 hour (energy for [t, t+1) labeled at t+1)
+        hourly = filtered.select(
+            "*",
+            tz_expr.alias("timestamp_local"),
+            F.date_trunc("hour", F.expr("timestamp_local + INTERVAL 1 HOUR")).alias("date_hour"),
+        ).groupBy(
+            "facility_code", "facility_name", "network_code", "network_region", "date_hour"
+        ).agg(
+            F.sum(F.when(F.col("metric") == "energy", F.col("metric_value"))).alias("energy_mwh"),
+            F.count(F.when(F.col("metric") == "energy", F.lit(1))).alias("intervals_count"),
+        ).filter(F.col("intervals_count") > 0).persist()  # Cache: heavily reused in validation
+
+        # Step 3: Numeric bounds validation
         energy_col = F.col("energy_mwh")
+        energy_min = quality_thresholds.get("energy_min", 0.0)
+        is_within_bounds = energy_col >= F.lit(energy_min)
+        bound_issue = F.when(~is_within_bounds, F.lit("OUT_OF_BOUNDS")).otherwise(F.lit(""))
+
+        # Step 4: Logical validation checks
+        timestamp_col = F.col("date_hour")
+        hour_col = F.hour(timestamp_col)
         
-        # Define validation checks using column references
-        is_within_bounds = energy_col >= ENERGY_LOWER  # Only check lower bound (negative values)
-        is_night = ((hour_col >= 22) | (hour_col < 6))
-        is_peak = (hour_col >= 10) & (hour_col <= 14)
+        # Night energy anomaly (uses default night_hours from validator)
+        has_night_energy, night_energy_issue = logic_validator.check_night_energy(
+            timestamp_col,
+            energy_col,
+            threshold=quality_thresholds.get("night_energy_threshold", 1.0),
+        )
         
-        is_night_anomaly = is_night & (energy_col > 1.0)
+        # Daytime zero energy (uses default daytime_hours from validator)
+        has_daytime_zero, daytime_zero_issue = logic_validator.check_daytime_zero_energy(
+            timestamp_col,
+            energy_col,
+        )
         
-        is_daytime_zero = (hour_col >= 8) & (hour_col <= 17) & (energy_col == 0.0)
+        # Equipment downtime (uses default peak_hours from validator)
+        has_downtime, downtime_issue = logic_validator.check_equipment_downtime(
+            timestamp_col,
+            energy_col,
+        )
         
-        is_equipment_downtime = is_peak & (energy_col == 0.0)
+        # Transition hour low energy (sunrise/sunset ramps)
+        sunrise_hours = quality_thresholds.get("sunrise_hours", [6, 7])
+        early_morning_hours = quality_thresholds.get("early_morning_hours", [8, 9])
+        sunset_hours = quality_thresholds.get("sunset_hours", [17, 18])
+        peak_reference = quality_thresholds.get("peak_reference", 186.0)
+        peak_hours = quality_thresholds.get("peak_hours", [10, 11, 12, 13, 14])
         
-        # TRANSITION_HOUR_LOW_ENERGY detection (formerly named RAMP_ANOMALY)
-        # Thresholds based on analysis:
-        # - Sunrise (06:00-08:00): Only flag if <5% of expected peak
-        # - Early Morning (08:00-10:00): Only flag if <8% of expected peak
-        # - Sunset (17:00-19:00): Only flag if <10% of expected peak
-        is_sunrise = (hour_col >= 6) & (hour_col < 8)
-        is_early_morning = (hour_col >= 8) & (hour_col < 10)
-        is_sunset = (hour_col >= 17) & (hour_col < 19)
+        is_sunrise = hour_col.isin(sunrise_hours)
+        is_early_morning = hour_col.isin(early_morning_hours)
+        is_sunset = hour_col.isin(sunset_hours)
+        is_peak = hour_col.isin(peak_hours)
         
         threshold_factor = (
-            F.when(is_sunrise, 0.05)        # 5% of peak for sunrise
-            .when(is_early_morning, 0.08)   # 8% of peak for early morning
-            .when(is_sunset, 0.10)          # 10% of peak for sunset
-            .otherwise(0.0)
+            F.when(is_sunrise, F.lit(quality_thresholds.get("sunrise_threshold_pct", 0.05)))
+            .when(is_early_morning, F.lit(quality_thresholds.get("early_morning_threshold_pct", 0.08)))
+            .when(is_sunset, F.lit(quality_thresholds.get("sunset_threshold_pct", 0.10)))
+            .otherwise(F.lit(0.0))
         )
         
-        is_transition_hour_low_energy = (
-            ((is_sunrise | is_early_morning | is_sunset) & 
-             (energy_col > 0.01) & 
-             (energy_col < (F.lit(PEAK_REFERENCE_MWH) * threshold_factor)))
+        has_transition_low = (
+            (is_sunrise | is_early_morning | is_sunset)
+            & (energy_col > F.lit(0.01))
+            & (energy_col < (F.lit(peak_reference) * threshold_factor))
+        )
+        transition_issue = F.when(has_transition_low, F.lit("TRANSITION_HOUR_LOW_ENERGY")).otherwise(F.lit(""))
+        
+        # Peak hour low efficiency (reuses is_peak from above)
+        peak_efficiency_threshold = quality_thresholds.get("peak_efficiency_threshold_pct", 0.50)
+        has_low_efficiency = (
+            is_peak
+            & (energy_col > F.lit(0.5))
+            & (energy_col < (F.lit(peak_reference) * F.lit(peak_efficiency_threshold)))
+        )
+        efficiency_issue = F.when(has_low_efficiency, F.lit("PEAK_HOUR_LOW_ENERGY")).otherwise(F.lit(""))
+
+        # Step 5: Build quality columns using single select() operation
+        has_severe_issue = ~is_within_bounds | has_night_energy
+        has_warning_issue = has_daytime_zero | has_downtime | has_transition_low | has_low_efficiency
+        
+        quality_flag = quality_assigner.assign_three_tier(
+            F.lit(True),  # Bounds checked separately via is_within_bounds
+            has_severe_issue,
+            has_warning_issue,
         )
         
-        is_efficiency_anomaly = is_peak & (energy_col > 0.5) & (energy_col < (F.lit(PEAK_REFERENCE_MWH) * 0.50))
-        
-        result = (
-            result
-            .withColumn(
-                "quality_issues",
-                F.concat_ws(
-                    "|",
-                    F.when(~is_within_bounds, F.lit("OUT_OF_BOUNDS")),
-                    F.when(is_night_anomaly, F.lit("NIGHT_ENERGY_ANOMALY")),
-                    F.when(is_daytime_zero, F.lit("DAYTIME_ZERO_ENERGY")),
-                    F.when(is_equipment_downtime, F.lit("EQUIPMENT_DOWNTIME")),
-                    F.when(is_transition_hour_low_energy, F.lit("TRANSITION_HOUR_LOW_ENERGY")),
-                    F.when(is_efficiency_anomaly, F.lit("PEAK_HOUR_LOW_ENERGY"))
-                )
-            )
-            # Align quality flag labels with Gold layer conventions:
-            # - BAD for invalid/out-of-bounds energy
-            # - WARNING for anomalous but not outright invalid records
-            # - GOOD for everything else
-            .withColumn(
-                "quality_flag",
-                F.when(
-                    ~is_within_bounds,
-                    F.lit("BAD")
-                ).when(
-                    is_night_anomaly | is_daytime_zero | is_equipment_downtime | is_transition_hour_low_energy | is_efficiency_anomaly,
-                    F.lit("WARNING")
-                ).otherwise(F.lit("GOOD"))
-            )
-            .withColumn("created_at", F.current_timestamp())
-            .withColumn("updated_at", F.current_timestamp())
+        quality_issues = quality_assigner.build_issues_string([
+            bound_issue,
+            night_energy_issue,
+            daytime_zero_issue,
+            downtime_issue,
+            transition_issue,
+            efficiency_issue,
+        ])
+
+        # Step 6: Final result with all columns in single select()
+        result = hourly.select(
+            "facility_code",
+            "facility_name",
+            "network_code",
+            "network_region",
+            "date_hour",
+            "energy_mwh",
+            "intervals_count",
+            quality_flag.alias("quality_flag"),
+            quality_issues.alias("quality_issues"),
+            F.lit(100.0).alias("completeness_pct"),
+            F.current_timestamp().alias("created_at"),
+            F.current_timestamp().alias("updated_at"),
         )
 
-        return result.select(
-            "facility_code", "facility_name", "network_code", "network_region",
-            "date_hour", "energy_mwh", "intervals_count",
-            "quality_flag", "quality_issues", "completeness_pct",
-            "created_at", "updated_at"
-        )
+        # Cleanup cached DataFrames
+        hourly.unpersist()
+
+        LOGGER.info("Energy transform completed successfully")
+        return result
 
 
 __all__ = ["SilverHourlyEnergyLoader"]

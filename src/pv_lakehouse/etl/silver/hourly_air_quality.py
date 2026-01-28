@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Optional
 
 from pyspark.sql import DataFrame
 from pyspark.sql import functions as F
 
 from .base import BaseSilverLoader, LoadOptions
+
+LOGGER = logging.getLogger(__name__)
 
 
 class SilverHourlyAirQualityLoader(BaseSilverLoader):
@@ -30,126 +33,120 @@ class SilverHourlyAirQualityLoader(BaseSilverLoader):
 
     def run(self) -> int:
         """Process bronze air quality data in 7-day chunks to limit memory usage."""
+        LOGGER.info("Starting air quality Silver ETL for table %s", self.silver_table)
         bronze_df = self._read_bronze()
         if bronze_df is None or not bronze_df.columns:
+            LOGGER.warning("No bronze data found for air quality loader")
             return 0
         return self._process_in_chunks(bronze_df, chunk_days=7)
 
-    _numeric_columns = {
-        "pm2_5": (0.0, 500.0),
-        "pm10": (0.0, 500.0),
-        "dust": (0.0, 500.0),
-        "nitrogen_dioxide": (0.0, 500.0),
-        "ozone": (0.0, 500.0),
-        "sulphur_dioxide": (0.0, 500.0),
-        "carbon_monoxide": (0.0, 500.0),
-        "uv_index": (0.0, 15.0),
-        "uv_index_clear_sky": (0.0, 15.0),
-    }
-
     def transform(self, bronze_df: DataFrame) -> Optional[DataFrame]:
+        """Transform bronze air quality data to Silver layer with validation and quality checks.
+        
+        Args:
+            bronze_df: Bronze layer air quality DataFrame.
+            
+        Returns:
+            Transformed Silver DataFrame with quality flags, or None if input is invalid.
+        """
+        # Validation: Check input DataFrame
         if bronze_df is None or not bronze_df.columns:
+            LOGGER.warning("Empty bronze DataFrame provided to air quality transform()")
             return None
 
-        required_columns = {
-            "facility_code",
-            "facility_name",
-            "air_timestamp",
-        }
+        required_columns = {"facility_code", "facility_name", "air_timestamp"}
         missing = required_columns - set(bronze_df.columns)
         if missing:
             raise ValueError(f"Missing expected columns in bronze air-quality source: {sorted(missing)}")
 
-        # CRITICAL: Bronze air_timestamp is already in correct LOCAL format from API
-        # No additional conversion needed - use directly for aggregation
-        prepared_base = (
-            bronze_df.select(
-                "facility_code",
-                "facility_name",
-                F.col("air_timestamp").cast("timestamp").alias("timestamp_local"),
-                *[F.col(column) for column in self._numeric_columns.keys() if column in bronze_df.columns],
-            )
-            .where(F.col("facility_code").isNotNull())
-            .where(F.col("air_timestamp").isNotNull())
-        )
+        # Load configuration and validators
+        bounds_config = self._get_bounds_config("air_quality")
+        quality_thresholds = self._get_quality_thresholds("air_quality")
+        numeric_validator = self._get_numeric_validator("air_quality")
+        quality_assigner = self._get_quality_assigner()
         
-        # Aggregate by timestamp directly (already in correct format)
-        prepared = (
-            prepared_base
-            .withColumn("date_hour", F.date_trunc("hour", F.col("timestamp_local")))
-            .withColumn("date", F.to_date(F.col("timestamp_local")))
+        LOGGER.debug("Loaded %d validation rules for air quality domain", len(bounds_config))
+
+        # Step 1: Prepare base data with timestamp and numeric columns
+        numeric_columns = list(bounds_config.keys())
+        prepared_base = bronze_df.select(
+            "facility_code",
+            "facility_name",
+            F.col("air_timestamp").cast("timestamp").alias("timestamp_local"),
+            *[F.col(col) for col in numeric_columns if col in bronze_df.columns],
+        ).where(
+            F.col("facility_code").isNotNull() & F.col("air_timestamp").isNotNull()
+        ).persist()  # Cache: reused in Step 2
+
+        # Step 2: Add date truncations
+        prepared = prepared_base.select(
+            "*",
+            F.date_trunc("hour", F.col("timestamp_local")).alias("date_hour"),
+            F.to_date(F.col("timestamp_local")).alias("date"),
         )
 
-        # Round numeric columns - use select to apply in one pass
-        select_exprs = [
-            "facility_code", "facility_name", "timestamp_local", "date_hour", "date"
-        ]
-        for column in self._numeric_columns.keys():
-            if column in prepared.columns:
-                select_exprs.append(F.round(F.col(column), 4).alias(column))
-            else:
-                select_exprs.append(F.lit(None).alias(column))
+        # Step 3: Round numeric columns and calculate AQI in single pass
+        rounded_exprs = [F.round(F.col(col), 4).alias(col) for col in numeric_columns]
         
-        result = prepared.select(select_exprs)
-
-        # Calculate AQI from PM2.5 for each hourly record
         aqi_value = self._aqi_from_pm25(F.col("pm2_5"))
-        result = result.withColumn("aqi_value", F.round(aqi_value).cast("int"))
-        result = result.withColumn(
-            "aqi_category",
+        aqi_category = (
             F.when(F.col("aqi_value").isNull(), F.lit(None))
-            .when(F.col("aqi_value") <= 50, F.lit("Good"))
-            .when(F.col("aqi_value") <= 100, F.lit("Moderate"))
-            .when(F.col("aqi_value") <= 200, F.lit("Unhealthy"))
-            .otherwise(F.lit("Hazardous")),
+            .when(aqi_value <= F.lit(50), F.lit("Good"))
+            .when(aqi_value <= F.lit(100), F.lit("Moderate"))
+            .when(aqi_value <= F.lit(200), F.lit("Unhealthy"))
+            .otherwise(F.lit("Hazardous"))
+        )
+        
+        prepared_with_aqi = prepared.select(
+            "facility_code", "facility_name", "timestamp_local", "date_hour", "date",
+            *rounded_exprs,
+            F.round(aqi_value).cast("int").alias("aqi_value"),
+            aqi_category.alias("aqi_category"),
         )
 
-        # Validation: Check numeric columns within bounds and AQI validity in single pass
-        is_valid_bounds = F.lit(True)
-        bound_issues = F.lit("")
-        
-        for column, (min_val, max_val) in self._numeric_columns.items():
-            col_expr = F.col(column)
-            col_valid = col_expr.isNull() | ((col_expr >= min_val) & (col_expr <= max_val))
-            is_valid_bounds = is_valid_bounds & col_valid
-            
-            bound_issues = F.concat_ws(
-                "|",
-                bound_issues,
-                F.when((col_expr.isNotNull()) & ~col_valid, F.concat(F.lit(column), F.lit("_OUT_OF_BOUNDS")))
-            )
-        
-        aqi_valid = (F.col("aqi_value").isNull() | ((F.col("aqi_value") >= 0) & (F.col("aqi_value") <= 500)))
+        # Step 4: Numeric bounds validation
+        is_valid_bounds, bound_issues = numeric_validator.validate_all(prepared_with_aqi.columns)
+
+        # Step 5: AQI validation
+        aqi_min = quality_thresholds.get("aqi_min", 0)
+        aqi_max = quality_thresholds.get("aqi_max", 500)
+        aqi_valid = (
+            F.col("aqi_value").isNull()
+            | ((F.col("aqi_value") >= F.lit(aqi_min)) & (F.col("aqi_value") <= F.lit(aqi_max)))
+        )
+        aqi_issue = F.when(
+            F.col("aqi_value").isNotNull() & ~aqi_valid,
+            F.lit("AQI_OUT_OF_RANGE")
+        ).otherwise(F.lit(""))
+
+        # Step 6: Build quality columns (binary: GOOD/WARNING)
         is_valid_overall = is_valid_bounds & aqi_valid
-        
-        quality_issues = F.concat_ws(
-            "|",
-            bound_issues,
-            F.when((F.col("aqi_value").isNotNull()) & ~aqi_valid, F.lit("AQI_OUT_OF_RANGE"))
+        quality_issues = quality_assigner.build_issues_string([bound_issues, aqi_issue])
+        quality_flag = quality_assigner.assign_binary(is_valid_overall, "GOOD", "WARNING")
+
+        # Step 7: Final result with all columns in single select()
+        result = prepared_with_aqi.select(
+            "facility_code",
+            "facility_name",
+            F.col("timestamp_local").alias("timestamp"),
+            "date_hour",
+            "date",
+            "pm2_5", "pm10", "dust", "nitrogen_dioxide", "ozone",
+            "sulphur_dioxide", "carbon_monoxide", "uv_index", "uv_index_clear_sky",
+            "aqi_category",
+            "aqi_value",
+            is_valid_overall.alias("is_valid"),
+            quality_flag.alias("quality_flag"),
+            quality_issues.alias("quality_issues"),
+            F.current_timestamp().alias("created_at"),
+            F.current_timestamp().alias("updated_at"),
         )
 
-        result = (
-            result
-            .withColumn("is_valid", is_valid_overall)
-            .withColumn(
-                "quality_issues",
-                quality_issues
-            )
-            .withColumn(
-                "quality_flag",
-                F.when(is_valid_overall, F.lit("GOOD")).otherwise(F.lit("WARNING"))
-            )
-            .withColumn("created_at", F.current_timestamp())
-            .withColumn("updated_at", F.current_timestamp())
-        )
+        # Cleanup cached DataFrames
+        prepared_base.unpersist()
 
-        return result.select(
-            "facility_code", "facility_name", F.col("timestamp_local").alias("timestamp"),
-            "date_hour", "date",
-            "pm2_5", "pm10", "dust", "nitrogen_dioxide", "ozone", "sulphur_dioxide", "carbon_monoxide",
-            "uv_index", "uv_index_clear_sky", "aqi_category", "aqi_value",
-            "is_valid", "quality_flag", "quality_issues", "created_at", "updated_at"
-        )
+        LOGGER.info("Air quality transform completed successfully")
+        return result
 
     def _aqi_from_pm25(self, column: F.Column) -> F.Column:
         """Calculate AQI (Air Quality Index) from PM2.5 concentration using EPA breakpoints."""

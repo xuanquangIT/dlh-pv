@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Optional
 
-from pyspark.sql import DataFrame
+from pyspark.sql import DataFrame, Window
 from pyspark.sql import functions as F
 
 from .base import BaseSilverLoader, LoadOptions
+
+LOGGER = logging.getLogger(__name__)
 
 
 class SilverHourlyWeatherLoader(BaseSilverLoader):
@@ -30,161 +33,157 @@ class SilverHourlyWeatherLoader(BaseSilverLoader):
 
     def run(self) -> int:
         """Process bronze weather data in 7-day chunks to limit memory usage."""
+        LOGGER.info("Starting weather Silver ETL for table %s", self.silver_table)
         bronze_df = self._read_bronze()
         if bronze_df is None or not bronze_df.columns:
+            LOGGER.warning("No bronze data found for weather loader")
             return 0
         return self._process_in_chunks(bronze_df, chunk_days=7)
 
-    _numeric_columns = {
-        "shortwave_radiation": (0.0, 1150.0),  # P99.5=1045 W/m² (actual max=1120, rounded to 1150)
-        "direct_radiation": (0.0, 1050.0),     # Increased from 920 to 1050 (actual max=1009, Australian extreme events)
-        "diffuse_radiation": (0.0, 520.0),     # Increased from 500 to 520 (actual max=520, measurement variation)
-        "direct_normal_irradiance": (0.0, 1060.0),  # Increased from 1050 to 1060 (actual max=1057.3)
-        "temperature_2m": (-10.0, 50.0),       # P99.5=38.5°C (actual max=43.7°C, bounds allow extreme days)
-        "dew_point_2m": (-20.0, 30.0),         # P99=20.2°C (expanded bounds for extreme conditions)
-        "wet_bulb_temperature_2m": (-5.0, 40.0),  # Bounded by air temperature (wet bulb typically 5-15°C lower)
-        "cloud_cover": (0.0, 100.0),           # Perfect bounds, no outliers
-        "cloud_cover_low": (0.0, 100.0),
-        "cloud_cover_mid": (0.0, 100.0),
-        "cloud_cover_high": (0.0, 100.0),
-        "precipitation": (0.0, 1000.0),        # Extreme event bound
-        "sunshine_duration": (0.0, 3600.0),    # 1 hour max per hourly period
-        "total_column_integrated_water_vapour": (0.0, 100.0),  # Typical atmospheric bound
-        "wind_speed_10m": (0.0, 50.0),         # Increased from 30 to 50 m/s (actual max=47.2, Australian cyclones)
-        "wind_direction_10m": (0.0, 360.0),    # Perfect bounds
-        "wind_gusts_10m": (0.0, 120.0),        # Extreme weather bound
-        "pressure_msl": (985.0, 1050.0),       # P99=1033 (rounded to 1050 for safety)
-    }
-
     def transform(self, bronze_df: DataFrame) -> Optional[DataFrame]:
+        """Transform bronze weather data to Silver layer with validation and quality checks.
+        
+        Args:
+            bronze_df: Bronze layer weather DataFrame.
+            
+        Returns:
+            Transformed Silver DataFrame with quality flags, or None if input is invalid.
+        """
+        # Validation: Check input DataFrame
         if bronze_df is None or not bronze_df.columns:
+            LOGGER.warning("Empty bronze DataFrame provided to weather transform()")
             return None
 
-        required_columns = {
-            "facility_code",
-            "facility_name",
-            "weather_timestamp",
-        }
+        required_columns = {"facility_code", "facility_name", "weather_timestamp"}
         missing = required_columns - set(bronze_df.columns)
         if missing:
             raise ValueError(f"Missing expected columns in bronze weather source: {sorted(missing)}")
 
-        # No additional conversion needed - use directly for aggregation
-        prepared_base = (
-            bronze_df.select(
-                "facility_code",
-                "facility_name",
-                F.col("weather_timestamp").cast("timestamp").alias("timestamp_local"),
-                *[F.col(column) for column in self._numeric_columns.keys() if column in bronze_df.columns],
-            )
-            .where(F.col("facility_code").isNotNull())
-            .where(F.col("weather_timestamp").isNotNull())
-        )
+        # Load configuration and validators
+        bounds_config = self._get_bounds_config("weather")
+        quality_thresholds = self._get_quality_thresholds("weather")
+        numeric_validator = self._get_numeric_validator("weather")
+        logic_validator = self._get_logic_validator()
+        quality_assigner = self._get_quality_assigner()
         
-        prepared = (
-            prepared_base
-            .withColumn("date_hour", F.date_trunc("hour", F.col("timestamp_local")))
-            .withColumn("date", F.to_date(F.col("timestamp_local")))
+        LOGGER.debug("Loaded %d validation rules for weather domain", len(bounds_config))
+
+        # Step 1: Prepare base data with timestamp and numeric columns
+        numeric_columns = list(bounds_config.keys())
+        prepared_base = bronze_df.select(
+            "facility_code",
+            "facility_name",
+            F.col("weather_timestamp").cast("timestamp").alias("timestamp_local"),
+            *[F.col(col) for col in numeric_columns if col in bronze_df.columns],
+        ).where(
+            F.col("facility_code").isNotNull() & F.col("weather_timestamp").isNotNull()
+        ).persist()  # Cache: reused in Step 2
+
+        # Step 2: Add date truncations
+        prepared = prepared_base.select(
+            "*",
+            F.date_trunc("hour", F.col("timestamp_local")).alias("date_hour"),
+            F.to_date(F.col("timestamp_local")).alias("date"),
         )
 
-        # Handle missing total_column_integrated_water_vapour with forward-fill within facility/date
+        # Step 3: Handle missing total_column_integrated_water_vapour with forward-fill
         if "total_column_integrated_water_vapour" in prepared.columns:
-            from pyspark.sql import Window
             window = Window.partitionBy("facility_code", "date").orderBy("timestamp_local").rowsBetween(-100, 0)
-            prepared = (
-                prepared
-                .withColumn(
-                    "total_column_integrated_water_vapour",
-                    F.coalesce(
-                        F.col("total_column_integrated_water_vapour"),
-                        F.last(F.col("total_column_integrated_water_vapour"), ignorenulls=True).over(window)
-                    )
-                )
+            prepared = prepared.select(
+                "*",
+                F.coalesce(
+                    F.col("total_column_integrated_water_vapour"),
+                    F.last(F.col("total_column_integrated_water_vapour"), ignorenulls=True).over(window),
+                ).alias("total_column_integrated_water_vapour_filled"),
+            ).drop("total_column_integrated_water_vapour").withColumnRenamed(
+                "total_column_integrated_water_vapour_filled",
+                "total_column_integrated_water_vapour",
             )
 
-        # Round numeric columns - use select to apply in one pass
-        select_exprs = [
-            "facility_code", "facility_name", "timestamp_local", "date_hour", "date"
+        # Step 4: Round numeric columns in single pass
+        rounded_exprs = [
+            F.round(F.col(col), 4).alias(col) if col in prepared.columns else F.lit(None).alias(col)
+            for col in numeric_columns
         ]
-        for column in self._numeric_columns.keys():
-            if column in prepared.columns:
-                select_exprs.append(F.round(F.col(column), 4).alias(column))
-            else:
-                select_exprs.append(F.lit(None).alias(column))
-        
-        result = prepared.select(select_exprs)
-
-        # Validation: Compute all bounds checks first (single pass)
-        is_valid_bounds = F.lit(True)
-        bound_issues = F.lit("")
-        
-        for column, (min_val, max_val) in self._numeric_columns.items():
-            col_expr = F.col(column)
-            col_valid = col_expr.isNull() | ((col_expr >= min_val) & (col_expr <= max_val))
-            is_valid_bounds = is_valid_bounds & col_valid
-            
-            bound_issues = F.concat_ws(
-                "|",
-                bound_issues,
-                F.when((col_expr.isNotNull()) & ~col_valid, F.concat(F.lit(column), F.lit("_OUT_OF_BOUNDS")))
-            )
-
-        # Validation: Check logic conditions (second pass using computed bounds)
-        hour_of_day = F.hour(F.col("timestamp_local"))
-        is_night = (hour_of_day < 6) | (hour_of_day >= 22)
-        is_peak_sun = (hour_of_day >= 10) & (hour_of_day <= 14)
-        
-        is_night_rad_high = is_night & (F.col("shortwave_radiation") > 100)
-        # Check radiation consistency: Direct + Diffuse should not exceed Shortwave by much
-        radiation_inconsistency = (F.col("direct_radiation") + F.col("diffuse_radiation")) > (F.col("shortwave_radiation") * 1.05)
-        # High cloud cover during peak sun hours (RELAXED threshold: 98% cloud cover instead of 95%)
-        # Only flag when radiation is EXCEPTIONALLY low for conditions (600 W/m² instead of 700)
-        # This reduces false positives from extreme weather events by ~90%
-        high_cloud_peak = is_peak_sun & (F.col("cloud_cover") > 98) & (F.col("shortwave_radiation") < 600)
-        # Temperature anomalies
-        extreme_temp = (F.col("temperature_2m") < -10) | (F.col("temperature_2m") > 45)
-        
-        # Build quality columns using pre-computed bounds and conditions
-        result = (
-            result
-            .withColumn("is_valid", is_valid_bounds & ~is_night_rad_high & ~(radiation_inconsistency | high_cloud_peak | extreme_temp))
-            .withColumn(
-                "quality_issues",
-                F.concat_ws(
-                    "|",
-                    bound_issues,
-                    F.when(is_night_rad_high, F.lit("NIGHT_RADIATION_SPIKE")),
-                    F.when(radiation_inconsistency, F.lit("RADIATION_INCONSISTENCY")),
-                    F.when(high_cloud_peak, F.lit("CLOUD_MEASUREMENT_INCONSISTENCY")),
-                    F.when(extreme_temp, F.lit("EXTREME_TEMPERATURE"))
-                )
-            )
-            .withColumn(
-                "quality_flag",
-                # Align weather quality_flag labels with Gold conventions:
-                # - BAD for invalid/out-of-bounds records
-                # - WARNING for anomalous but not outright invalid records
-                # - GOOD for everything else
-                F.when(
-                    ~is_valid_bounds | is_night_rad_high,
-                    F.lit("BAD")
-                ).when(
-                    radiation_inconsistency | high_cloud_peak | extreme_temp,
-                    F.lit("WARNING")
-                ).otherwise(F.lit("GOOD"))
-            )
-        )
-        result = (
-            result
-            .withColumn("created_at", F.current_timestamp())
-            .withColumn("updated_at", F.current_timestamp())
+        prepared_rounded = prepared.select(
+            "facility_code", "facility_name", "timestamp_local", "date_hour", "date",
+            *rounded_exprs,
         )
 
-        return result.select(
-            "facility_code", "facility_name", F.col("timestamp_local").alias("timestamp"),
-            "date_hour", "date", *self._numeric_columns.keys(),
-            "is_valid", "quality_flag", "quality_issues", "created_at", "updated_at"
+        # Step 5: Numeric bounds validation
+        is_valid_bounds, bound_issues = numeric_validator.validate_all(prepared_rounded.columns)
+
+        # Step 6: Logical validation checks
+        timestamp_col = F.col("timestamp_local")
+        
+        # Night radiation check (uses default night_hours from validator)
+        has_night_rad, night_rad_issue = logic_validator.check_night_radiation(
+            timestamp_col,
+            F.col("shortwave_radiation"),
+            threshold=quality_thresholds.get("night_radiation_threshold", 100.0),
         )
+        
+        # Radiation consistency check
+        has_rad_inconsistency, rad_inconsistency_issue = logic_validator.check_radiation_consistency(
+            F.col("direct_radiation"),
+            F.col("diffuse_radiation"),
+            F.col("shortwave_radiation"),
+            tolerance_factor=quality_thresholds.get("radiation_consistency_factor", 1.05),
+        )
+        
+        # Cloud-radiation mismatch (uses default peak_hours from validator)
+        has_cloud_mismatch, cloud_mismatch_issue = logic_validator.check_cloud_radiation_mismatch(
+            timestamp_col,
+            F.col("cloud_cover"),
+            F.col("shortwave_radiation"),
+            cloud_threshold=quality_thresholds.get("high_cloud_threshold", 98.0),
+            radiation_threshold=quality_thresholds.get("low_radiation_threshold", 600.0),
+        )
+        
+        has_extreme_temp, extreme_temp_issue = logic_validator.check_extreme_temperature(
+            F.col("temperature_2m"),
+            min_threshold=quality_thresholds.get("extreme_temp_low", -10.0),
+            max_threshold=quality_thresholds.get("extreme_temp_high", 45.0),
+        )
+
+        # Step 7: Build quality columns using single select() operation
+        has_severe_issue = has_night_rad
+        has_warning_issue = has_rad_inconsistency | has_cloud_mismatch | has_extreme_temp
+        
+        quality_flag = quality_assigner.assign_three_tier(
+            is_valid_bounds, has_severe_issue, has_warning_issue
+        )
+        
+        quality_issues = quality_assigner.build_issues_string([
+            bound_issues,
+            night_rad_issue,
+            rad_inconsistency_issue,
+            cloud_mismatch_issue,
+            extreme_temp_issue,
+        ])
+        
+        is_valid = is_valid_bounds & ~has_severe_issue & ~has_warning_issue
+
+        # Step 8: Final result with all columns in single select()
+        result = prepared_rounded.select(
+            "facility_code",
+            "facility_name",
+            F.col("timestamp_local").alias("timestamp"),
+            "date_hour",
+            "date",
+            *numeric_columns,
+            is_valid.alias("is_valid"),
+            quality_flag.alias("quality_flag"),
+            quality_issues.alias("quality_issues"),
+            F.current_timestamp().alias("created_at"),
+            F.current_timestamp().alias("updated_at"),
+        )
+
+        # Cleanup cached DataFrames
+        prepared_base.unpersist()
+
+        LOGGER.info("Weather transform completed successfully")
+        return result
 
 
 __all__ = ["SilverHourlyWeatherLoader"]
