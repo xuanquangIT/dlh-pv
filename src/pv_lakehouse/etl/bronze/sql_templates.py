@@ -28,7 +28,6 @@ def _validate_table(table: str) -> None:
     if table not in ALLOWED_BRONZE_TABLES:
         raise ValueError(f"Table '{table}' not in allowed list: {ALLOWED_BRONZE_TABLES}")
 
-
 def _validate_sql_identifier(identifier: str, param_name: str) -> None:
     """Validate that a string is a safe UNQUALIFIED SQL identifier.
 
@@ -60,7 +59,6 @@ def _validate_sql_identifier(identifier: str, param_name: str) -> None:
             f"and start with a letter or underscore."
         )
 
-
 def _validate_column_list(columns: Sequence[str], param_name: str) -> None:
     """Validate that all column names in a sequence are safe SQL identifiers.
 
@@ -80,7 +78,6 @@ def _validate_column_list(columns: Sequence[str], param_name: str) -> None:
         except ValueError as e:
             raise ValueError(f"Invalid column in {param_name}: {e}") from e
 
-
 def build_max_timestamp_query(table: str, timestamp_column: str) -> str:
     """Build query to get max timestamp from table.
 
@@ -98,7 +95,6 @@ def build_max_timestamp_query(table: str, timestamp_column: str) -> str:
     _validate_sql_identifier(timestamp_column, "timestamp_column")
     # Safe to use f-string since all identifiers are validated above
     return f"SELECT MAX({timestamp_column}) FROM {table}"
-
 
 def build_merge_query(
     table: str,
@@ -148,7 +144,6 @@ def build_merge_query(
     WHEN NOT MATCHED THEN INSERT *
     """
 
-
 def build_overwrite_with_dedup_query(
     table: str,
     source_view: str,
@@ -181,7 +176,6 @@ def build_overwrite_with_dedup_query(
         FROM {source_view}
     ) WHERE rn = 1
     """
-
 
 __all__ = [
     "ALLOWED_BRONZE_TABLES",

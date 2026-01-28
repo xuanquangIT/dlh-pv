@@ -204,25 +204,7 @@ class BaseBronzeLoader(ABC):
             self.spark.sql(merge_sql)
             LOGGER.info("MERGE completed for %s", self.iceberg_table)
         except (AnalysisException, ParseException) as e:
-            LOGGER.warning(
-                "MERGE failed for %s: %s. Falling back to append...",
-                self.iceberg_table,
-                e,
-            )
-            try:
-                write_iceberg_table(df, self.iceberg_table, mode="append")
-                LOGGER.info("Append fallback succeeded for %s", self.iceberg_table)
-            except (AnalysisException, ParseException, IOError, OSError) as append_error:
-                LOGGER.error(
-                    "Append fallback also failed for %s: %s",
-                    self.iceberg_table,
-                    append_error,
-                )
-                raise RuntimeError(
-                    f"Failed to write to {self.iceberg_table}: "
-                    f"MERGE error: {e}, Append error: {append_error}"
-                ) from append_error
-        except (ValueError, RuntimeError) as e:
+            # MERGE not supported or SQL syntax error - fallback to append
             LOGGER.warning(
                 "MERGE failed for %s: %s. Falling back to append...",
                 self.iceberg_table,

@@ -2,8 +2,11 @@
 from __future__ import annotations
 import argparse
 import datetime as dt
+import logging
 from typing import Dict, Optional, Type
 from pv_lakehouse.etl.bronze.base import BaseBronzeLoader, BronzeLoadOptions
+
+LOGGER = logging.getLogger(__name__)
 
 
 def _parse_date(value: Optional[str]) -> Optional[dt.date]:
@@ -135,16 +138,16 @@ def run_cli(argv: Optional[list[str]] = None) -> int:
     loader = loader_cls(options)
     try:
         row_count = loader.run()
-        print(f"Loader '{args.dataset}' wrote {row_count} rows")
+        LOGGER.info("Loader '%s' wrote %d rows", args.dataset, row_count)
         return row_count
     except ConnectionError as e:
-        print(f"ERROR: API connection failed for '{args.dataset}': {e}")
+        LOGGER.error("API connection failed for '%s': %s", args.dataset, e)
         raise
     except ValueError as e:
-        print(f"ERROR: Data validation failed for '{args.dataset}': {e}")
+        LOGGER.error("Data validation failed for '%s': %s", args.dataset, e)
         raise
     except RuntimeError as e:
-        print(f"ERROR: Loader execution failed for '{args.dataset}': {e}")
+        LOGGER.error("Loader execution failed for '%s': %s", args.dataset, e)
         raise
 
 

@@ -40,7 +40,7 @@ class WeatherLoader(BaseBronzeLoader):
     def fetch_data(self) -> pd.DataFrame:
         """Fetch weather data from Open-Meteo API."""
         facilities = load_facility_locations(self.resolve_facilities(), self.options.api_key)
-        limiter, frames = RateLimiter(30.0), []
+        limiter, frames, failed = RateLimiter(30.0), [], []
 
         def fetch_one(facility):
             return openmeteo.fetch_weather_dataframe(
@@ -60,13 +60,21 @@ class WeatherLoader(BaseBronzeLoader):
         with ThreadPoolExecutor(max_workers=self.options.max_workers) as executor:
             futures = {executor.submit(fetch_one, f): f for f in facilities}
             for future in as_completed(futures):
+                facility = futures[future]
                 try:
                     df = future.result()
                     if not df.empty:
                         frames.append(df)
                 except (ConnectionError, TimeoutError, OSError) as e:
-                    LOGGER.warning("Failed: %s - %s", futures[future].code, e)
-
+                    LOGGER.warning("Failed to fetch weather for %s: %s", facility.code, e)
+                    failed.append(facility.code)
+        if failed:
+            LOGGER.error(
+                "Weather fetch failed for %d/%d facilities: %s",
+                len(failed),
+                len(facilities),
+                failed,
+            )
         return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
 
     def transform(self, df: DataFrame) -> DataFrame:
