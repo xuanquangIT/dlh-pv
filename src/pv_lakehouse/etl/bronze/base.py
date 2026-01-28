@@ -3,8 +3,9 @@
 from __future__ import annotations
 import datetime as dt
 import logging
+import re
 from abc import ABC, abstractmethod
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import List, Optional, Sequence
 import pandas as pd
 from pyspark.sql import DataFrame, SparkSession
@@ -16,6 +17,7 @@ from pv_lakehouse.etl.bronze.sql_templates import (
     build_max_timestamp_query,
 )
 from pv_lakehouse.etl.utils import resolve_facility_codes
+from pv_lakehouse.etl.utils.etl_metrics import ETLTimer, log_etl_start, log_etl_summary
 from pv_lakehouse.etl.utils.spark_utils import (
     create_spark_session,
     write_iceberg_table,
@@ -85,8 +87,6 @@ class BaseBronzeLoader(ABC):
         Raises:
             ValueError: If any SQL identifier is invalid.
         """
-        import re
-        
         # Regex for valid UNQUALIFIED SQL identifiers (columns, views)
         # Uses re.ASCII flag to prevent unicode bypass attacks
         # Qualified table names (with dots) are validated via whitelist in _validate_table()
@@ -266,7 +266,11 @@ class BaseBronzeLoader(ABC):
             ValueError: If data validation or transformation fails.
             RuntimeError: If Spark operations or write operations fail.
         """
+        timer = ETLTimer()
+        
         try:
+            log_etl_start(LOGGER, self.iceberg_table, self.options.mode)
+            
             # Fetch data from API
             try:
                 pandas_df = self.fetch_data()
@@ -282,7 +286,7 @@ class BaseBronzeLoader(ABC):
                 raise ValueError(f"Invalid data received from API: {e}") from e
 
             if pandas_df is None or pandas_df.empty:
-                LOGGER.info("No data fetched; skipping writes.")
+                LOGGER.info("No data fetched; skipping writes. Completed in %.2f seconds.", timer.elapsed())
                 return 0
 
             # Convert to Spark and transform
@@ -320,7 +324,13 @@ class BaseBronzeLoader(ABC):
                 ) from e
 
             row_count = spark_df.count()
-            LOGGER.info("Loader completed: %d rows written to %s", row_count, self.iceberg_table)
+            log_etl_summary(
+                LOGGER,
+                self.iceberg_table,
+                row_count,
+                timer.elapsed(),
+                operation="Bronze ETL",
+            )
             return row_count
 
         finally:

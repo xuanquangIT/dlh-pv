@@ -12,15 +12,13 @@ docker compose exec spark-master spark-submit \
   /opt/workdir/src/pv_lakehouse/etl/bronze/cli.py facilities
 
 # 2. Load Facility Energy (timeseries data)
-# Note: Energy API uses UTC. Adjust for AEST (UTC+10) to match Weather/Air Quality
-# Local: 2025-01-01 00:00 AEST = 2024-12-31 14:00 UTC
 docker compose exec spark-master spark-submit \
   --master spark://spark-master:7077 --deploy-mode client \
   --driver-memory 1g --executor-memory 1g \
   /opt/workdir/src/pv_lakehouse/etl/bronze/cli.py energy \
   --mode backfill \
-  --date-start 2024-12-31T14:00:00 \
-  --date-end 2025-01-08T09:59:59
+  --date-start 2025-01-01T10:00:00 \
+  --date-end 2026-01-01T09:59:59
 
 # 3. Load Facility Weather
 docker compose exec spark-master spark-submit \
@@ -28,7 +26,7 @@ docker compose exec spark-master spark-submit \
   --driver-memory 1g --executor-memory 1g \
   /opt/workdir/src/pv_lakehouse/etl/bronze/cli.py weather \
   --mode backfill \
-  --start 2025-01-01 --end 2025-01-07
+  --start 2025-01-01 --end 2025-12-31
 
 # 4. Load Facility Air Quality
 docker compose exec spark-master spark-submit \
@@ -36,7 +34,7 @@ docker compose exec spark-master spark-submit \
   --driver-memory 1g --executor-memory 1g \
   /opt/workdir/src/pv_lakehouse/etl/bronze/cli.py air_quality \
   --mode backfill \
-  --start 2025-01-01 --end 2025-01-07
+  --start 2025-01-01 --end 2025-12-31
   
 
 

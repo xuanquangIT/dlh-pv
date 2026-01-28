@@ -5,9 +5,9 @@ import datetime as dt
 import logging
 from typing import Dict, Optional, Type
 from pv_lakehouse.etl.bronze.base import BaseBronzeLoader, BronzeLoadOptions
+from pv_lakehouse.etl.utils.logging_config import configure_logging
 
 LOGGER = logging.getLogger(__name__)
-
 
 def _parse_date(value: Optional[str]) -> Optional[dt.date]:
     """Parse date string in YYYY-MM-DD format."""
@@ -115,6 +115,9 @@ def run_cli(argv: Optional[list[str]] = None) -> int:
     Returns:
         Number of rows written.
     """
+    # Configure logging first
+    configure_logging()
+    
     parser = build_parser()
     args = parser.parse_args(argv)
 

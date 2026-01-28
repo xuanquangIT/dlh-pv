@@ -1,17 +1,19 @@
 #!/usr/bin/env python3
 """Bronze ingestion job for OpenElectricity facility energy data."""
-
 from __future__ import annotations
-
 import datetime as dt
 import logging
-
 import pandas as pd
+import requests
 from pyspark.sql import DataFrame
 from pyspark.sql import functions as F
-
 from pv_lakehouse.etl.bronze.base import BaseBronzeLoader
 from pv_lakehouse.etl.clients import openelectricity
+from pv_lakehouse.etl.utils.etl_metrics import (
+    ETLTimer,
+    log_fetch_start,
+    log_fetch_summary,
+)
 
 LOGGER = logging.getLogger(__name__)
 
@@ -34,10 +36,20 @@ class EnergyLoader(BaseBronzeLoader):
 
     def fetch_data(self) -> pd.DataFrame:
         """Fetch energy data from OpenElectricity API."""
+        timer = ETLTimer()
+        facilities = self.resolve_facilities()
+        total_facilities = len(facilities)
         frames, skipped = [], []
         fmt = lambda v: v.strftime("%Y-%m-%dT%H:%M:%S") if v else None
+        
+        log_fetch_start(
+            LOGGER,
+            "energy",
+            total_facilities,
+            date_range=(fmt(self.options.start), fmt(self.options.end)),
+        )
 
-        for code in self.resolve_facilities():
+        for code in facilities:
             try:
                 LOGGER.info("Fetching: %s", code)
                 df = openelectricity.fetch_facility_timeseries_dataframe(
@@ -54,7 +66,6 @@ class EnergyLoader(BaseBronzeLoader):
                     frames.append(df)
             except Exception as e:
                 # 400: Bad Request, 403: Forbidden, 404: Not Found, 416: Range Not Satisfiable, 429: Rate Limit
-                import requests
                 if isinstance(e, requests.exceptions.HTTPError):
                     # Safely extract status code from HTTPError response using hasattr
                     status_code = None
@@ -74,10 +85,19 @@ class EnergyLoader(BaseBronzeLoader):
                         continue
                 # Re-raise all other exceptions (5xx, network errors, etc.)
                 raise
-
-        if skipped:
-            LOGGER.warning("Skipped facilities (403/416): %s", skipped)
-        return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
+        
+        # Summary logging
+        result_df = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
+        log_fetch_summary(
+            LOGGER,
+            "energy",
+            total_facilities,
+            total_facilities - len(skipped),
+            skipped,
+            len(result_df),
+            timer.elapsed(),
+        )
+        return result_df
 
     def transform(self, df: DataFrame) -> DataFrame:
         """Transform energy data with timestamp columns."""

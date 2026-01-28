@@ -16,6 +16,11 @@ from pv_lakehouse.etl.bronze.facility_timezones import get_facility_timezone
 from pv_lakehouse.etl.clients import openmeteo
 from pv_lakehouse.etl.clients.openmeteo import RateLimiter
 from pv_lakehouse.etl.utils import load_facility_locations
+from pv_lakehouse.etl.utils.etl_metrics import (
+    ETLTimer,
+    log_fetch_start,
+    log_fetch_summary,
+)
 
 LOGGER = logging.getLogger(__name__)
 
@@ -39,7 +44,17 @@ class AirQualityLoader(BaseBronzeLoader):
 
     def fetch_data(self) -> pd.DataFrame:
         """Fetch air quality data from Open-Meteo API."""
+        timer = ETLTimer()
         facilities = load_facility_locations(self.resolve_facilities(), self.options.api_key)
+        total_facilities = len(facilities)
+        
+        log_fetch_start(
+            LOGGER,
+            "air quality",
+            total_facilities,
+            date_range=(self.options.start, self.options.end),
+        )
+        
         limiter, frames, failed = RateLimiter(30.0), [], []
 
         def fetch_one(facility):
@@ -67,14 +82,19 @@ class AirQualityLoader(BaseBronzeLoader):
                 except (ConnectionError, TimeoutError, OSError) as e:
                     LOGGER.warning("Failed to fetch air quality for %s: %s", facility.code, e)
                     failed.append(facility.code)
-        if failed:
-            LOGGER.error(
-                "Air quality fetch failed for %d/%d facilities: %s",
-                len(failed),
-                len(facilities),
-                failed,
-            )
-        return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
+        
+        # Summary logging
+        result_df = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
+        log_fetch_summary(
+            LOGGER,
+            "air quality",
+            total_facilities,
+            total_facilities - len(failed),
+            failed,
+            len(result_df),
+            timer.elapsed(),
+        )
+        return result_df
 
     def transform(self, df: DataFrame) -> DataFrame:
         """Transform air quality data with timestamp columns."""

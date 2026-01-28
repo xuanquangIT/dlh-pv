@@ -8,6 +8,7 @@ from pyspark.sql import DataFrame
 from pyspark.sql import functions as F
 from pv_lakehouse.etl.bronze.base import BaseBronzeLoader
 from pv_lakehouse.etl.clients import openelectricity
+from pv_lakehouse.etl.utils.etl_metrics import ETLTimer, log_etl_summary
 
 LOGGER = logging.getLogger(__name__)
 
@@ -36,12 +37,18 @@ class FacilitiesLoader(BaseBronzeLoader):
 
     def run(self) -> int:
         """Execute loader - facilities always use overwrite mode."""
+        timer = ETLTimer()
+        
         try:
+            LOGGER.info("Starting facilities metadata fetch")
             pandas_df = self.fetch_data()
             if pandas_df is None or pandas_df.empty:
-                LOGGER.info("No facility metadata returned; skipping writes.")
+                LOGGER.warning("No facility metadata returned; skipping writes.")
                 return 0
 
+            fetched_rows = len(pandas_df)
+            LOGGER.info("Fetched %d facility records from API", fetched_rows)
+            
             spark_df = self.spark.createDataFrame(
                 pandas_df, schema=openelectricity.FACILITY_SCHEMA
             )
@@ -51,7 +58,14 @@ class FacilitiesLoader(BaseBronzeLoader):
             # Facilities: always overwrite (master data)
             self.write_overwrite(spark_df)
             row_count = spark_df.count()
-            LOGGER.info("Wrote %d rows to %s (mode=overwrite)", row_count, self.iceberg_table)
+            
+            log_etl_summary(
+                LOGGER,
+                self.iceberg_table,
+                row_count,
+                timer.elapsed(),
+                operation="Facilities load",
+            )
             return row_count
         finally:
             self.close()
