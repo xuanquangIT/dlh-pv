@@ -57,10 +57,8 @@ class EnergyLoader(BaseBronzeLoader):
                 # These indicate the facility doesn't have data in the requested range
                 import requests
                 if isinstance(e, requests.exceptions.HTTPError):
-                    # Extract status code from HTTPError response
-                    status_code = None
-                    if hasattr(e, 'response') and e.response is not None:
-                        status_code = e.response.status_code
+                    # Safely extract status code from HTTPError response
+                    status_code = getattr(getattr(e, 'response', None), 'status_code', None)
                     
                     if status_code in (403, 416):
                         LOGGER.warning("Skipping facility %s: HTTP %d - %s", code, status_code, str(e))
