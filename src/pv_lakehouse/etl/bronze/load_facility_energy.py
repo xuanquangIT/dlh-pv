@@ -52,12 +52,23 @@ class EnergyLoader(BaseBronzeLoader):
                 )
                 if not df.empty:
                     frames.append(df)
-            except (ConnectionError, TimeoutError, OSError) as e:
-                msg = str(e)
-                if "403" in msg or "416" in msg:
-                    skipped.append(code)
-                else:
-                    raise
+            except Exception as e:
+                # Check if it's an HTTPError with status code 403 (Forbidden) or 416 (Range Not Satisfiable)
+                # These indicate the facility doesn't have data in the requested range
+                import requests
+                if isinstance(e, requests.exceptions.HTTPError):
+                    # Extract status code from HTTPError response
+                    status_code = None
+                    if hasattr(e, 'response') and e.response is not None:
+                        status_code = e.response.status_code
+                    
+                    if status_code in (403, 416):
+                        LOGGER.warning("Skipping facility %s: HTTP %d - %s", code, status_code, str(e))
+                        skipped.append(code)
+                        continue
+                
+                # Re-raise all other exceptions
+                raise
 
         if skipped:
             LOGGER.warning("Skipped facilities (403/416): %s", skipped)

@@ -14,7 +14,6 @@ ALLOWED_BRONZE_TABLES = frozenset({
 
 # Regex pattern for valid UNQUALIFIED SQL identifiers (column names, view names)
 # Allows: ASCII alphanumeric, underscore, starts with ASCII letter/underscore
-# Does NOT allow: dots, spaces, quotes, unicode, or special characters that could enable SQL injection
 _SQL_IDENTIFIER_PATTERN = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*$", re.ASCII)
 
 def _validate_table(table: str) -> None:
@@ -97,7 +96,12 @@ def build_max_timestamp_query(table: str, timestamp_column: str) -> str:
     """
     _validate_table(table)
     _validate_sql_identifier(timestamp_column, "timestamp_column")
-    # Safe to use format() since all identifiers are validated
+    
+    # Defensive: Double-check validation before string interpolation
+    assert table in ALLOWED_BRONZE_TABLES, f"Table validation bypassed: {table}"
+    assert _SQL_IDENTIFIER_PATTERN.match(timestamp_column), f"Identifier validation bypassed: {timestamp_column}"
+    
+    # Safe to use f-string since all identifiers are validated and assertion-checked
     return f"SELECT MAX({timestamp_column}) FROM {table}"
 
 
@@ -128,6 +132,13 @@ def build_merge_query(
     _validate_sql_identifier(source_view, "source_view")
     _validate_column_list(keys, "keys")
     _validate_sql_identifier(timestamp_column, "timestamp_column")
+
+    # Defensive: Double-check validation before string interpolation
+    assert table in ALLOWED_BRONZE_TABLES, f"Table validation bypassed: {table}"
+    assert _SQL_IDENTIFIER_PATTERN.match(source_view), f"Identifier validation bypassed: {source_view}"
+    assert _SQL_IDENTIFIER_PATTERN.match(timestamp_column), f"Identifier validation bypassed: {timestamp_column}"
+    for k in keys:
+        assert _SQL_IDENTIFIER_PATTERN.match(k), f"Key validation bypassed: {k}"
 
     # Build ON clause: target.key1 = source.key1 AND target.key2 = source.key2 ...
     on_clause = " AND ".join(f"target.{k} = source.{k}" for k in keys)
@@ -171,6 +182,12 @@ def build_overwrite_with_dedup_query(
     _validate_table(table)
     _validate_sql_identifier(source_view, "source_view")
     _validate_column_list(keys, "keys")
+
+    # Defensive: Double-check validation before string interpolation
+    assert table in ALLOWED_BRONZE_TABLES, f"Table validation bypassed: {table}"
+    assert _SQL_IDENTIFIER_PATTERN.match(source_view), f"Identifier validation bypassed: {source_view}"
+    for k in keys:
+        assert _SQL_IDENTIFIER_PATTERN.match(k), f"Key validation bypassed: {k}"
 
     partition_cols = ", ".join(keys)
 

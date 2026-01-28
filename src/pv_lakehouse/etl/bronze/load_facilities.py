@@ -2,13 +2,14 @@
 """Bronze ingestion job for OpenElectricity facility metadata."""
 
 from __future__ import annotations
-
+import logging
 import pandas as pd
 from pyspark.sql import DataFrame
 from pyspark.sql import functions as F
-
 from pv_lakehouse.etl.bronze.base import BaseBronzeLoader
 from pv_lakehouse.etl.clients import openelectricity
+
+LOGGER = logging.getLogger(__name__)
 
 
 class FacilitiesLoader(BaseBronzeLoader):
@@ -38,7 +39,7 @@ class FacilitiesLoader(BaseBronzeLoader):
         try:
             pandas_df = self.fetch_data()
             if pandas_df is None or pandas_df.empty:
-                print("No facility metadata returned; skipping writes.")
+                LOGGER.info("No facility metadata returned; skipping writes.")
                 return 0
 
             spark_df = self.spark.createDataFrame(
@@ -50,7 +51,7 @@ class FacilitiesLoader(BaseBronzeLoader):
             # Facilities: always overwrite (master data)
             self.write_overwrite(spark_df)
             row_count = spark_df.count()
-            print(f"Wrote {row_count} rows to {self.iceberg_table} (mode=overwrite)")
+            LOGGER.info("Wrote %d rows to %s (mode=overwrite)", row_count, self.iceberg_table)
             return row_count
         finally:
             self.close()
