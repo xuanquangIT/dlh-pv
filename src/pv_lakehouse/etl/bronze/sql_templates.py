@@ -7,6 +7,7 @@ import re
 from typing import Sequence
 
 # Whitelist of allowed Bronze table names to prevent SQL injection
+# Table names can be qualified (e.g., schema.table) and are validated via whitelist only
 ALLOWED_BRONZE_TABLES = frozenset({
     "lh.bronze.raw_facilities",
     "lh.bronze.raw_facility_energy",
@@ -14,8 +15,10 @@ ALLOWED_BRONZE_TABLES = frozenset({
     "lh.bronze.raw_facility_air_quality",
 })
 
-# Regex pattern for valid SQL identifiers: alphanumeric, underscore, starts with letter/underscore
-# Does not allow dots, spaces, quotes, or special characters that could enable SQL injection
+# Regex pattern for valid UNQUALIFIED SQL identifiers (column names, view names)
+# Allows: alphanumeric, underscore, starts with letter/underscore
+# Does NOT allow: dots, spaces, quotes, or special characters that could enable SQL injection
+# Note: Qualified table names (with dots) are validated via ALLOWED_BRONZE_TABLES whitelist
 _SQL_IDENTIFIER_PATTERN = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*$")
 
 
@@ -33,14 +36,18 @@ def _validate_table(table: str) -> None:
 
 
 def _validate_sql_identifier(identifier: str, param_name: str) -> None:
-    """Validate that a string is a safe SQL identifier.
+    """Validate that a string is a safe UNQUALIFIED SQL identifier.
 
     Ensures the identifier contains only alphanumeric characters and underscores,
     and starts with a letter or underscore. This prevents SQL injection attacks
-    through column names, view names, or other SQL identifiers.
+    through column names, view names, or other unqualified SQL identifiers.
+
+    Note: This function validates UNQUALIFIED identifiers only (no dots allowed).
+    Qualified table names (e.g., schema.table) are validated via ALLOWED_BRONZE_TABLES
+    whitelist in _validate_table() function.
 
     Args:
-        identifier: The SQL identifier to validate (column name, view name, etc.).
+        identifier: The unqualified SQL identifier to validate (column, view name, etc.).
         param_name: Name of the parameter for error messages.
 
     Raises:

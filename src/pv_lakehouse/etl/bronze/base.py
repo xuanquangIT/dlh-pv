@@ -92,7 +92,8 @@ class BaseBronzeLoader(ABC):
         """
         import re
         
-        # Regex for valid SQL identifiers: alphanumeric, underscore, starts with letter/underscore
+        # Regex for valid UNQUALIFIED SQL identifiers (columns, views)
+        # Qualified table names (with dots) are validated via whitelist in _validate_table()
         sql_pattern = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*$")
         
         # Validate timestamp_column
@@ -110,12 +111,15 @@ class BaseBronzeLoader(ABC):
                 f"Must contain only alphanumeric and underscore, start with letter/underscore"
             )
         
-        # Validate merge_keys
+        # Validate merge_keys - must not be empty if set
+        # Empty merge_keys will cause build_merge_query() to fail at runtime
+        if not isinstance(self.merge_keys, (list, tuple)):
+            raise ValueError(
+                f"merge_keys must be a list or tuple, got {type(self.merge_keys)}"
+            )
+        
+        # If merge_keys is not empty, validate each key
         if self.merge_keys:
-            if not isinstance(self.merge_keys, (list, tuple)):
-                raise ValueError(
-                    f"merge_keys must be a list or tuple, got {type(self.merge_keys)}"
-                )
             for i, key in enumerate(self.merge_keys):
                 if not isinstance(key, str):
                     raise ValueError(
