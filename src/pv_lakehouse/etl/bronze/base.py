@@ -74,6 +74,7 @@ class BaseBronzeLoader(ABC):
         self.options = options or BronzeLoadOptions()
         self._spark: Optional[SparkSession] = None
         self._validate_table()
+        self._validate_sql_identifiers()
         self._initialize_date_range()
 
     def _validate_table(self) -> None:
@@ -82,6 +83,51 @@ class BaseBronzeLoader(ABC):
             raise ValueError(
                 f"Table '{self.iceberg_table}' not in allowed list: {ALLOWED_BRONZE_TABLES}"
             )
+
+    def _validate_sql_identifiers(self) -> None:
+        """Validate all SQL identifiers to prevent SQL injection.
+        
+        Raises:
+            ValueError: If any SQL identifier is invalid.
+        """
+        import re
+        
+        # Regex for valid SQL identifiers: alphanumeric, underscore, starts with letter/underscore
+        sql_pattern = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*$")
+        
+        # Validate timestamp_column
+        if not self.timestamp_column:
+            raise ValueError(
+                f"timestamp_column must be set in {self.__class__.__name__}"
+            )
+        if not isinstance(self.timestamp_column, str):
+            raise ValueError(
+                f"timestamp_column must be a string, got {type(self.timestamp_column)}"
+            )
+        if not sql_pattern.match(self.timestamp_column):
+            raise ValueError(
+                f"Invalid timestamp_column '{self.timestamp_column}': "
+                f"Must contain only alphanumeric and underscore, start with letter/underscore"
+            )
+        
+        # Validate merge_keys
+        if self.merge_keys:
+            if not isinstance(self.merge_keys, (list, tuple)):
+                raise ValueError(
+                    f"merge_keys must be a list or tuple, got {type(self.merge_keys)}"
+                )
+            for i, key in enumerate(self.merge_keys):
+                if not isinstance(key, str):
+                    raise ValueError(
+                        f"merge_keys[{i}] must be a string, got {type(key)}"
+                    )
+                if not key:
+                    raise ValueError(f"merge_keys[{i}] cannot be empty")
+                if not sql_pattern.match(key):
+                    raise ValueError(
+                        f"Invalid merge_keys[{i}] '{key}': "
+                        f"Must contain only alphanumeric and underscore, start with letter/underscore"
+                    )
 
     def _initialize_date_range(self) -> None:
         """Initialize date range for incremental loads. Override if needed."""

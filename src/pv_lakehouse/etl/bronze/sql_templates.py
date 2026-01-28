@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import re
 from typing import Sequence
 
 # Whitelist of allowed Bronze table names to prevent SQL injection
@@ -12,6 +13,10 @@ ALLOWED_BRONZE_TABLES = frozenset({
     "lh.bronze.raw_facility_weather",
     "lh.bronze.raw_facility_air_quality",
 })
+
+# Regex pattern for valid SQL identifiers: alphanumeric, underscore, starts with letter/underscore
+# Does not allow dots, spaces, quotes, or special characters that could enable SQL injection
+_SQL_IDENTIFIER_PATTERN = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*$")
 
 
 def _validate_table(table: str) -> None:
@@ -27,6 +32,54 @@ def _validate_table(table: str) -> None:
         raise ValueError(f"Table '{table}' not in allowed list: {ALLOWED_BRONZE_TABLES}")
 
 
+def _validate_sql_identifier(identifier: str, param_name: str) -> None:
+    """Validate that a string is a safe SQL identifier.
+
+    Ensures the identifier contains only alphanumeric characters and underscores,
+    and starts with a letter or underscore. This prevents SQL injection attacks
+    through column names, view names, or other SQL identifiers.
+
+    Args:
+        identifier: The SQL identifier to validate (column name, view name, etc.).
+        param_name: Name of the parameter for error messages.
+
+    Raises:
+        ValueError: If identifier is empty, None, or contains unsafe characters.
+    """
+    if not identifier:
+        raise ValueError(f"{param_name} cannot be empty or None")
+
+    if not isinstance(identifier, str):
+        raise ValueError(f"{param_name} must be a string, got {type(identifier).__name__}")
+
+    if not _SQL_IDENTIFIER_PATTERN.match(identifier):
+        raise ValueError(
+            f"Invalid SQL identifier for {param_name}: '{identifier}'. "
+            f"Must contain only alphanumeric characters and underscores, "
+            f"and start with a letter or underscore."
+        )
+
+
+def _validate_column_list(columns: Sequence[str], param_name: str) -> None:
+    """Validate that all column names in a sequence are safe SQL identifiers.
+
+    Args:
+        columns: Sequence of column names to validate.
+        param_name: Name of the parameter for error messages.
+
+    Raises:
+        ValueError: If any column name is invalid.
+    """
+    if not columns:
+        raise ValueError(f"{param_name} cannot be empty")
+
+    for i, col in enumerate(columns):
+        try:
+            _validate_sql_identifier(col, f"{param_name}[{i}]")
+        except ValueError as e:
+            raise ValueError(f"Invalid column in {param_name}: {e}") from e
+
+
 def build_max_timestamp_query(table: str, timestamp_column: str) -> str:
     """Build query to get max timestamp from table.
 
@@ -38,10 +91,11 @@ def build_max_timestamp_query(table: str, timestamp_column: str) -> str:
         SQL query string.
 
     Raises:
-        ValueError: If table not in whitelist.
+        ValueError: If table not in whitelist or timestamp_column is invalid.
     """
     _validate_table(table)
-    # Safe to use format() since table name is validated against whitelist
+    _validate_sql_identifier(timestamp_column, "timestamp_column")
+    # Safe to use format() since all identifiers are validated
     return f"SELECT MAX({timestamp_column}) FROM {table}"
 
 
@@ -66,11 +120,12 @@ def build_merge_query(
         SQL MERGE INTO query string.
 
     Raises:
-        ValueError: If table not in whitelist or keys is empty.
+        ValueError: If table not in whitelist, keys is empty, or any identifier is invalid.
     """
     _validate_table(table)
-    if not keys:
-        raise ValueError("merge_keys cannot be empty")
+    _validate_sql_identifier(source_view, "source_view")
+    _validate_column_list(keys, "keys")
+    _validate_sql_identifier(timestamp_column, "timestamp_column")
 
     # Build ON clause: target.key1 = source.key1 AND target.key2 = source.key2 ...
     on_clause = " AND ".join(f"target.{k} = source.{k}" for k in keys)
@@ -109,11 +164,11 @@ def build_overwrite_with_dedup_query(
         SQL INSERT OVERWRITE query string.
 
     Raises:
-        ValueError: If table not in whitelist or keys is empty.
+        ValueError: If table not in whitelist, keys is empty, or any identifier is invalid.
     """
     _validate_table(table)
-    if not keys:
-        raise ValueError("keys cannot be empty")
+    _validate_sql_identifier(source_view, "source_view")
+    _validate_column_list(keys, "keys")
 
     partition_cols = ", ".join(keys)
 

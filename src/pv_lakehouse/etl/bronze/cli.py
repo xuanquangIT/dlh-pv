@@ -146,9 +146,6 @@ def run_cli(argv: Optional[list[str]] = None) -> int:
     except RuntimeError as e:
         print(f"ERROR: Loader execution failed for '{args.dataset}': {e}")
         raise
-    except Exception as e:
-        print(f"ERROR: Unexpected error in loader '{args.dataset}': {e}")
-        raise
 
 
 def main() -> None:  # pragma: no cover - CLI entrypoint
