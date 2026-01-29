@@ -157,13 +157,19 @@ def run_cli(argv: Optional[list[str]] = None) -> int:
         return row_count
     except ConnectionError as e:
         LOGGER.error("API connection failed for '%s': %s", args.dataset, e)
-        raise
+        raise ConnectionError(
+            f"Bronze loader '{args.dataset}' failed: API connection error"
+        ) from e
     except ValueError as e:
         LOGGER.error("Data validation failed for '%s': %s", args.dataset, e)
-        raise
+        raise ValueError(
+            f"Bronze loader '{args.dataset}' failed: data validation error"
+        ) from e
     except RuntimeError as e:
         LOGGER.error("Loader execution failed for '%s': %s", args.dataset, e)
-        raise
+        raise RuntimeError(
+            f"Bronze loader '{args.dataset}' failed: execution error"
+        ) from e
 
 
 def main() -> None:  # pragma: no cover - CLI entrypoint

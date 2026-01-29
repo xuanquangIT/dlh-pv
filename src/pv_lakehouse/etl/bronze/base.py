@@ -142,10 +142,18 @@ class BaseBronzeLoader(ABC):
         return self._spark
 
     def close(self) -> None:
-        """Stop SparkSession."""
+        """Stop SparkSession safely.
+        
+        Handles potential errors during spark.stop() to ensure cleanup
+        completes even if the Spark context is in an invalid state.
+        """
         if self._spark is not None:
-            self._spark.stop()
-            self._spark = None
+            try:
+                self._spark.stop()
+            except Exception as e:
+                LOGGER.warning("Error stopping SparkSession: %s", e)
+            finally:
+                self._spark = None
 
     def resolve_facilities(self) -> List[str]:
         """Resolve facility codes from options or defaults."""

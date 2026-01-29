@@ -3,6 +3,7 @@
 from __future__ import annotations
 import re
 from typing import Sequence
+
 # Whitelist of allowed Bronze table names to prevent SQL injection
 # Table names can be qualified (e.g., schema.table) and are validated via whitelist only
 ALLOWED_BRONZE_TABLES = frozenset({
@@ -15,6 +16,19 @@ ALLOWED_BRONZE_TABLES = frozenset({
 # Regex pattern for valid UNQUALIFIED SQL identifiers (column names, view names)
 # Allows: ASCII alphanumeric, underscore, starts with ASCII letter/underscore
 _SQL_IDENTIFIER_PATTERN = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*$", re.ASCII)
+
+# SQL reserved keywords that cannot be used as unquoted identifiers
+# This is a subset of common dangerous keywords for defense-in-depth
+_SQL_RESERVED_KEYWORDS = frozenset({
+    # DDL keywords
+    "ALTER", "CREATE", "DELETE", "DROP", "INSERT", "TRUNCATE", "UPDATE",
+    # DML keywords  
+    "SELECT", "FROM", "WHERE", "JOIN", "UNION", "INTO", "VALUES",
+    # Control keywords
+    "EXEC", "EXECUTE", "GRANT", "REVOKE",
+    # Other dangerous keywords
+    "TABLE", "DATABASE", "SCHEMA", "INDEX", "VIEW", "PROCEDURE", "FUNCTION",
+})
 
 def _validate_table(table: str) -> None:
     """Validate table name is in whitelist (internal use).
@@ -60,6 +74,13 @@ def _validate_sql_identifier(identifier: str, param_name: str) -> None:
             f"Invalid SQL identifier for {param_name}: '{identifier}'. "
             f"Must contain only ASCII alphanumeric characters and underscores, "
             f"and start with a letter or underscore."
+        )
+
+    # Check for SQL reserved keywords (case-insensitive)
+    if identifier.upper() in _SQL_RESERVED_KEYWORDS:
+        raise ValueError(
+            f"SQL reserved keyword '{identifier}' cannot be used as {param_name}. "
+            f"Reserved keywords are not allowed as identifiers for security."
         )
 
 def _validate_column_list(columns: Sequence[str], param_name: str) -> None:
