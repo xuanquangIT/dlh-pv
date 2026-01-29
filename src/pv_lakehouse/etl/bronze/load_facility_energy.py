@@ -1,0 +1,119 @@
+#!/usr/bin/env python3
+"""Bronze ingestion job for OpenElectricity facility energy data."""
+from __future__ import annotations
+import datetime as dt
+import logging
+import pandas as pd
+import requests
+from pyspark.sql import DataFrame
+from pyspark.sql import functions as F
+from pv_lakehouse.etl.bronze.base import BaseBronzeLoader
+from pv_lakehouse.etl.clients import openelectricity
+from pv_lakehouse.etl.utils.etl_metrics import (
+    ETLTimer,
+    log_fetch_start,
+    log_fetch_summary,
+)
+
+LOGGER = logging.getLogger(__name__)
+
+
+class EnergyLoader(BaseBronzeLoader):
+    """Bronze loader for facility energy data."""
+
+    iceberg_table = "lh.bronze.raw_facility_energy"
+    timestamp_column = "interval_ts"
+    merge_keys = ("facility_code", "interval_ts", "metric")
+
+    def _initialize_date_range(self) -> None:
+        """Initialize date range for incremental energy loads."""
+        if self.options.mode == "incremental" and self.options.start is None:
+            max_ts = self.get_max_timestamp()
+            if max_ts:
+                self.options.start = max_ts + dt.timedelta(hours=1)
+                self.options.end = self.options.end or dt.datetime.now(dt.timezone.utc)
+                LOGGER.info("Incremental: from %s (last: %s)", self.options.start, max_ts)
+
+    def _format_datetime(self, value: dt.datetime | None) -> str | None:
+        """Format datetime for API request, returning None if value is None."""
+        return value.strftime("%Y-%m-%dT%H:%M:%S") if value else None
+
+    def fetch_data(self) -> pd.DataFrame:
+        """Fetch energy data from OpenElectricity API."""
+        timer = ETLTimer()
+        facilities = self.resolve_facilities()
+        total_facilities = len(facilities)
+        frames: list[pd.DataFrame] = []
+        skipped: list[str] = []
+        
+        log_fetch_start(
+            LOGGER,
+            "energy",
+            total_facilities,
+            date_range=(self._format_datetime(self.options.start), self._format_datetime(self.options.end)),
+        )
+
+        for code in facilities:
+            try:
+                LOGGER.info("Fetching: %s", code)
+                df = openelectricity.fetch_facility_timeseries_dataframe(
+                    facility_codes=[code],
+                    metrics=["energy"],
+                    interval="1h",
+                    date_start=self._format_datetime(self.options.start),
+                    date_end=self._format_datetime(self.options.end),
+                    api_key=self.options.api_key,
+                    target_window_days=7,
+                    max_lookback_windows=52,
+                )
+                if not df.empty:
+                    frames.append(df)
+            except requests.exceptions.HTTPError as e:
+                # 400: Bad Request, 403: Forbidden, 404: Not Found, 416: Range Not Satisfiable, 429: Rate Limit
+                # Extract status code using getattr chain for cleaner access
+                response = getattr(e, 'response', None)
+                status_code = getattr(response, 'status_code', None) if response else None
+                
+                # Handle facility-specific 4xx errors (not server errors)
+                if status_code and 400 <= status_code < 500:
+                    LOGGER.warning(
+                        "Skipping facility %s: HTTP %d - %s",
+                        code,
+                        status_code,
+                        str(e),
+                    )
+                    skipped.append(code)
+                    continue
+                # Re-raise all other HTTP errors (5xx, etc.)
+                raise
+            except requests.exceptions.RequestException as e:
+                # Handle other request exceptions (ConnectionError, Timeout, etc.)
+                LOGGER.error(
+                    "Request failed for facility %s: %s", code, str(e)
+                )
+                raise
+        
+        # Summary logging
+        result_df = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
+        log_fetch_summary(
+            LOGGER,
+            "energy",
+            total_facilities,
+            total_facilities - len(skipped),
+            skipped,
+            len(result_df),
+            timer.elapsed(),
+        )
+        return result_df
+
+    def transform(self, df: DataFrame) -> DataFrame:
+        """Transform energy data with timestamp columns."""
+        return df.withColumn("interval_ts", F.to_timestamp("interval_start")).withColumn(
+            "interval_date", F.to_date("interval_ts")
+        )
+
+
+if __name__ == "__main__":
+    from pv_lakehouse.etl.bronze.cli import run_cli
+    run_cli()
+

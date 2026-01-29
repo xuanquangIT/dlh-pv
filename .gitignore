@@ -184,3 +184,7 @@ uv.lock
 
 # PR 
 .pr/
+
+# Exported CSV data (generated files, not versioned)
+src/pv_lakehouse/exported_data/
+**/exported_data/*.csv
