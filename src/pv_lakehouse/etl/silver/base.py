@@ -3,16 +3,26 @@
 from __future__ import annotations
 
 import datetime as dt
+import logging
 from dataclasses import dataclass
-from typing import Optional, Sequence
+from pathlib import Path
+from typing import Dict, Optional, Sequence
 
+import yaml
 from pyspark.sql import DataFrame, SparkSession
 from pyspark.sql import functions as F
 from pyspark.sql.utils import AnalysisException
 from pv_lakehouse.etl.bronze.facility_timezones import FACILITY_TIMEZONES, DEFAULT_TIMEZONE
+# TODO: Re-enable when etl_metrics module is available
+# from pv_lakehouse.etl.utils.etl_metrics import ETLTimer, log_etl_start, log_etl_summary
+
+from .quality_checker import QualityFlagAssigner
+from .validators import LogicValidator, NumericBoundsValidator
 
 # Maximum timezone offset in hours from UTC (Australia is UTC+10/11)
 MAX_TIMEZONE_OFFSET_HOURS = 12
+
+LOGGER = logging.getLogger(__name__)
 
 from ..utils.spark_utils import cleanup_spark_staging, create_spark_session, write_iceberg_table
 
@@ -46,10 +56,100 @@ class BaseSilverLoader:
     def __init__(self, options: Optional[LoadOptions] = None) -> None:
         self.options = options or LoadOptions()
         self._spark: Optional[SparkSession] = None
+        self._validation_config: Optional[Dict] = None
         # Default silver_timestamp_column to first partition column if not set
         if self.silver_timestamp_column is None and self.partition_cols:
             self.silver_timestamp_column = self.partition_cols[0]
         self._validate_options()
+
+    # ------------------------------------------------------------------
+    # Configuration helpers
+    # ------------------------------------------------------------------
+    # Config filename constant for validation rules
+    VALIDATION_CONFIG_FILE = "silver_validation_rules.yaml"
+
+    def _load_validation_config(self) -> Dict:
+        """Load validation rules from config/silver_validation_rules.yaml.
+        
+        Returns:
+            Dictionary containing validation rules for all domains.
+        """
+        if self._validation_config is not None:
+            return self._validation_config
+        
+        import pv_lakehouse
+        package_root = Path(pv_lakehouse.__file__).parent.parent.parent
+        config_path = package_root / "config" / self.VALIDATION_CONFIG_FILE
+        
+        if not config_path.exists():
+            LOGGER.warning("Validation config not found at %s, using empty config", config_path)
+            self._validation_config = {}
+            return self._validation_config
+        
+        try:
+            with open(config_path, "r", encoding="utf-8") as f:
+                self._validation_config = yaml.safe_load(f) or {}
+            LOGGER.debug("Loaded validation config from %s", config_path)
+        except Exception as e:
+            LOGGER.error("Failed to load validation config from %s: %s", config_path, e)
+            self._validation_config = {}
+        
+        return self._validation_config
+
+    def _get_bounds_config(self, domain: str) -> Dict[str, Dict[str, float]]:
+        """Get numeric bounds configuration for a specific domain.
+        
+        Args:
+            domain: Domain name ("weather", "air_quality", "energy").
+            
+        Returns:
+            Dictionary mapping column names to {"min": float, "max": float, ...}.
+        """
+        config = self._load_validation_config()
+        return config.get(domain, {})
+
+    def _get_quality_thresholds(self, domain: str) -> Dict:
+        """Get quality check thresholds for a specific domain.
+        
+        Args:
+            domain: Domain name ("weather", "air_quality", "energy").
+            
+        Returns:
+            Dictionary containing threshold values for quality checks.
+        """
+        config = self._load_validation_config()
+        thresholds = config.get("quality_thresholds", {})
+        return thresholds.get(domain, {})
+
+    def _get_numeric_validator(self, domain: str) -> NumericBoundsValidator:
+        """Create NumericBoundsValidator for a specific domain.
+        
+        Args:
+            domain: Domain name ("weather", "air_quality", "energy").
+            
+        Returns:
+            Configured NumericBoundsValidator instance.
+        """
+        bounds_config = self._get_bounds_config(domain)
+        return NumericBoundsValidator(bounds_config)
+
+    @staticmethod
+    def _get_logic_validator() -> LogicValidator:
+        """Get LogicValidator instance (static methods, no state).
+        
+        Returns:
+            LogicValidator instance.
+        """
+        return LogicValidator()
+
+    @staticmethod
+    def _get_quality_assigner() -> QualityFlagAssigner:
+        """Get QualityFlagAssigner instance (static methods, no state).
+        
+        Returns:
+            QualityFlagAssigner instance.
+        """
+        return QualityFlagAssigner()
 
     # ------------------------------------------------------------------
     # Orchestration helpers
@@ -178,21 +278,32 @@ class BaseSilverLoader:
         Default run method: read bronze, transform, and write to silver.
         Subclasses can override this method to implement chunking (e.g., hourly loaders).
         """
+        # TODO: Re-enable when etl_metrics module is available
+        # timer = ETLTimer()
+        # log_etl_start(LOGGER, self.silver_table, self.options.mode)
+        LOGGER.info("Starting Silver ETL for %s (mode=%s)", self.silver_table, self.options.mode)
+        
         try:
             bronze_df = self._read_bronze()
             if bronze_df is None or not bronze_df.columns:
+                LOGGER.warning("No Bronze data found for %s", self.bronze_table)
                 return 0
 
             transformed_df = self.transform(bronze_df)
             if transformed_df is None:
+                LOGGER.warning("Transform returned None for %s", self.bronze_table)
                 return 0
 
             # Materialize count before write
             row_count = transformed_df.count()
             if row_count == 0:
+                LOGGER.warning("Transform produced 0 rows for %s", self.bronze_table)
                 return 0
 
             self._write_outputs(transformed_df)
+            # TODO: Re-enable when etl_metrics module is available
+            # log_etl_summary(LOGGER, self.silver_table, row_count, timer.elapsed())
+            LOGGER.info("Completed Silver ETL for %s: %d rows written", self.silver_table, row_count)
             return row_count
         finally:
             self.close()

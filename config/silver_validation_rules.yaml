@@ -1,0 +1,206 @@
+# Silver Layer Validation Rules
+# =============================
+# Numeric bounds for data quality validation in Silver layer loaders
+# Source: Analysis from notebooks/analysis/validation_analysis.ipynb
+# Last updated: January 2026
+
+weather:
+  shortwave_radiation:
+    min: 0.0
+    max: 1150.0
+    description: "P99.5=1045 W/m² (actual max=1120, rounded to 1150 for safety margin)"
+    unit: "W/m²"
+  
+  direct_radiation:
+    min: 0.0
+    max: 1050.0
+    description: "Increased from 920 to 1050 (actual max=1009, Australian extreme events)"
+    unit: "W/m²"
+  
+  diffuse_radiation:
+    min: 0.0
+    max: 520.0
+    description: "Increased from 500 to 520 (actual max=520, measurement variation)"
+    unit: "W/m²"
+  
+  direct_normal_irradiance:
+    min: 0.0
+    max: 1060.0
+    description: "Increased from 1050 to 1060 (actual max=1057.3)"
+    unit: "W/m²"
+  
+  temperature_2m:
+    min: -10.0
+    max: 50.0
+    description: "P99.5=38.5°C (actual max=43.7°C, bounds allow extreme days)"
+    unit: "°C"
+  
+  dew_point_2m:
+    min: -20.0
+    max: 30.0
+    description: "P99=20.2°C (expanded bounds for extreme conditions)"
+    unit: "°C"
+  
+  wet_bulb_temperature_2m:
+    min: -5.0
+    max: 40.0
+    description: "Bounded by air temperature (wet bulb typically 5-15°C lower)"
+    unit: "°C"
+  
+  cloud_cover:
+    min: 0.0
+    max: 100.0
+    description: "Perfect bounds, no outliers"
+    unit: "%"
+  
+  cloud_cover_low:
+    min: 0.0
+    max: 100.0
+    description: "Low altitude clouds (0-2km)"
+    unit: "%"
+  
+  cloud_cover_mid:
+    min: 0.0
+    max: 100.0
+    description: "Mid altitude clouds (2-6km)"
+    unit: "%"
+  
+  cloud_cover_high:
+    min: 0.0
+    max: 100.0
+    description: "High altitude clouds (6-13km)"
+    unit: "%"
+  
+  precipitation:
+    min: 0.0
+    max: 1000.0
+    description: "Extreme event bound for hourly precipitation"
+    unit: "mm"
+  
+  sunshine_duration:
+    min: 0.0
+    max: 3600.0
+    description: "Maximum 1 hour (3600 seconds) per hourly period"
+    unit: "seconds"
+  
+  total_column_integrated_water_vapour:
+    min: 0.0
+    max: 100.0
+    description: "Typical atmospheric bound for water vapor column"
+    unit: "kg/m²"
+  
+  wind_speed_10m:
+    min: 0.0
+    max: 50.0
+    description: "Increased from 30 to 50 m/s (actual max=47.2, Australian cyclones)"
+    unit: "m/s"
+  
+  wind_direction_10m:
+    min: 0.0
+    max: 360.0
+    description: "Compass degrees (0=North, 90=East, 180=South, 270=West)"
+    unit: "degrees"
+  
+  wind_gusts_10m:
+    min: 0.0
+    max: 120.0
+    description: "Extreme weather bound for wind gusts"
+    unit: "m/s"
+  
+  pressure_msl:
+    min: 985.0
+    max: 1050.0
+    description: "P99=1033 (rounded to 1050 for safety), mean sea level pressure"
+    unit: "hPa"
+
+air_quality:
+  pm2_5:
+    min: 0.0
+    max: 500.0
+    description: "Particulate Matter 2.5 micrometers or less (EPA standard bounds)"
+    unit: "µg/m³"
+  
+  pm10:
+    min: 0.0
+    max: 500.0
+    description: "Particulate Matter 10 micrometers or less (EPA standard bounds)"
+    unit: "µg/m³"
+  
+  dust:
+    min: 0.0
+    max: 500.0
+    description: "Dust particles (EPA standard bounds)"
+    unit: "µg/m³"
+  
+  nitrogen_dioxide:
+    min: 0.0
+    max: 500.0
+    description: "NO₂ concentration (EPA standard bounds)"
+    unit: "µg/m³"
+  
+  ozone:
+    min: 0.0
+    max: 500.0
+    description: "O₃ concentration (EPA standard bounds)"
+    unit: "µg/m³"
+  
+  sulphur_dioxide:
+    min: 0.0
+    max: 500.0
+    description: "SO₂ concentration (EPA standard bounds)"
+    unit: "µg/m³"
+  
+  carbon_monoxide:
+    min: 0.0
+    max: 500.0
+    description: "CO concentration (EPA standard bounds)"
+    unit: "mg/m³"
+  
+  uv_index:
+    min: 0.0
+    max: 15.0
+    description: "UV Index (0=Low, 11+=Extreme)"
+    unit: "index"
+  
+  uv_index_clear_sky:
+    min: 0.0
+    max: 15.0
+    description: "UV Index under clear sky conditions"
+    unit: "index"
+
+energy:
+  energy_mwh:
+    min: 0.0
+    max: null  # No upper bound - facility-dependent
+    description: "Negative values are invalid, no fixed upper bound (facility-dependent)"
+    unit: "MWh"
+    peak_reference: 186.0  # Historical peak for context in anomaly detection
+
+# Quality rule thresholds
+quality_thresholds:
+  weather:
+    night_radiation_threshold: 100.0  # W/m² - flag if shortwave > this during night hours
+    radiation_consistency_factor: 1.05  # Direct + Diffuse should not exceed Shortwave * factor
+    high_cloud_threshold: 98.0  # % - flag if cloud cover > this during peak sun hours
+    low_radiation_threshold: 600.0  # W/m² - flag if radiation < this with high cloud at peak
+    extreme_temp_low: -10.0  # °C
+    extreme_temp_high: 45.0  # °C
+    night_hours: [22, 23, 0, 1, 2, 3, 4, 5]  # Hours considered "night"
+    peak_sun_hours: [10, 11, 12, 13, 14]  # Hours considered "peak sun"
+  
+  energy:
+    night_energy_threshold: 1.0  # MWh - flag if energy > this during night hours
+    night_hours: [22, 23, 0, 1, 2, 3, 4, 5]  # Hours considered "night"
+    peak_hours: [10, 11, 12, 13, 14]  # Hours considered "peak production"
+    daytime_hours: [8, 9, 10, 11, 12, 13, 14, 15, 16, 17]  # Hours considered "daytime"
+    sunrise_hours: [6, 7]  # Sunrise transition hours
+    early_morning_hours: [8, 9]  # Early morning hours
+    sunset_hours: [17, 18]  # Sunset transition hours
+    sunrise_threshold_pct: 0.05  # 5% of peak for sunrise
+    early_morning_threshold_pct: 0.08  # 8% of peak for early morning
+    sunset_threshold_pct: 0.10  # 10% of peak for sunset
+    peak_efficiency_threshold_pct: 0.50  # 50% of peak for efficiency check
+  
+  air_quality:
+    aqi_min: 0
+    aqi_max: 500

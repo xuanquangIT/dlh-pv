@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
+import logging
 from typing import Dict, Optional, Type
 
 from pv_lakehouse.etl.silver.base import BaseSilverLoader, LoadOptions
@@ -11,6 +12,8 @@ from pv_lakehouse.etl.silver.facility_master import SilverFacilityMasterLoader
 from pv_lakehouse.etl.silver.hourly_air_quality import SilverHourlyAirQualityLoader
 from pv_lakehouse.etl.silver.hourly_energy import SilverHourlyEnergyLoader
 from pv_lakehouse.etl.silver.hourly_weather import SilverHourlyWeatherLoader
+# TODO: Re-enable when logging_config module is available
+# from pv_lakehouse.etl.utils.logging_config import configure_logging
 
 
 _LOADER_REGISTRY: Dict[str, Type[BaseSilverLoader]] = {
@@ -70,6 +73,9 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def run_cli(argv: Optional[list[str]] = None) -> int:
+    # Configure logging before any loader execution
+    # configure_logging(level=logging.INFO)
+    
     parser = build_parser()
     args = parser.parse_args(argv)
 
