@@ -73,7 +73,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 def run_cli(argv: Optional[list[str]] = None) -> int:
     # Configure logging before any loader execution
-    configure_logging(level=logging.INFO)
+    # configure_logging(level=logging.INFO)
     
     parser = build_parser()
     args = parser.parse_args(argv)
