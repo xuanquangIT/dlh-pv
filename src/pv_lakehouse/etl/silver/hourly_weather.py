@@ -79,111 +79,112 @@ class SilverHourlyWeatherLoader(BaseSilverLoader):
             F.col("facility_code").isNotNull() & F.col("weather_timestamp").isNotNull()
         ).persist()  # Cache: reused in Step 2
 
-        # Step 2: Add date truncations
-        prepared = prepared_base.select(
-            "*",
-            F.date_trunc("hour", F.col("timestamp_local")).alias("date_hour"),
-            F.to_date(F.col("timestamp_local")).alias("date"),
-        )
-
-        # Step 3: Handle missing total_column_integrated_water_vapour with forward-fill
-        if "total_column_integrated_water_vapour" in prepared.columns:
-            window = Window.partitionBy("facility_code", "date").orderBy("timestamp_local").rowsBetween(-100, 0)
-            prepared = prepared.select(
+        try:
+            # Step 2: Add date truncations
+            prepared = prepared_base.select(
                 "*",
-                F.coalesce(
-                    F.col("total_column_integrated_water_vapour"),
-                    F.last(F.col("total_column_integrated_water_vapour"), ignorenulls=True).over(window),
-                ).alias("total_column_integrated_water_vapour_filled"),
-            ).drop("total_column_integrated_water_vapour").withColumnRenamed(
-                "total_column_integrated_water_vapour_filled",
-                "total_column_integrated_water_vapour",
+                F.date_trunc("hour", F.col("timestamp_local")).alias("date_hour"),
+                F.to_date(F.col("timestamp_local")).alias("date"),
             )
 
-        # Step 4: Round numeric columns in single pass
-        rounded_exprs = [
-            F.round(F.col(col), 4).alias(col) if col in prepared.columns else F.lit(None).alias(col)
-            for col in numeric_columns
-        ]
-        prepared_rounded = prepared.select(
-            "facility_code", "facility_name", "timestamp_local", "date_hour", "date",
-            *rounded_exprs,
-        )
+            # Step 3: Handle missing total_column_integrated_water_vapour with forward-fill
+            if "total_column_integrated_water_vapour" in prepared.columns:
+                window = Window.partitionBy("facility_code", "date").orderBy("timestamp_local").rowsBetween(-100, 0)
+                prepared = prepared.select(
+                    "*",
+                    F.coalesce(
+                        F.col("total_column_integrated_water_vapour"),
+                        F.last(F.col("total_column_integrated_water_vapour"), ignorenulls=True).over(window),
+                    ).alias("total_column_integrated_water_vapour_filled"),
+                ).drop("total_column_integrated_water_vapour").withColumnRenamed(
+                    "total_column_integrated_water_vapour_filled",
+                    "total_column_integrated_water_vapour",
+                )
 
-        # Step 5: Numeric bounds validation
-        is_valid_bounds, bound_issues = numeric_validator.validate_all(prepared_rounded.columns)
+            # Step 4: Round numeric columns in single pass
+            rounded_exprs = [
+                F.round(F.col(col), 4).alias(col) if col in prepared.columns else F.lit(None).alias(col)
+                for col in numeric_columns
+            ]
+            prepared_rounded = prepared.select(
+                "facility_code", "facility_name", "timestamp_local", "date_hour", "date",
+                *rounded_exprs,
+            )
 
-        # Step 6: Logical validation checks
-        timestamp_col = F.col("timestamp_local")
-        
-        # Night radiation check (uses default night_hours from validator)
-        has_night_rad, night_rad_issue = logic_validator.check_night_radiation(
-            timestamp_col,
-            F.col("shortwave_radiation"),
-            threshold=quality_thresholds.get("night_radiation_threshold", 100.0),
-        )
-        
-        # Radiation consistency check
-        has_rad_inconsistency, rad_inconsistency_issue = logic_validator.check_radiation_consistency(
-            F.col("direct_radiation"),
-            F.col("diffuse_radiation"),
-            F.col("shortwave_radiation"),
-            tolerance_factor=quality_thresholds.get("radiation_consistency_factor", 1.05),
-        )
-        
-        # Cloud-radiation mismatch (uses default peak_hours from validator)
-        has_cloud_mismatch, cloud_mismatch_issue = logic_validator.check_cloud_radiation_mismatch(
-            timestamp_col,
-            F.col("cloud_cover"),
-            F.col("shortwave_radiation"),
-            cloud_threshold=quality_thresholds.get("high_cloud_threshold", 98.0),
-            radiation_threshold=quality_thresholds.get("low_radiation_threshold", 600.0),
-        )
-        
-        has_extreme_temp, extreme_temp_issue = logic_validator.check_extreme_temperature(
-            F.col("temperature_2m"),
-            min_threshold=quality_thresholds.get("extreme_temp_low", -10.0),
-            max_threshold=quality_thresholds.get("extreme_temp_high", 45.0),
-        )
+            # Step 5: Numeric bounds validation
+            is_valid_bounds, bound_issues = numeric_validator.validate_all(prepared_rounded.columns)
 
-        # Step 7: Build quality columns using single select() operation
-        has_severe_issue = has_night_rad
-        has_warning_issue = has_rad_inconsistency | has_cloud_mismatch | has_extreme_temp
-        
-        quality_flag = quality_assigner.assign_three_tier(
-            is_valid_bounds, has_severe_issue, has_warning_issue
-        )
-        
-        quality_issues = quality_assigner.build_issues_string([
-            bound_issues,
-            night_rad_issue,
-            rad_inconsistency_issue,
-            cloud_mismatch_issue,
-            extreme_temp_issue,
-        ])
-        
-        is_valid = is_valid_bounds & ~has_severe_issue & ~has_warning_issue
+            # Step 6: Logical validation checks
+            timestamp_col = F.col("timestamp_local")
+            
+            # Night radiation check (uses default night_hours from validator)
+            has_night_rad, night_rad_issue = logic_validator.check_night_radiation(
+                timestamp_col,
+                F.col("shortwave_radiation"),
+                threshold=quality_thresholds.get("night_radiation_threshold", 100.0),
+            )
+            
+            # Radiation consistency check
+            has_rad_inconsistency, rad_inconsistency_issue = logic_validator.check_radiation_consistency(
+                F.col("direct_radiation"),
+                F.col("diffuse_radiation"),
+                F.col("shortwave_radiation"),
+                tolerance_factor=quality_thresholds.get("radiation_consistency_factor", 1.05),
+            )
+            
+            # Cloud-radiation mismatch (uses default peak_hours from validator)
+            has_cloud_mismatch, cloud_mismatch_issue = logic_validator.check_cloud_radiation_mismatch(
+                timestamp_col,
+                F.col("cloud_cover"),
+                F.col("shortwave_radiation"),
+                cloud_threshold=quality_thresholds.get("high_cloud_threshold", 98.0),
+                radiation_threshold=quality_thresholds.get("low_radiation_threshold", 600.0),
+            )
+            
+            has_extreme_temp, extreme_temp_issue = logic_validator.check_extreme_temperature(
+                F.col("temperature_2m"),
+                min_threshold=quality_thresholds.get("extreme_temp_low", -10.0),
+                max_threshold=quality_thresholds.get("extreme_temp_high", 45.0),
+            )
 
-        # Step 8: Final result with all columns in single select()
-        result = prepared_rounded.select(
-            "facility_code",
-            "facility_name",
-            F.col("timestamp_local").alias("timestamp"),
-            "date_hour",
-            "date",
-            *numeric_columns,
-            is_valid.alias("is_valid"),
-            quality_flag.alias("quality_flag"),
-            quality_issues.alias("quality_issues"),
-            F.current_timestamp().alias("created_at"),
-            F.current_timestamp().alias("updated_at"),
-        )
+            # Step 7: Build quality columns using single select() operation
+            has_severe_issue = has_night_rad
+            has_warning_issue = has_rad_inconsistency | has_cloud_mismatch | has_extreme_temp
+            
+            quality_flag = quality_assigner.assign_three_tier(
+                is_valid_bounds, has_severe_issue, has_warning_issue
+            )
+            
+            quality_issues = quality_assigner.build_issues_string([
+                bound_issues,
+                night_rad_issue,
+                rad_inconsistency_issue,
+                cloud_mismatch_issue,
+                extreme_temp_issue,
+            ])
+            
+            is_valid = is_valid_bounds & ~has_severe_issue & ~has_warning_issue
 
-        # Cleanup cached DataFrames
-        prepared_base.unpersist()
+            # Step 8: Final result with all columns in single select()
+            result = prepared_rounded.select(
+                "facility_code",
+                "facility_name",
+                F.col("timestamp_local").alias("timestamp"),
+                "date_hour",
+                "date",
+                *numeric_columns,
+                is_valid.alias("is_valid"),
+                quality_flag.alias("quality_flag"),
+                quality_issues.alias("quality_issues"),
+                F.current_timestamp().alias("created_at"),
+                F.current_timestamp().alias("updated_at"),
+            )
 
-        LOGGER.info("Weather transform completed successfully")
-        return result
+            LOGGER.info("Weather transform completed successfully")
+            return result
+        finally:
+            # Cleanup cached DataFrames - guaranteed even on exception
+            prepared_base.unpersist()
 
 
 __all__ = ["SilverHourlyWeatherLoader"]

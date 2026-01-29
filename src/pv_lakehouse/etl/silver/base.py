@@ -64,6 +64,9 @@ class BaseSilverLoader:
     # ------------------------------------------------------------------
     # Configuration helpers
     # ------------------------------------------------------------------
+    # Config filename constant for validation rules
+    VALIDATION_CONFIG_FILE = "silver_validation_rules.yaml"
+
     def _load_validation_config(self) -> Dict:
         """Load validation rules from config/silver_validation_rules.yaml.
         
@@ -73,8 +76,9 @@ class BaseSilverLoader:
         if self._validation_config is not None:
             return self._validation_config
         
-        # Path: base.py -> silver -> etl -> pv_lakehouse -> src -> workdir (5 parents)
-        config_path = Path(__file__).parent.parent.parent.parent.parent / "config" / "silver_validation_rules.yaml"
+        import pv_lakehouse
+        package_root = Path(pv_lakehouse.__file__).parent.parent.parent
+        config_path = package_root / "config" / self.VALIDATION_CONFIG_FILE
         
         if not config_path.exists():
             LOGGER.warning("Validation config not found at %s, using empty config", config_path)

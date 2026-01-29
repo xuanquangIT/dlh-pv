@@ -110,110 +110,111 @@ class SilverHourlyEnergyLoader(BaseSilverLoader):
             F.count(F.when(F.col("metric") == "energy", F.lit(1))).alias("intervals_count"),
         ).filter(F.col("intervals_count") > 0).persist()  # Cache: heavily reused in validation
 
-        # Step 3: Numeric bounds validation
-        energy_col = F.col("energy_mwh")
-        energy_min = quality_thresholds.get("energy_min", 0.0)
-        is_within_bounds = energy_col >= F.lit(energy_min)
-        bound_issue = F.when(~is_within_bounds, F.lit("OUT_OF_BOUNDS")).otherwise(F.lit(""))
+        try:
+            # Step 3: Numeric bounds validation
+            energy_col = F.col("energy_mwh")
+            energy_min = quality_thresholds.get("energy_min", 0.0)
+            is_within_bounds = energy_col >= F.lit(energy_min)
+            bound_issue = F.when(~is_within_bounds, F.lit("OUT_OF_BOUNDS")).otherwise(F.lit(""))
 
-        # Step 4: Logical validation checks
-        timestamp_col = F.col("date_hour")
-        hour_col = F.hour(timestamp_col)
-        
-        # Night energy anomaly (uses default night_hours from validator)
-        has_night_energy, night_energy_issue = logic_validator.check_night_energy(
-            timestamp_col,
-            energy_col,
-            threshold=quality_thresholds.get("night_energy_threshold", 1.0),
-        )
-        
-        # Daytime zero energy (uses default daytime_hours from validator)
-        has_daytime_zero, daytime_zero_issue = logic_validator.check_daytime_zero_energy(
-            timestamp_col,
-            energy_col,
-        )
-        
-        # Equipment downtime (uses default peak_hours from validator)
-        has_downtime, downtime_issue = logic_validator.check_equipment_downtime(
-            timestamp_col,
-            energy_col,
-        )
-        
-        # Transition hour low energy (sunrise/sunset ramps)
-        sunrise_hours = quality_thresholds.get("sunrise_hours", [6, 7])
-        early_morning_hours = quality_thresholds.get("early_morning_hours", [8, 9])
-        sunset_hours = quality_thresholds.get("sunset_hours", [17, 18])
-        peak_reference = quality_thresholds.get("peak_reference", 186.0)
-        peak_hours = quality_thresholds.get("peak_hours", [10, 11, 12, 13, 14])
-        
-        is_sunrise = hour_col.isin(sunrise_hours)
-        is_early_morning = hour_col.isin(early_morning_hours)
-        is_sunset = hour_col.isin(sunset_hours)
-        is_peak = hour_col.isin(peak_hours)
-        
-        threshold_factor = (
-            F.when(is_sunrise, F.lit(quality_thresholds.get("sunrise_threshold_pct", 0.05)))
-            .when(is_early_morning, F.lit(quality_thresholds.get("early_morning_threshold_pct", 0.08)))
-            .when(is_sunset, F.lit(quality_thresholds.get("sunset_threshold_pct", 0.10)))
-            .otherwise(F.lit(0.0))
-        )
-        
-        has_transition_low = (
-            (is_sunrise | is_early_morning | is_sunset)
-            & (energy_col > F.lit(0.01))
-            & (energy_col < (F.lit(peak_reference) * threshold_factor))
-        )
-        transition_issue = F.when(has_transition_low, F.lit("TRANSITION_HOUR_LOW_ENERGY")).otherwise(F.lit(""))
-        
-        # Peak hour low efficiency (reuses is_peak from above)
-        peak_efficiency_threshold = quality_thresholds.get("peak_efficiency_threshold_pct", 0.50)
-        has_low_efficiency = (
-            is_peak
-            & (energy_col > F.lit(0.5))
-            & (energy_col < (F.lit(peak_reference) * F.lit(peak_efficiency_threshold)))
-        )
-        efficiency_issue = F.when(has_low_efficiency, F.lit("PEAK_HOUR_LOW_ENERGY")).otherwise(F.lit(""))
+            # Step 4: Logical validation checks
+            timestamp_col = F.col("date_hour")
+            hour_col = F.hour(timestamp_col)
+            
+            # Night energy anomaly (uses default night_hours from validator)
+            has_night_energy, night_energy_issue = logic_validator.check_night_energy(
+                timestamp_col,
+                energy_col,
+                threshold=quality_thresholds.get("night_energy_threshold", 1.0),
+            )
+            
+            # Daytime zero energy (uses default daytime_hours from validator)
+            has_daytime_zero, daytime_zero_issue = logic_validator.check_daytime_zero_energy(
+                timestamp_col,
+                energy_col,
+            )
+            
+            # Equipment downtime (uses default peak_hours from validator)
+            has_downtime, downtime_issue = logic_validator.check_equipment_downtime(
+                timestamp_col,
+                energy_col,
+            )
+            
+            # Transition hour low energy (sunrise/sunset ramps)
+            sunrise_hours = quality_thresholds.get("sunrise_hours", [6, 7])
+            early_morning_hours = quality_thresholds.get("early_morning_hours", [8, 9])
+            sunset_hours = quality_thresholds.get("sunset_hours", [17, 18])
+            peak_reference = quality_thresholds.get("peak_reference", 186.0)
+            peak_hours = quality_thresholds.get("peak_hours", [10, 11, 12, 13, 14])
+            
+            is_sunrise = hour_col.isin(sunrise_hours)
+            is_early_morning = hour_col.isin(early_morning_hours)
+            is_sunset = hour_col.isin(sunset_hours)
+            is_peak = hour_col.isin(peak_hours)
+            
+            threshold_factor = (
+                F.when(is_sunrise, F.lit(quality_thresholds.get("sunrise_threshold_pct", 0.05)))
+                .when(is_early_morning, F.lit(quality_thresholds.get("early_morning_threshold_pct", 0.08)))
+                .when(is_sunset, F.lit(quality_thresholds.get("sunset_threshold_pct", 0.10)))
+                .otherwise(F.lit(0.0))
+            )
+            
+            has_transition_low = (
+                (is_sunrise | is_early_morning | is_sunset)
+                & (energy_col > F.lit(0.01))
+                & (energy_col < (F.lit(peak_reference) * threshold_factor))
+            )
+            transition_issue = F.when(has_transition_low, F.lit("TRANSITION_HOUR_LOW_ENERGY")).otherwise(F.lit(""))
+            
+            # Peak hour low efficiency (reuses is_peak from above)
+            peak_efficiency_threshold = quality_thresholds.get("peak_efficiency_threshold_pct", 0.50)
+            has_low_efficiency = (
+                is_peak
+                & (energy_col > F.lit(0.5))
+                & (energy_col < (F.lit(peak_reference) * F.lit(peak_efficiency_threshold)))
+            )
+            efficiency_issue = F.when(has_low_efficiency, F.lit("PEAK_HOUR_LOW_ENERGY")).otherwise(F.lit(""))
 
-        # Step 5: Build quality columns using single select() operation
-        has_severe_issue = ~is_within_bounds | has_night_energy
-        has_warning_issue = has_daytime_zero | has_downtime | has_transition_low | has_low_efficiency
-        
-        quality_flag = quality_assigner.assign_three_tier(
-            F.lit(True),  # Bounds checked separately via is_within_bounds
-            has_severe_issue,
-            has_warning_issue,
-        )
-        
-        quality_issues = quality_assigner.build_issues_string([
-            bound_issue,
-            night_energy_issue,
-            daytime_zero_issue,
-            downtime_issue,
-            transition_issue,
-            efficiency_issue,
-        ])
+            # Step 5: Build quality columns using single select() operation
+            has_severe_issue = ~is_within_bounds | has_night_energy
+            has_warning_issue = has_daytime_zero | has_downtime | has_transition_low | has_low_efficiency
+            
+            quality_flag = quality_assigner.assign_three_tier(
+                F.lit(True),  # Bounds checked separately via is_within_bounds
+                has_severe_issue,
+                has_warning_issue,
+            )
+            
+            quality_issues = quality_assigner.build_issues_string([
+                bound_issue,
+                night_energy_issue,
+                daytime_zero_issue,
+                downtime_issue,
+                transition_issue,
+                efficiency_issue,
+            ])
 
-        # Step 6: Final result with all columns in single select()
-        result = hourly.select(
-            "facility_code",
-            "facility_name",
-            "network_code",
-            "network_region",
-            "date_hour",
-            "energy_mwh",
-            "intervals_count",
-            quality_flag.alias("quality_flag"),
-            quality_issues.alias("quality_issues"),
-            F.lit(100.0).alias("completeness_pct"),
-            F.current_timestamp().alias("created_at"),
-            F.current_timestamp().alias("updated_at"),
-        )
+            # Step 6: Final result with all columns in single select()
+            result = hourly.select(
+                "facility_code",
+                "facility_name",
+                "network_code",
+                "network_region",
+                "date_hour",
+                "energy_mwh",
+                "intervals_count",
+                quality_flag.alias("quality_flag"),
+                quality_issues.alias("quality_issues"),
+                F.lit(100.0).alias("completeness_pct"),
+                F.current_timestamp().alias("created_at"),
+                F.current_timestamp().alias("updated_at"),
+            )
 
-        # Cleanup cached DataFrames
-        hourly.unpersist()
-
-        LOGGER.info("Energy transform completed successfully")
-        return result
+            LOGGER.info("Energy transform completed successfully")
+            return result
+        finally:
+            # Cleanup cached DataFrames - guaranteed even on exception
+            hourly.unpersist()
 
 
 __all__ = ["SilverHourlyEnergyLoader"]
