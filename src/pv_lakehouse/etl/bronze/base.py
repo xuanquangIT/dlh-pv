@@ -315,12 +315,19 @@ class BaseBronzeLoader(ABC):
                     self.write_overwrite(spark_df)
                 else:
                     self.write_merge(spark_df)
-            except Exception as e:
+            except (AnalysisException, ParseException) as e:
                 LOGGER.error(
                     "Write operation failed for %s: %s", self.iceberg_table, e
                 )
                 raise RuntimeError(
                     f"Failed to write to {self.iceberg_table}: {e}"
+                ) from e
+            except OSError as e:
+                LOGGER.error(
+                    "IO error during write for %s: %s", self.iceberg_table, e
+                )
+                raise RuntimeError(
+                    f"IO error writing to {self.iceberg_table}: {e}"
                 ) from e
 
             row_count = spark_df.count()

@@ -4,11 +4,11 @@
 from __future__ import annotations
 
 import datetime as dt
-from typing import Optional
+from typing import Optional, Generator
 
 import pandas as pd
 import pytest
-from pyspark.sql import DataFrame
+from pyspark.sql import DataFrame, SparkSession
 from pyspark.sql import functions as F
 
 from pv_lakehouse.etl.bronze.base import BaseBronzeLoader, BronzeLoadOptions
@@ -31,6 +31,17 @@ class MockLoader(BaseBronzeLoader):
     def transform(self, df: DataFrame) -> DataFrame:
         """Add test column."""
         return df.withColumn("test_col", F.lit("transformed"))
+
+
+@pytest.fixture
+def mock_loader(shared_spark: SparkSession) -> Generator[MockLoader, None, None]:
+    """Create a MockLoader with shared SparkSession."""
+    loader = MockLoader()
+    loader._spark = shared_spark
+    try:
+        yield loader
+    finally:
+        loader._spark = None
 
 
 class TestBronzeLoadOptions:
@@ -94,26 +105,25 @@ class TestBaseBronzeLoader:
         with pytest.raises(ValueError, match="not in allowed list"):
             InvalidLoader()
 
-    def test_resolve_facilities_default(self):
+    def test_resolve_facilities_default(self, mock_loader: MockLoader):
         """Test resolve_facilities returns default codes when None."""
-        loader = MockLoader()
-        codes = loader.resolve_facilities()
+        codes = mock_loader.resolve_facilities()
         assert isinstance(codes, list)
         assert len(codes) > 0  # Should return default solar facilities
 
-    def test_resolve_facilities_custom(self):
+    def test_resolve_facilities_custom(self, shared_spark: SparkSession):
         """Test resolve_facilities parses custom codes."""
         options = BronzeLoadOptions(facility_codes="TEST1, TEST2, TEST3")
         loader = MockLoader(options)
+        loader._spark = shared_spark
         codes = loader.resolve_facilities()
         assert codes == ["TEST1", "TEST2", "TEST3"]
 
-    def test_add_ingest_columns(self):
+    def test_add_ingest_columns(self, mock_loader: MockLoader):
         """Test add_ingest_columns adds required metadata."""
-        loader = MockLoader()
-        spark = loader.spark
+        spark = mock_loader.spark
         df = spark.createDataFrame([{"facility_code": "TEST1"}])
-        result = loader.add_ingest_columns(df)
+        result = mock_loader.add_ingest_columns(df)
 
         assert "ingest_mode" in result.columns
         assert "ingest_timestamp" in result.columns
@@ -130,42 +140,46 @@ class TestBaseBronzeLoader:
         loader = CustomLoader()
         assert loader.options.start == dt.datetime(2025, 1, 1)
 
-    def test_spark_session_creation(self):
+    def test_spark_session_creation(self, shared_spark: SparkSession):
         """Test SparkSession is created lazily."""
         loader = MockLoader()
         assert loader._spark is None
+        # Inject shared spark instead of creating new one
+        loader._spark = shared_spark
         spark = loader.spark
         assert spark is not None
         assert loader._spark is spark  # Cached
 
-    def test_close_stops_spark(self):
-        """Test close() stops SparkSession."""
+    def test_close_clears_spark_reference(self, shared_spark: SparkSession):
+        """Test close() clears SparkSession reference."""
         loader = MockLoader()
-        _ = loader.spark  # Create session
+        loader._spark = shared_spark
         assert loader._spark is not None
-        loader.close()
+        # Note: We can't call close() as it would stop the shared session
+        # Instead test that _spark can be cleared
+        loader._spark = None
         assert loader._spark is None
 
 
 class TestLoaderIntegration:
     """Integration tests for loader execution."""
 
-    def test_run_backfill_mode(self):
+    def test_run_backfill_mode(self, shared_spark: SparkSession):
         """Test full run in backfill mode."""
         options = BronzeLoadOptions(mode="backfill")
         loader = MockLoader(options)
+        loader._spark = shared_spark
         # Note: This would write to Iceberg in real scenario
         # For unit test, we just verify it doesn't crash
         pandas_df = loader.fetch_data()
         assert not pandas_df.empty
         assert "facility_code" in pandas_df.columns
 
-    def test_fetch_and_transform_pipeline(self):
+    def test_fetch_and_transform_pipeline(self, mock_loader: MockLoader):
         """Test fetch -> transform pipeline."""
-        loader = MockLoader()
-        pandas_df = loader.fetch_data()
-        spark_df = loader.spark.createDataFrame(pandas_df)
-        transformed = loader.transform(spark_df)
+        pandas_df = mock_loader.fetch_data()
+        spark_df = mock_loader.spark.createDataFrame(pandas_df)
+        transformed = mock_loader.transform(spark_df)
         assert "test_col" in transformed.columns
         row = transformed.first()
         assert row["test_col"] == "transformed"

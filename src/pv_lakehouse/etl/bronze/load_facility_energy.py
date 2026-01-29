@@ -64,26 +64,31 @@ class EnergyLoader(BaseBronzeLoader):
                 )
                 if not df.empty:
                     frames.append(df)
-            except Exception as e:
+            except requests.exceptions.HTTPError as e:
                 # 400: Bad Request, 403: Forbidden, 404: Not Found, 416: Range Not Satisfiable, 429: Rate Limit
-                if isinstance(e, requests.exceptions.HTTPError):
-                    # Safely extract status code from HTTPError response using hasattr
-                    status_code = None
-                    if hasattr(e, 'response') and e.response is not None:
-                        if hasattr(e.response, 'status_code'):
-                            status_code = e.response.status_code
-                    
-                    # Handle facility-specific 4xx errors (not server errors)
-                    if status_code and 400 <= status_code < 500:
-                        LOGGER.warning(
-                            "Skipping facility %s: HTTP %d - %s",
-                            code,
-                            status_code,
-                            str(e),
-                        )
-                        skipped.append(code)
-                        continue
-                # Re-raise all other exceptions (5xx, network errors, etc.)
+                # Safely extract status code from HTTPError response using hasattr
+                status_code = None
+                if hasattr(e, 'response') and e.response is not None:
+                    if hasattr(e.response, 'status_code'):
+                        status_code = e.response.status_code
+                
+                # Handle facility-specific 4xx errors (not server errors)
+                if status_code and 400 <= status_code < 500:
+                    LOGGER.warning(
+                        "Skipping facility %s: HTTP %d - %s",
+                        code,
+                        status_code,
+                        str(e),
+                    )
+                    skipped.append(code)
+                    continue
+                # Re-raise all other HTTP errors (5xx, etc.)
+                raise
+            except requests.exceptions.RequestException as e:
+                # Handle other request exceptions (ConnectionError, Timeout, etc.)
+                LOGGER.error(
+                    "Request failed for facility %s: %s", code, str(e)
+                )
                 raise
         
         # Summary logging
