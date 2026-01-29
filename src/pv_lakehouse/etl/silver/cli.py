@@ -12,7 +12,8 @@ from pv_lakehouse.etl.silver.facility_master import SilverFacilityMasterLoader
 from pv_lakehouse.etl.silver.hourly_air_quality import SilverHourlyAirQualityLoader
 from pv_lakehouse.etl.silver.hourly_energy import SilverHourlyEnergyLoader
 from pv_lakehouse.etl.silver.hourly_weather import SilverHourlyWeatherLoader
-from pv_lakehouse.etl.utils.logging_config import configure_logging
+# TODO: Re-enable when logging_config module is available
+# from pv_lakehouse.etl.utils.logging_config import configure_logging
 
 
 _LOADER_REGISTRY: Dict[str, Type[BaseSilverLoader]] = {

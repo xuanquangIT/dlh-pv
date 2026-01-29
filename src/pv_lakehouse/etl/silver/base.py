@@ -13,7 +13,8 @@ from pyspark.sql import DataFrame, SparkSession
 from pyspark.sql import functions as F
 from pyspark.sql.utils import AnalysisException
 from pv_lakehouse.etl.bronze.facility_timezones import FACILITY_TIMEZONES, DEFAULT_TIMEZONE
-from pv_lakehouse.etl.utils.etl_metrics import ETLTimer, log_etl_start, log_etl_summary
+# TODO: Re-enable when etl_metrics module is available
+# from pv_lakehouse.etl.utils.etl_metrics import ETLTimer, log_etl_start, log_etl_summary
 
 from .quality_checker import QualityFlagAssigner
 from .validators import LogicValidator, NumericBoundsValidator
@@ -277,8 +278,10 @@ class BaseSilverLoader:
         Default run method: read bronze, transform, and write to silver.
         Subclasses can override this method to implement chunking (e.g., hourly loaders).
         """
-        timer = ETLTimer()
-        log_etl_start(LOGGER, self.silver_table, self.options.mode)
+        # TODO: Re-enable when etl_metrics module is available
+        # timer = ETLTimer()
+        # log_etl_start(LOGGER, self.silver_table, self.options.mode)
+        LOGGER.info("Starting Silver ETL for %s (mode=%s)", self.silver_table, self.options.mode)
         
         try:
             bronze_df = self._read_bronze()
@@ -298,7 +301,9 @@ class BaseSilverLoader:
                 return 0
 
             self._write_outputs(transformed_df)
-            log_etl_summary(LOGGER, self.silver_table, row_count, timer.elapsed())
+            # TODO: Re-enable when etl_metrics module is available
+            # log_etl_summary(LOGGER, self.silver_table, row_count, timer.elapsed())
+            LOGGER.info("Completed Silver ETL for %s: %d rows written", self.silver_table, row_count)
             return row_count
         finally:
             self.close()
