@@ -18,7 +18,7 @@ docker compose exec spark-master spark-submit \
   /opt/workdir/src/pv_lakehouse/etl/bronze/cli.py energy \
   --mode backfill \
   --date-start 2025-01-01T10:00:00 \
-  --date-end 2026-01-01T09:59:59
+  --date-end 2025-01-08T09:59:59
 
 # 3. Load Facility Weather
 docker compose exec spark-master spark-submit \
@@ -26,7 +26,7 @@ docker compose exec spark-master spark-submit \
   --driver-memory 1g --executor-memory 1g \
   /opt/workdir/src/pv_lakehouse/etl/bronze/cli.py weather \
   --mode backfill \
-  --start 2025-01-01 --end 2025-12-31
+  --start 2025-01-01 --end 2025-01-07
 
 # 4. Load Facility Air Quality
 docker compose exec spark-master spark-submit \
@@ -34,7 +34,7 @@ docker compose exec spark-master spark-submit \
   --driver-memory 1g --executor-memory 1g \
   /opt/workdir/src/pv_lakehouse/etl/bronze/cli.py air_quality \
   --mode backfill \
-  --start 2025-01-01 --end 2025-12-31
+  --start 2025-01-01 --end 2025-01-07
   
 
 
@@ -170,3 +170,9 @@ Original Energy data was loaded with wrong date parameters
 Transform logic has timezone issues
 Data quality/availability gaps in one of the APIs
 You should revert the timezone adjustments in the CHEATSHEET and investigate the root cause of the data misalignment.
+
+
+docker compose -f docker/docker-compose.yml exec trino trino --catalog iceberg --schema lh --execute "DELETE FROM bronze.raw_facility_energy;"
+docker compose -f docker/docker-compose.yml exec trino trino --catalog iceberg --schema lh --execute "DELETE FROM bronze.raw_facility_weather;"
+docker compose -f docker/docker-compose.yml exec trino trino --catalog iceberg --schema lh --execute "DELETE FROM bronze.raw_facility_air_quality;"
+docker compose -f docker/docker-compose.yml exec trino trino --catalog iceberg --schema lh --execute "DELETE FROM bronze.raw_facilities;"

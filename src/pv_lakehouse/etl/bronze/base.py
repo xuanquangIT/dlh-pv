@@ -6,7 +6,7 @@ import logging
 import re
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import List, Optional, Sequence
+from typing import List, Optional
 import pandas as pd
 from pyspark.sql import DataFrame, SparkSession
 from pyspark.sql import functions as F
@@ -23,6 +23,7 @@ from pv_lakehouse.etl.utils.spark_utils import (
     write_iceberg_table,
 )
 
+#: Module logger for Bronze loader operations and ETL metrics.
 LOGGER = logging.getLogger(__name__)
 
 @dataclass
@@ -64,7 +65,7 @@ class BaseBronzeLoader(ABC):
     # Class attributes to be defined by subclasses
     iceberg_table: str
     timestamp_column: str
-    merge_keys: Sequence[str] = ()
+    merge_keys: tuple[str, ...] = ()
 
     def __init__(self, options: Optional[BronzeLoadOptions] = None) -> None:
         """Initialize loader with options."""

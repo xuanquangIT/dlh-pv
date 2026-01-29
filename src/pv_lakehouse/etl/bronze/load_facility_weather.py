@@ -55,7 +55,9 @@ class WeatherLoader(BaseBronzeLoader):
             date_range=(self.options.start, self.options.end),
         )
         
-        limiter, frames, failed = RateLimiter(30.0), [], []
+        limiter = RateLimiter(30.0)
+        frames: list[pd.DataFrame] = []
+        failed: list[str] = []
 
         def fetch_one(facility):
             return openmeteo.fetch_weather_dataframe(

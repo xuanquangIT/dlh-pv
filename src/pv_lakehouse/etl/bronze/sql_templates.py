@@ -17,7 +17,10 @@ ALLOWED_BRONZE_TABLES = frozenset({
 _SQL_IDENTIFIER_PATTERN = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*$", re.ASCII)
 
 def _validate_table(table: str) -> None:
-    """Validate table name is in whitelist.
+    """Validate table name is in whitelist (internal use).
+
+    This is a private helper function used by query builders to ensure
+    table names are in the allowed whitelist before SQL generation.
 
     Args:
         table: Fully qualified table name.

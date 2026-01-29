@@ -1,4 +1,16 @@
 #!/usr/bin/env python3
+"""Command-line interface for Bronze zone data loaders.
+
+This module provides CLI entry points for running Bronze layer ETL jobs,
+including facilities, energy, weather, and air quality data ingestion.
+
+Usage:
+    python -m pv_lakehouse.etl.bronze.cli <dataset> [options]
+
+Examples:
+    python -m pv_lakehouse.etl.bronze.cli facilities --mode backfill
+    python -m pv_lakehouse.etl.bronze.cli energy --start 2025-01-01 --end 2025-01-31
+"""
 from __future__ import annotations
 import argparse
 import datetime as dt

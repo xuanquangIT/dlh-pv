@@ -1,5 +1,11 @@
 #!/usr/bin/env python3
-"""ETL metrics tracking utilities for Bronze/Silver/Gold loaders."""
+"""ETL metrics tracking utilities for Bronze/Silver/Gold loaders.
+
+Note:
+    Type hints use Python 3.9+ syntax (e.g., tuple[...], list[...]).
+    The `from __future__ import annotations` import ensures compatibility
+    by treating all annotations as strings at runtime.
+"""
 from __future__ import annotations
 import logging
 import time

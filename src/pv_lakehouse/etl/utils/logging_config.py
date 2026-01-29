@@ -2,19 +2,62 @@
 """Shared logging configuration with colored output for ETL CLI tools."""
 from __future__ import annotations
 import logging
+import os
 import sys
+
+
+def _supports_ansi() -> bool:
+    """Detect if the terminal supports ANSI escape codes.
+    
+    Returns:
+        True if ANSI codes are supported, False otherwise.
+    """
+    # Check for explicit NO_COLOR environment variable (https://no-color.org/)
+    if os.environ.get("NO_COLOR"):
+        return False
+    # Check for explicit FORCE_COLOR environment variable
+    if os.environ.get("FORCE_COLOR"):
+        return True
+    # Docker containers typically support ANSI even without TTY
+    # Check common Docker indicators
+    if os.path.exists("/.dockerenv") or os.environ.get("DOCKER_CONTAINER"):
+        return True
+    # Check if stdout is a TTY
+    if not hasattr(sys.stdout, "isatty") or not sys.stdout.isatty():
+        return False
+    # Windows: Check for Windows Terminal or ConEmu (support ANSI)
+    # or if ANSICON is set
+    if sys.platform == "win32":
+        return (
+            os.environ.get("WT_SESSION")  # Windows Terminal
+            or os.environ.get("ANSICON")  # ANSICON
+            or os.environ.get("ConEmuANSI") == "ON"  # ConEmu
+            or "TERM" in os.environ  # Git Bash, Cygwin
+        )
+    # Unix-like systems generally support ANSI
+    return True
+
+
+# Determine ANSI support once at module load
+_ANSI_SUPPORTED = _supports_ansi()
+
+
 class LogColors:
-    """ANSI color codes for colorized logging output."""
-    RESET = '\033[0m'
-    BOLD = '\033[1m'
+    """ANSI color codes for colorized logging output.
+    
+    Colors are automatically disabled on terminals that don't support ANSI.
+    Set NO_COLOR=1 to disable colors, or FORCE_COLOR=1 to force enable.
+    """
+    RESET = '\033[0m' if _ANSI_SUPPORTED else ''
+    BOLD = '\033[1m' if _ANSI_SUPPORTED else ''
     # Log level colors
-    DEBUG = '\033[36m'      # Cyan
-    INFO = '\033[32m'       # Green
-    WARNING = '\033[33m'    # Yellow
-    ERROR = '\033[31m'      # Red
-    CRITICAL = '\033[35m'   # Magenta
+    DEBUG = '\033[36m' if _ANSI_SUPPORTED else ''      # Cyan
+    INFO = '\033[32m' if _ANSI_SUPPORTED else ''       # Green
+    WARNING = '\033[33m' if _ANSI_SUPPORTED else ''    # Yellow
+    ERROR = '\033[31m' if _ANSI_SUPPORTED else ''      # Red
+    CRITICAL = '\033[35m' if _ANSI_SUPPORTED else ''   # Magenta
     # Component colors
-    MODULE = '\033[94m'     # Blue
+    MODULE = '\033[94m' if _ANSI_SUPPORTED else ''     # Blue
 
 class ColoredFormatter(logging.Formatter):
     """Custom formatter with colored output for different log levels."""

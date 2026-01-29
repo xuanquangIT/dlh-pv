@@ -34,19 +34,23 @@ class EnergyLoader(BaseBronzeLoader):
                 self.options.end = self.options.end or dt.datetime.now(dt.timezone.utc)
                 LOGGER.info("Incremental: from %s (last: %s)", self.options.start, max_ts)
 
+    def _format_datetime(self, value: dt.datetime | None) -> str | None:
+        """Format datetime for API request, returning None if value is None."""
+        return value.strftime("%Y-%m-%dT%H:%M:%S") if value else None
+
     def fetch_data(self) -> pd.DataFrame:
         """Fetch energy data from OpenElectricity API."""
         timer = ETLTimer()
         facilities = self.resolve_facilities()
         total_facilities = len(facilities)
-        frames, skipped = [], []
-        fmt = lambda v: v.strftime("%Y-%m-%dT%H:%M:%S") if v else None
+        frames: list[pd.DataFrame] = []
+        skipped: list[str] = []
         
         log_fetch_start(
             LOGGER,
             "energy",
             total_facilities,
-            date_range=(fmt(self.options.start), fmt(self.options.end)),
+            date_range=(self._format_datetime(self.options.start), self._format_datetime(self.options.end)),
         )
 
         for code in facilities:
@@ -56,8 +60,8 @@ class EnergyLoader(BaseBronzeLoader):
                     facility_codes=[code],
                     metrics=["energy"],
                     interval="1h",
-                    date_start=fmt(self.options.start),
-                    date_end=fmt(self.options.end),
+                    date_start=self._format_datetime(self.options.start),
+                    date_end=self._format_datetime(self.options.end),
                     api_key=self.options.api_key,
                     target_window_days=7,
                     max_lookback_windows=52,
@@ -66,11 +70,9 @@ class EnergyLoader(BaseBronzeLoader):
                     frames.append(df)
             except requests.exceptions.HTTPError as e:
                 # 400: Bad Request, 403: Forbidden, 404: Not Found, 416: Range Not Satisfiable, 429: Rate Limit
-                # Safely extract status code from HTTPError response using hasattr
-                status_code = None
-                if hasattr(e, 'response') and e.response is not None:
-                    if hasattr(e.response, 'status_code'):
-                        status_code = e.response.status_code
+                # Extract status code using getattr chain for cleaner access
+                response = getattr(e, 'response', None)
+                status_code = getattr(response, 'status_code', None) if response else None
                 
                 # Handle facility-specific 4xx errors (not server errors)
                 if status_code and 400 <= status_code < 500:
