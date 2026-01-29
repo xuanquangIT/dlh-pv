@@ -87,21 +87,24 @@ class SilverHourlyAirQualityLoader(BaseSilverLoader):
             )
 
             # Step 3: Round numeric columns and calculate AQI in single pass
-            rounded_exprs = [F.round(F.col(col), 4).alias(col) for col in numeric_columns]
+            # Only round columns that exist in the DataFrame to avoid runtime errors
+            available_numeric_cols = [col for col in numeric_columns if col in prepared.columns]
+            rounded_exprs = [F.round(F.col(col), 4).alias(col) for col in available_numeric_cols]
             
-            aqi_value = self._aqi_from_pm25(F.col("pm2_5"))
+            # Calculate AQI from PM2.5 - use consistent variable reference
+            aqi_value_expr = self._aqi_from_pm25(F.col("pm2_5"))
             aqi_category = (
-                F.when(F.col("aqi_value").isNull(), F.lit(None))
-                .when(aqi_value <= F.lit(50), F.lit("Good"))
-                .when(aqi_value <= F.lit(100), F.lit("Moderate"))
-                .when(aqi_value <= F.lit(200), F.lit("Unhealthy"))
+                F.when(aqi_value_expr.isNull(), F.lit(None))
+                .when(aqi_value_expr <= F.lit(50), F.lit("Good"))
+                .when(aqi_value_expr <= F.lit(100), F.lit("Moderate"))
+                .when(aqi_value_expr <= F.lit(200), F.lit("Unhealthy"))
                 .otherwise(F.lit("Hazardous"))
             )
             
             prepared_with_aqi = prepared.select(
                 "facility_code", "facility_name", "timestamp_local", "date_hour", "date",
                 *rounded_exprs,
-                F.round(aqi_value).cast("int").alias("aqi_value"),
+                F.round(aqi_value_expr).cast("int").alias("aqi_value"),
                 aqi_category.alias("aqi_category"),
             )
 
